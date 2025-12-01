@@ -14,18 +14,51 @@ Below is the high-level layout and the role of each module.
 
 ---
 
-## 1. Package Layout
+## 1. Repository Layout (Nov 2025)
 
 ```text
-llm_perf/
-  __init__.py
-  specs/
-  core/
-  calculators/
-  io/
-  utils/
-  database/
-testing_scripts/
+.
+├── quickstart.ipynb                  # end-to-end tutorial notebook
+├── documentation/
+│   ├── codebase.structure.md
+│   ├── equations.cheetsheet.{md,pdf}
+│   └── modeling.methodology.{md,pdf}
+└── llm_perf/
+    ├── __init__.py
+    ├── calculators/
+    │   └── inference_calculator.py
+    ├── core/
+    │   ├── comm_model.py
+    │   ├── flops_model.py
+    │   ├── latency_model.py
+    │   ├── memory_model.py
+    │   └── traffic_model.py
+    ├── database/
+    │   ├── model/
+    │   │   ├── example.model.dense.json
+    │   │   ├── example.model.moe.json
+    │   │   ├── qwen3_vl_235b_fp8.json
+    │   │   └── external.model/hf/
+    │   │       └── qwen3_vl_235b_a22b_thinking_fp8.json
+    │   ├── partition/example.partition.json
+    │   ├── system/example.sys.json
+    │   └── tuner/example.tuner.json
+    ├── io/
+    │   ├── database_loaders.py
+    │   ├── model_loaders.py
+    │   ├── partition_loaders.py
+    │   ├── system_loaders.py
+    │   └── tuner_loaders.py
+    ├── specs/
+    │   ├── model_spec.py
+    │   ├── partition_spec.py
+    │   ├── system_spec.py
+    │   └── tuner_spec.py
+    └── utils/
+        ├── constants.py
+        ├── data_check.py
+        ├── equations.py
+        └── hf_model_adapter.py
 ```
 
 ---
@@ -251,16 +284,12 @@ Provides canonical model/system configs for rapid experimentation.
 
 ---
 
-## 9. Testing & Examples
+## 9. Tutorials & Examples
 
-Scripts:
+- `quickstart.ipynb` — step-by-step walkthrough of ID discovery, optional HF conversion, and `InferenceCalculator` diagnostics
+- Inline doc snippets (this file, `documentation/modeling.methodology.md`, etc.) for conceptual coverage
 
-- `test_example.py`
-- `test_db_loaders.py`
-- `test_loaders.py`
-- `test_hf_adapter.py`
-
-Demonstrate loading configs and running the calculator.
+Standalone `test_*.py` drivers were removed to keep the repo lean; rely on the notebook or your own scripts for validation.
 
 ---
 
