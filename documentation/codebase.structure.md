@@ -23,6 +23,9 @@ Below is the high-level layout and the role of each module.
 │   ├── codebase.structure.md
 │   ├── equations.cheetsheet.{md,pdf}
 │   └── modeling.methodology.{md,pdf}
+├── scripts/
+│   ├── convert_hf_model.py
+│   └── partition_sweep.py
 └── llm_perf/
     ├── __init__.py
     ├── calculators/
@@ -55,10 +58,11 @@ Below is the high-level layout and the role of each module.
     │   ├── system_spec.py
     │   └── tuner_spec.py
     └── utils/
-        ├── constants.py
-        ├── data_check.py
-        ├── equations.py
-        └── hf_model_adapter.py
+      ├── constants.py
+      ├── data_check.py
+      ├── equations.py
+      ├── hf_model_adapter.py
+      └── plotting.py
 ```
 
 ---
@@ -259,7 +263,7 @@ Supports:
 - fp8/bf16 dtype inference
 
 ### 7.3 `plotting.py`
-Placeholder for future visualization tools.
+Lightweight Matplotlib helpers. Today it exposes `save_config_tps_scatter`, which the partition sweep script uses to visualize throughput vs. configuration. The utils module re-exports the function so downstream scripts can import it via `from llm_perf.utils import save_config_tps_scatter`.
 
 ---
 
@@ -322,3 +326,14 @@ Inspect:
 ---
 
 This document summarizes the **hierarchy, responsibilities, and relationships** among modules in the `llm_perf` codebase.
+
+---
+
+## 11. CLI / Script Utilities
+
+Alongside the library modules, the `scripts/` directory contains small, ready-to-run drivers that exercise the toolkit:
+
+- `scripts/convert_hf_model.py` — programmatic HuggingFace adapter example. It imports `convert_hf_config_to_model_json`, writes the adapted JSON into `llm_perf/database/model`, loads it back via `load_model_spec`, and now reports an estimated parameter count + byte footprint using the same FFN assumptions as the rest of the toolkit.
+- `scripts/partition_sweep.py` — enumerates every `(PP, TP, EP, SP)` factorization for a given cluster budget (DP fixed, typically 1). For each configuration it runs `InferenceCalculator`, prints a rich table (latency components, throughput, and per-device memory breakdown), and saves a scatter plot through `llm_perf.utils.save_config_tps_scatter`. The output filename auto-includes the hardware system’s name so you can compare multiple clusters.
+
+Both scripts prepend the repo root to `sys.path`, so they can be executed directly from the repository root via `python scripts/<name>.py` inside the virtual environment. The sweep script requires Matplotlib (already listed as a dependency in the `.llm_perf` env by default).
