@@ -15,7 +15,7 @@ if str(REPO_ROOT) not in sys.path:
 from llm_perf.calculators.inference_calculator import InferenceCalculator
 from llm_perf.io import load_model_spec, load_system_spec, load_tuning_spec
 from llm_perf.specs.partition_spec import PartitionSpec
-from llm_perf.utils import GB_TO_BYTES, save_config_tps_scatter
+from llm_perf.utils import GB_TO_BYTES, MB_TO_BYTES, US_TO_SECONDS, save_config_tps_scatter
 
 
 @dataclass
@@ -38,6 +38,14 @@ class SweepRecord:
     memory_act_gb: float
     memory_kv_gb: float
     memory_total_gb: float
+    msg_pp_mb: float
+    msg_tp_mb: float
+    msg_ep_mb: float
+    msg_sp_mb: float
+    traffic_theta_gb: float
+    traffic_act_gb: float
+    traffic_kv_gb: float
+    traffic_total_gb: float
 
 
 def divisors(n: int) -> List[int]:
@@ -87,6 +95,14 @@ def sweep_partitions(
         memory_act_gb = result.memory.M_act_device / GB_TO_BYTES
         memory_kv_gb = result.memory.M_kv_device / GB_TO_BYTES
         memory_total_gb = result.memory.M_total_device / GB_TO_BYTES
+        msg_pp_mb = result.comm.msg_PP_bytes / MB_TO_BYTES
+        msg_tp_mb = result.comm.msg_TP_bytes / MB_TO_BYTES
+        msg_ep_mb = result.comm.msg_EP_bytes / MB_TO_BYTES
+        msg_sp_mb = result.comm.msg_SP_bytes / MB_TO_BYTES
+        traffic_theta_gb = result.traffic.T_theta / GB_TO_BYTES
+        traffic_act_gb = result.traffic.T_act / GB_TO_BYTES
+        traffic_kv_gb = result.traffic.T_kv / GB_TO_BYTES
+        traffic_total_gb = result.traffic.T_token_eff / GB_TO_BYTES
         records.append(
             SweepRecord(
                 partition=partition,
@@ -107,6 +123,14 @@ def sweep_partitions(
                 memory_act_gb=memory_act_gb,
                 memory_kv_gb=memory_kv_gb,
                 memory_total_gb=memory_total_gb,
+                msg_pp_mb=msg_pp_mb,
+                msg_tp_mb=msg_tp_mb,
+                msg_ep_mb=msg_ep_mb,
+                msg_sp_mb=msg_sp_mb,
+                traffic_theta_gb=traffic_theta_gb,
+                traffic_act_gb=traffic_act_gb,
+                traffic_kv_gb=traffic_kv_gb,
+                traffic_total_gb=traffic_total_gb,
             )
         )
 
@@ -114,12 +138,23 @@ def sweep_partitions(
     return records, system.name
 
 
-def format_table(records: Sequence[SweepRecord]) -> str:
+def _render_table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> str:
+    col_widths = [max(len(row[i]) for row in [headers] + list(rows)) for i in range(len(headers))]
+
+    def fmt_row(row: Sequence[str]) -> str:
+        return " | ".join(entry.ljust(col_widths[i]) for i, entry in enumerate(row))
+
+    lines = [fmt_row(headers), "-+-".join("-" * w for w in col_widths)]
+    lines.extend(fmt_row(row) for row in rows)
+    return "\n".join(lines)
+
+
+def format_latency_memory_table(records: Sequence[SweepRecord]) -> str:
     headers = [
         "Config",
         "Devices",
         "HBM ok",
-        "TPS/device",
+        "TPS",
         "TTPS",
         "t_PP",
         "t_TP",
@@ -146,30 +181,60 @@ def format_table(records: Sequence[SweepRecord]) -> str:
                 "yes" if rec.fits_memory else "no",
                 f"{rec.tps_single:,.2f}",
                 f"{rec.tps_total:,.2f}",
-                f"{rec.t_pp * 1e6:.2f}",
-                f"{rec.t_tp * 1e6:.2f}",
-                f"{rec.t_ep * 1e6:.2f}",
-                f"{rec.t_sp * 1e6:.2f}",
-                f"{rec.t_comm * 1e6:.2f}",
-                f"{rec.t_compute * 1e6:.2f}",
-                f"{rec.t_mem * 1e6:.2f}",
-                f"{rec.t_local * 1e6:.2f}",
-                f"{rec.t_token * 1e6:.2f}",
+                f"{rec.t_pp / US_TO_SECONDS:.2f}",
+                f"{rec.t_tp / US_TO_SECONDS:.2f}",
+                f"{rec.t_ep / US_TO_SECONDS:.2f}",
+                f"{rec.t_sp / US_TO_SECONDS:.2f}",
+                f"{rec.t_comm / US_TO_SECONDS:.2f}",
+                f"{rec.t_compute / US_TO_SECONDS:.2f}",
+                f"{rec.t_mem / US_TO_SECONDS:.2f}",
+                f"{rec.t_local / US_TO_SECONDS:.2f}",
+                f"{rec.t_token / US_TO_SECONDS:.2f}",
                 f"{rec.memory_param_gb:.2f}",
                 f"{rec.memory_act_gb:.2f}",
                 f"{rec.memory_kv_gb:.2f}",
                 f"{rec.memory_total_gb:.2f}",
             ]
         )
+    return _render_table(headers, rows)
 
-    col_widths = [max(len(row[i]) for row in [headers] + rows) for i in range(len(headers))]
 
-    def fmt_row(row: Sequence[str]) -> str:
-        return " | ".join(entry.ljust(col_widths[i]) for i, entry in enumerate(row))
-
-    lines = [fmt_row(headers), "-+-".join("-" * w for w in col_widths)]
-    lines.extend(fmt_row(row) for row in rows)
-    return "\n".join(lines)
+def format_comm_traffic_table(records: Sequence[SweepRecord]) -> str:
+    headers = [
+        "Config",
+        "Devices",
+        "TPS",
+        "TTPS",
+        "msgPP_MB",
+        "msgTP_MB",
+        "msgEP_MB",
+        "msgSP_MB",
+        "Tparam_GB",
+        "Tact_GB",
+        "Tkv_GB",
+        "Ttotal_GB",
+    ]
+    rows = []
+    for rec in records:
+        cfg = rec.partition
+        label = f"PP{cfg.PP}-TP{cfg.TP}-EP{cfg.EP}-SP{cfg.SP}"
+        rows.append(
+            [
+                label,
+                str(rec.total_devices),
+                f"{rec.tps_single:,.2f}",
+                f"{rec.tps_total:,.2f}",
+                f"{rec.msg_pp_mb:.2f}",
+                f"{rec.msg_tp_mb:.2f}",
+                f"{rec.msg_ep_mb:.2f}",
+                f"{rec.msg_sp_mb:.2f}",
+                f"{rec.traffic_theta_gb:.2f}",
+                f"{rec.traffic_act_gb:.2f}",
+                f"{rec.traffic_kv_gb:.2f}",
+                f"{rec.traffic_total_gb:.2f}",
+            ]
+        )
+    return _render_table(headers, rows)
 
 
 def build_plot(records: Sequence[SweepRecord], plot_path: Path) -> Path:
@@ -232,7 +297,9 @@ def main() -> None:
     if not records:
         raise SystemExit("No valid configurations satisfied the constraints.")
 
-    print(format_table(records))
+    print(format_latency_memory_table(records))
+    print()
+    print(format_comm_traffic_table(records))
     if args.plot_path is not None:
         plot_path = args.plot_path
     else:
