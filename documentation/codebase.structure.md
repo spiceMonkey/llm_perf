@@ -140,7 +140,8 @@ Defines all **execution/tuning knobs**:
 - Number of collectives/layer/token: `n_TP_collectives`, `n_EP_collectives`, `n_SP_collectives`
 - Heuristics:
   - `c_act`
-  - `flash_attn_gain` ($γ_{FA}$ ≥ 1)
+  - `flash_attn_gain` ($γ_{FA}$ ≥ 1) for attention traffic
+  - `flash_mlp_gain` ($γ_{FMLP}$ ≥ 1) for FFN/MoE parameter traffic
   - `overlap_factor` (ρ - local compute and network latency overlap ratio)
 
 ---
@@ -169,7 +170,7 @@ Produces `TrafficResults`:
 
 Incorporates:
 - MoE
-- flash attention gain
+- flash attention gain (`γ_FA`) and flash-MLP gain (`γ_FMLP`)
 - activation scaling
 
 ### 4.4 `comm_model.py`
@@ -334,6 +335,6 @@ This document summarizes the **hierarchy, responsibilities, and relationships** 
 Alongside the library modules, the `scripts/` directory contains small, ready-to-run drivers that exercise the toolkit:
 
 - `scripts/convert_hf_model.py` — programmatic HuggingFace adapter example. It imports `convert_hf_config_to_model_json`, writes the adapted JSON into `llm_perf/database/model`, loads it back via `load_model_spec`, and now reports an estimated parameter count + byte footprint using the same FFN assumptions as the rest of the toolkit.
-- `scripts/partition_sweep.py` — enumerates every `(PP, TP, EP, SP)` factorization for a given cluster budget (DP fixed, typically 1). For each configuration it runs `InferenceCalculator`, prints a rich table (latency components, throughput, and per-device memory breakdown), and saves a scatter plot through `llm_perf.utils.save_config_tps_scatter`. The output filename auto-includes the hardware system’s name so you can compare multiple clusters.
+- `scripts/partition_sweep.py` — enumerates every `(PP, TP, EP, SP)` factorization for a given cluster budget (DP fixed, typically 1). For each configuration it runs `InferenceCalculator`, prints two aligned tables (latency + memory, then comm + traffic/message sizes), and saves a scatter plot through `llm_perf.utils.save_config_tps_scatter`. The output filename auto-includes the hardware system’s name so you can compare multiple clusters.
 
 Both scripts prepend the repo root to `sys.path`, so they can be executed directly from the repository root via `python scripts/<name>.py` inside the virtual environment. The sweep script requires Matplotlib (already listed as a dependency in the `.llm_perf` env by default).
