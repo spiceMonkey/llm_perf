@@ -76,7 +76,7 @@ T_{\theta} \approx
 \frac{L}{PP}
 \left(
 \frac{H^2 + 3HH_{kv}}{TP\gamma_{FA}}
-+ \frac{2H I N_{\text{exp}}}{TP\cdot EP\cdot \gamma_{FMLP}}
++ \frac{3H I N_{\text{exp}}}{TP\cdot EP\cdot \gamma_{FMLP}}
 \right) b
 $$
 
@@ -100,7 +100,7 @@ T_{\text{token,device}}^{eff}
 \frac{L}{PP}
 \left(
 \frac{H^2 + 3HH_{kv}}{TP\cdot \gamma_{FA}}
-+ \frac{2HI N_{\text{exp}}}{TP\cdot EP\cdot \gamma_{FMLP}}
++ \frac{3HI N_{\text{exp}}}{TP\cdot EP\cdot \gamma_{FMLP}}
 + c_{\text{act}}H
 + \frac{2 S H_{kv}}{TP\cdot SP}
 \right)b
