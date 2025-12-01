@@ -425,17 +425,25 @@ $$
 
 ### Unified FFN Parameters (Dense or MoE)
 
-Each transformer layer contains an FFN module :
+Each transformer layer contains an FFN module. In modern LLM architectures, this FFN is almost
+always implemented as a gated MLP (GeLU/SiLU/GLU/SwiGLU–style) with **three** linear projections:
+
+- a gate projection,
+- an “up” projection (expansion),
+- a “down” projection (contraction).
+
+For a hidden size $H$ and FFN intermediate dimension $I$, this yields an FFN parameter count
 
 $$
-P_{\text{FFN}} = 2H I N_{\text{exp}}
+P_{\text{FFN}} = 3 H I N_{\text{exp}}.
 $$
 
-**For a dense MLP model:** $I = I_{\text{dense}}, \text{ } N_{\text{exp}} = 1$
+Here $N_{\text{exp}}$ denotes the number of experts **per layer**:
 
-**And for a MoE model:** $I = I_{\text{moe}}$
+- **For a dense MLP model:** $I = I_{\text{dense}}, \; N_{\text{exp}} = 1$.
+- **For a MoE model:** $I = I_{\text{moe}}$, with $N_{\text{exp}} > 1$.
 
-These two model cases are mutually exclusive **per layer**.  
+These two model cases are mutually exclusive **per layer**.
 
 ### LayerNorm parameters
 
@@ -648,7 +656,7 @@ M_{\theta,\text{device}}
 \left(
 \frac{H^2 + 3 H H_{kv}}{TP}
 \;+\;
-\frac{2 H I N_{\text{exp}}}{TP \cdot EP}
+\frac{3 H I N_{\text{exp}}}{TP \cdot EP}
 \right) b
 +\frac{VH}{TP} b
 $$
@@ -806,17 +814,37 @@ $$
 
 ### FFN parameter traffic
 
-Similarly, FFN (dense or non-expert MoE core) parameters are per-layer quantities $P_{\text{FFN}}$.
+Modern FFN/MLP implementations (e.g., GLU/SwiGLU-based MLPs in LLaMA, Qwen, PaLM)
+use **three** linear projections (gate, up, down), giving the true parameter
+count
 
-Per-token FFN parameter traffic per device in this PP stage is
+$$
+P_{\text{FFN}} = 3 H I N_{\text{exp}}.
+$$
+
+However, optimized inference kernels such as **FlashMLP**, TensorRT-LLM fused MLP,
+and Megatron-Core grouped-GEMM fuse the **gate** and **up** projections into a
+single memory stream. As a result, the *effective* memory traffic of the FFN
+behaves closer to a **2-projection** design.
+
+To model this we introduce an empirical reduction factor
+
+$$
+\gamma_{\text{FMLP}} \approx 1.5,
+$$
+
+so that the **effective FFN parameter-traffic contribution** per-token per-device in this PP stage is becomes
 
 $$
 T_{\theta,\text{FFN}}
-\approx
-\frac{L}{PP}
-\cdot
-\frac{P_{\text{FFN}} \, b}{TP \cdot EP}
+=
+\frac{L}{PP}\;
+\frac{P_{\text{FFN}}}{TP \cdot EP \cdot \gamma_{\text{FMLP}}}\; b
 $$
+
+This mirrors the use of $\gamma_{\text{FA}}$ for attention and highlights that
+in practice, FFN parameter traffic is **significantly lower** than its raw
+3-projection parameter count would suggest.
 
 ### Final approximate parameter-traffic expression
 
@@ -830,14 +858,14 @@ T_{\theta,\text{device}}
 \left(
   \frac{P_{\text{attn}}}{TP \cdot \gamma_{FA}}
   +
-  \frac{P_{\text{FFN}}}{TP \cdot EP}
+  \frac{P_{\text{FFN}}}{TP \cdot EP \cdot \gamma_{\text{FMLP}}}
 \right) b
 =
 \frac{L}{PP}\;
 \left(
 \frac{H^2 + 3 H H_{kv}}{TP \cdot \gamma_{FA}}
 \;+\;
-\frac{2 H I N_{\text{exp}}}{TP \cdot EP}
+\frac{3 H I N_{\text{exp}}}{TP \cdot EP \cdot \gamma_{\text{FMLP}}}
 \right) b
 $$
 
@@ -975,7 +1003,7 @@ T_{\text{token,device}}^{eff}
 \left(
 \frac{H^2 + 3 H H_{kv}}{TP \cdot \gamma_{FA}}
 \;+\;
-\frac{2 H I N_{\text{exp}}}{TP \cdot EP}
+\frac{3 H I N_{\text{exp}}}{TP \cdot EP \cdot \gamma_{FMLP}}
 +
 c_{\text{act}} \, H 
 +
@@ -1013,7 +1041,7 @@ M_{\text{device}}^{\text{total}} =
 \left(
 \frac{H^2 + 3 H H_{kv}}{TP}
 +
-\frac{2 H I N_{\text{exp}}}{TP\cdot EP}
+\frac{3 H I N_{\text{exp}}}{TP\cdot EP}
 +
 (4H + 2H_{kv})
 +
@@ -1038,7 +1066,7 @@ T_{\text{token,device}}^{eff}
 \left(
 \frac{H^2 + 3 H H_{kv}}{TP\gamma_{FA}}
 +
-\frac{2 H I N_{\text{exp}}}{TP\cdot EP}
+\frac{3 H I N_{\text{exp}}}{TP\cdot EP \cdot \gamma_{FMLP}}
 +
 c_{\text{act}} H
 +

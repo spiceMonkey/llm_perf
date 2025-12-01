@@ -22,7 +22,7 @@ $S$ (context), $b$ (bytes/elt), $c_{\text{act}}\approx 8$–$12$
 $$P_{\text{attn}} = H^2 + 3 H H_{kv}$$
 
 **FFN params (unified)**  
-$$P_{\text{FFN}} = 2 H I N_{\text{exp}}$$
+$$P_{\text{FFN}} = 3 H I N_{\text{exp}}$$
 
 **Activations**  
 $$P_{\text{act}} = 4H + 2H_{kv}$$
@@ -40,7 +40,7 @@ M_{\theta,\text{device}} =
 \frac{L}{PP}
 \left(
 \frac{H^2 + 3HH_{kv}}{TP}
-+ \frac{2H I N_{\text{exp}}}{TP\cdot EP}
++ \frac{3H I N_{\text{exp}}}{TP\cdot EP}
 \right)b
 + \frac{VH}{TP}b
 $$
@@ -76,7 +76,7 @@ T_{\theta} \approx
 \frac{L}{PP}
 \left(
 \frac{H^2 + 3HH_{kv}}{TP\gamma_{FA}}
-+ \frac{2H I N_{\text{exp}}}{TP\cdot EP}
++ \frac{2H I N_{\text{exp}}}{TP\cdot EP\cdot \gamma_{FMLP}}
 \right) b
 $$
 
@@ -99,8 +99,8 @@ T_{\text{token,device}}^{eff}
 \approx
 \frac{L}{PP}
 \left(
-\frac{H^2 + 3HH_{kv}}{TP\gamma_{FA}}
-+ \frac{2HI N_{\text{exp}}}{TP\cdot EP}
+\frac{H^2 + 3HH_{kv}}{TP\cdot \gamma_{FA}}
++ \frac{2HI N_{\text{exp}}}{TP\cdot EP\cdot \gamma_{FMLP}}
 + c_{\text{act}}H
 + \frac{2 S H_{kv}}{TP\cdot SP}
 \right)b
