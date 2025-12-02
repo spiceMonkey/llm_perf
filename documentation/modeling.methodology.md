@@ -643,7 +643,7 @@ M_{\theta,\text{device}}^{(\text{mid})}
 \left(
 \frac{H^2 + 3 H H_{kv}}{TP}
 +
-\frac{2 H I N_{\text{exp}}}{TP \cdot EP}
+\frac{3 H I N_{\text{exp}}}{TP \cdot EP}
 \right) b
 $$
 
@@ -727,7 +727,7 @@ M_{\text{device}}^{\text{total}} =
 \left(
 \frac{H^2 + 3 H H_{kv}}{TP}
 \;+\;
-\frac{2 H I N_{\text{exp}}}{TP \cdot EP}
+\frac{3 H I N_{\text{exp}}}{TP \cdot EP}
 +\;
 (4H + 2H_{kv})
 +
@@ -2044,7 +2044,7 @@ $$
 \left(
 \frac{H^2 + 3 H H_{kv}}{TP}
 \;+\;
-\frac{2 H I N_{\text{exp}}}{TP \cdot EP}
+\frac{3 H I N_{\text{exp}}}{TP \cdot EP}
 +\;
 (4H + 2H_{kv})
 +
