@@ -200,9 +200,13 @@ $$
 ### Total PP-stage communication
 $$
 t_{\text{comm}} =
-\frac{L}{PP}(n_{TP}t_{TP} + n_{EP}t_{EP} + t_{SP})
+\frac{L}{PP}(n_{TP}t_{TP} + n_{EP}t_{EP} + n_{SP}t_{SP})
 + t_{PP}
 $$
+
+**Typical counts:**
+* **Dense:** $n_{TP}=2, n_{EP}=0, n_{SP}=1$
+* **MoE:** $n_{TP}=1, n_{EP}=1, n_{SP}=1$ (assuming EP-only experts)
 
 ---
 

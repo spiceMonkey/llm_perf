@@ -180,6 +180,7 @@ We also define:
   bandwidths for TP, EP, SP, and PP communication.  
 - $n_{TP}$ — Number of TP collective iterations per-layer per-token 
 - $n_{EP}$ — Number of EP collective iterations per-layer per-token 
+- $n_{SP}$ — Number of SP collective iterations per-layer per-token (typically 1, during Attention)
   
 ### Model FLOPs and Compute Quantities
 
@@ -1694,7 +1695,7 @@ These collectives must complete before the token can advance to the next layer. 
 
 - $n_{TP}$ TP collectives per layer  
 - $n_{EP}$ EP collectives per layer (0 for dense layers, 1 for MoE layers)  
-- $1$ SP collective per layer (if SP is enabled)
+- $n_{SP}$ SP collectives per layer (1 if SP is enabled)
 
 Because TP, EP, and SP operations within each layer depend on one another (e.g., TP → SP in attention and EP → TP in MoE), they are **strictly sequential** and do not overlap. Thus, the **per-token communication time accumulated over the entire PP stage** is:
 
@@ -1707,7 +1708,7 @@ n_{TP}\, t_{TP}
 +
 n_{EP}\, t_{EP}
 +
-t_{SP}
+n_{SP}\, t_{SP}
 \bigr)
 $$
 
@@ -1715,6 +1716,7 @@ Where:
 - $t_{EP}$, $t_{TP}$, $t_{SP}$ are the **per-token, per-layer** communication costs given in Sections 5.2–5.4.
 - $n_{TP}$ is typically **2** (one for Attention, one for FFN).
 - $n_{EP}$ is **1** for MoE layers and **0** for dense layers.
+- $n_{SP}$ is **1** (occurs during Attention).
 
 ### Adding PP hop cost
 
@@ -1732,7 +1734,7 @@ n_{TP}\, t_{TP}
 +
 n_{EP}\, t_{EP}
 +
-t_{SP}
+n_{SP}\, t_{SP}
 \bigr)
 +
 t_{PP}
