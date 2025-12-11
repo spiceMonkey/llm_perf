@@ -215,15 +215,15 @@ Local (on-device) & communication timing:
 
 - $t_{\text{compute}}$ — Per-token compute time, $F_{\text{token,device}} / R_{\text{GPU}}$.  
 - $t_{\text{mem}}$ — Per-token memory time, $T_{\text{token,device}}^{eff} / B_{\text{eff,mem}}$.  
-- $t_{\text{local}}$ — Local per-token roofline time:
+- $t_{\text{local}}$ — Local per-token roofline time: $\max(t_{\text{compute}}, t_{\text{mem}})$.
 - $t_{TP}$, $t_{EP}$, $t_{SP}$, $t_{PP}$ — Communication time per token for TP/EP/SP/PP.  
 - $t_{\text{comm}}$ — Combined communication work per token.  
 - $t_{\text{prefill,local}}$ — Prefill compute + memory time.  
 - $t_{\text{prefill,comm}}$ — Prefill communication time.  
 - $t_{\text{startup}}$ — Kernel warmup and graph-capture overhead.  
 - $t_{\text{token}}$ — Effective per-token time, accounting for compute, memory, and communication.
-- $\rho$ — Empirical overlap factor for communication in the practical model (e.g., $\rho \in [0.3, 1]$), used in
-  approximations such as $t_{\text{token}} \approx \max(t_{\text{local}},\, \rho\, t_{\text{comm}})$
+- $\rho$ — Overlap factor $\in [0, 1]$ representing the fraction of local compute/memory time utilized to hide communication. Used in the unified latency model:
+  $$t_{\text{token}} = t_{\text{local}} + \max(0, t_{\text{comm}} - \rho \cdot t_{\text{local}})$$
 
 Throughput & end-to-end latency:
 
@@ -1889,68 +1889,55 @@ t_{SP}
 t_{PP}
 $$
 
-### Overlap Models
+### Unified Overlap Model
 
-**No overlap (conservative)**
+We introduce an overlap factor $\rho \in [0, 1]$ representing the fraction of local compute/memory time that is successfully utilized to hide communication.
 
-$$
-t_{\text{token}}^{\text{no-overlap}}
-=
-t_{\text{local}} + t_{\text{comm}}
-$$
-
-**Full overlap (optimistic)**
-
-$$
-t_{\text{token}}^{\text{overlap}}
-=
-\max(t_{\text{local}},\; t_{\text{comm}})
-$$
-
-**Partial overlap (empirical)**
+The effective per-token latency is the local time plus any **unhidden** communication:
 
 $$
 t_{\text{token}}
-\approx
-\max\!\left(
-t_{\text{local}},\;
-\rho \, t_{\text{comm}}
-\right),
-\quad
-\rho \in [0.3, 1]
+=
+t_{\text{local}}
++
+\max\bigl(0,\; t_{\text{comm}} - \rho \cdot t_{\text{local}}\bigr)
 $$
-where:
-  - For TP collectives, NVIDIA NeMo reports substantial overlap via asynchronous all-gather and reduce-scatter
-  operations [NeMo User Guide 2025]. 
-  - For MoE EP all-to-all collectives, recent work demonstrates only partial overlap due to token routing and expert
-  locality constraints [MegaScale-MoE 2025]. 
-  - Attention-related communication (SP) and pipeline transfers exhibit limited overlap because of strict data dependencies
-  [FlashAttention 2022; PipeDream 2019].
-  - These observations motivate modeling overlap through a factor $\rho \in [0.3, 1]$
+
+**Regimes:**
+* **$\rho = 0$ (No Overlap):**
+  $$t_{\text{token}} = t_{\text{local}} + t_{\text{comm}}$$
+  Typical for naive implementations or strictly sequential dependencies.
+
+* **$\rho = 1$ (Perfect Overlap Opportunity):**
+  $$t_{\text{token}} = t_{\text{local}} + \max(0, t_{\text{comm}} - t_{\text{local}}) = \max(t_{\text{local}}, t_{\text{comm}})$$
+  Achieved by highly optimized kernels (e.g., Ring Attention) where independent work exists.
+
+* **$0 < \rho < 1$ (Partial Overlap):**
+  Models real-world overheads (kernel launch latency, synchronization barriers) that prevent utilizing the full local duration for hiding comms.
 
 ---
 
 ## 6.3 TPS and TTPS — Pipeline Throughput
 
 Recall from Section 6.2 that for a given PP stage we model the **per-token,
-per-stage** latency as
+per-stage** latency using the unified overlap model:
 
 $$
 t_{\text{token}}
-\approx
-\max\bigl(t_{\text{local}},\; \rho\, t_{\text{comm}}\bigr)
+=
+t_{\text{local}}
++
+\max\bigl(0,\; t_{\text{comm}} - \rho \cdot t_{\text{local}}\bigr)
 $$
-
-where $t_{\text{local}}$ is the local compute/memory time, $t_{\text{comm}}$
-is the communication time for that stage, and $\rho \in [0.3, 1]$ models
-communication–compute overlap.
 
 For pipeline stage $j$, we write this explicitly as
 
 $$
 t_{\text{stage},j}
 =
-\max\bigl(t_{\text{local},j},\; \rho\, t_{\text{comm},j}\bigr)
+t_{\text{local},j}
++
+\max\bigl(0,\; t_{\text{comm},j} - \rho \cdot t_{\text{local},j}\bigr)
 $$
 
 During steady-state decoding, different PP stages process **different tokens**

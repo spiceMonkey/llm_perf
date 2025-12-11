@@ -206,26 +206,31 @@ $$
 
 ---
 
-## 8. Overlap Model
+## 8. Unified Overlap Model
+
+**Overlap factor $\rho \in [0, 1]$:** Fraction of local time utilized to hide comms.
+
+**Effective per-token latency:**
 $$
-t_{\text{token}}^{\text{no}} = t_{\text{local}} + t_{\text{comm}}
+t_{\text{token}} = 
+t_{\text{local}} + 
+\max\bigl(0,\; t_{\text{comm}} - \rho \cdot t_{\text{local}}\bigr)
 $$
 
-$$
-t_{\text{token}}^{\text{full}} = \max(t_{\text{local}},\,t_{\text{comm}})
-$$
-
-$$
-t_{\text{token}} \approx \max(t_{\text{local}},\, \rho t_{\text{comm}}),
-\qquad \rho\in[0.3,1]
-$$
+**Regimes:**
+* **$\rho=0$ (No Overlap):** $t_{\text{token}} = t_{\text{local}} + t_{\text{comm}}$
+* **$\rho=1$ (Perfect Overlap Opportunity):** $t_{\text{token}} = \max(t_{\text{local}}, t_{\text{comm}})$
 
 ---
 
 ## 9. TPS / TTPS
 
 **Stage latency** 
-$$t_{\text{stage},j} = \max(t_{\text{local},j},\,\rho t_{\text{comm},j})$$
+$$
+t_{\text{stage},j} = 
+t_{\text{local},j} + 
+\max\bigl(0,\; t_{\text{comm},j} - \rho \cdot t_{\text{local},j}\bigr)
+$$
 
 **Single-replica TPS** 
 $$
