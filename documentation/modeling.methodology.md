@@ -30,9 +30,9 @@ cluster topology, performance modeling
   - [1.4 Per-device Memory Footprint After Parallelism Sharding](#14-per-device-memory-footprint-after-parallelism-sharding)
 
 - [2. Memory Traffic During Decoding](#2-memory-traffic-during-decoding)
-  - [2.1 Model Parameter Traffic \(T_{\theta,\text{device}}\)](#21-model-parameter-traffic-t_theta_textdevice)
-  - [2.2 Activation Traffic \(T_{\text{act,device}}\)](#22-activation-traffic-t_textactdevice)
-  - [2.3 KV Cache Traffic \(T_{\text{KV,device}}\)](#23-kv-cache-traffic-t_textkvdevice)
+  - [2.1 Model Parameter Traffic $T_{\theta,\text{device}}$](#21-model-parameter-traffic-t_theta_textdevice)
+  - [2.2 Activation Traffic $T_{\text{act,device}}$](#22-activation-traffic-t_textactdevice)
+  - [2.3 KV Cache Traffic $T_{\text{KV,device}}$](#23-kv-cache-traffic-t_textkvdevice)
   - [2.4 Total and Effective Traffic](#24-total-and-effective-traffic)
   - [2.5 Static Memory Footprint vs. Memory Traffic](#25-static-memory-footprint-vs-memory-traffic-important-distinction)
 
@@ -170,9 +170,6 @@ We also define:
 ### Device Compute and Bandwidth
 
 - $R_{\text{GPU}}$ — Effective compute throughput of the device (FLOPs/s).  
-- $\gamma_{FA}$ — FlashAttention factor that encodes **memory efficiency gains** from FlashAttention-style kernels:
-  - reduces memory traffic for Q/K/V and attention intermediates,
-  - increases effective memory bandwidth utilization.
 - $B_{\text{eff,mem}}$ — Effective HBM bandwidth (bytes/s).  
 
 ### Networking
@@ -234,7 +231,7 @@ Throughput & end-to-end latency:
 - $TTPS$ — Global throughput across $DP$ replicas: total token per second
 TTPS is the correct metric for end-to-end system throughput when multiple DP replicas serve independent
 requests.
-- $TTFT$ — Time to first token: the amount of time an LLM takes to generate the first token in its response after receiving an input or prompt. 
+- $TTFT$ — Time to first token: the amount of time an LLM takes to generate the first token in its response after receiving an input or prompt.
 
 ---
 
@@ -724,7 +721,7 @@ $$
 \boxed{
 M_{\text{device}}^{\text{total}} = 
 \frac{L}{PP}\;
-\left(
+\left[
 \frac{H^2 + 3 H H_{kv}}{TP}
 \;+\;
 \frac{3 H I N_{\text{exp}}}{TP \cdot EP}
@@ -732,7 +729,7 @@ M_{\text{device}}^{\text{total}} =
 (4H + 2H_{kv})
 +
 \frac{2 S H_{kv}}{TP \cdot SP}
-\right) b
+\right] b
 +\frac{VH}{TP} b
 }
 $$
@@ -747,14 +744,14 @@ And for a MoE model: $I = I_{\text{moe}}$
 
 # 2. Memory Traffic During Decoding
 
-Section 1 quantified the *static* memory footprint of the model — how many bytes of parameters,
-KV cache, and activations must **fit** in device HBM.
+Section 1 quantified the *static* memory footprint of the model — how many bytes of parameters, KV cache, and activations must **fit** in device HBM.
 
-This section instead focuses on **memory traffic per generated token**, i.e., the bytes that must
-flow between HBM and compute cores *during decoding*. This traffic directly determines the
-memory-bound component of decoding performance (Section 4’s roofline model).
+This section instead focuses on **memory traffic per generated token**, i.e., the bytes that must flow between HBM and compute cores *during decoding*. This traffic directly determines the memory-bound component of decoding performance (Section 4’s roofline model).
 
-We reuse the same parameter partitions from Section 1 to ensure consistency.
+**Crucial Distinction for Decoding:**
+In autoregressive decoding (batch size $\approx$ 1), tokens are generated sequentially. Unlike prefill or training, where weights can be loaded once and reused across a large batch of tokens in SRAM, decoding requires the **entire model weight matrix** to be loaded from HBM for **every single generated token**.
+
+Therefore, optimizations like FlashAttention or Fused-MLP do **not** reduce weight traffic; they only reduce the traffic of intermediate activations.
 
 ---
 
@@ -765,107 +762,52 @@ Following Section 1, we use:
 - $P_{\text{attn}}$: Q/K/V/O projection parameters  
 - $P_{\text{FFN}}$: dense FFN (or non-expert MoE core) parameters  
 
-We also have:
-
-- $P_{\text{emb}}$: embedding matrix  
-- $P_{\text{lm}}$: LM head  
-
-but **as in the intermediate-stage memory model of Section 1.4**, we drop $P_{\text{emb}}$ and
-$P_{\text{lm}}$ when modeling steady-state decoding, since they are small relative to attention
-and FFN parameters and typically reside only on boundary PP stages.
-
-### FlashAttention and the role of $\gamma_{FA}$
-
-FlashAttention reduces DRAM traffic for attention weights by aggressively tiling Q/K/V/O blocks
-into SRAM and reusing them across the fused attention kernels.
-
-The impact is well documented:
-
-- **FlashAttention-1** (Dao et al. 2022): ~2× reduction  
-- **FlashAttention-2** (Dao et al. 2023): 2.5×–4× reduction  
-- **FlashAttention-3** (Dao et al. 2024): 3×–5× reduction  
-- **xFormers / FasterTransformer / TensorRT-LLM**: typically 2×–3.5× reduction
-
-Thus a practical range is:
-
-$$
-\gamma_{FA} \approx 2\text{–}4 \quad (\text{typical}), 
-\qquad
-\gamma_{FA} \approx 4\text{–}5 \quad (\text{FlashAttention-3}).
-$$
-
-This factor applies **only to attention-parameter traffic**.
+We drop $P_{\text{emb}}$ and $P_{\text{lm}}$ when modeling steady-state decoding, assuming they reside on boundary PP stages and do not bottleneck the central pipeline.
 
 ### Attention parameter traffic
 
-Because $P_{\text{attn}}$ is defined **per layer**, a PP stage with $L_{\text{stage}} = L/PP$ layers has
-$L_{\text{stage}} P_{\text{attn}}$ attention parameters in total (before TP sharding).
+Because $P_{\text{attn}}$ is defined **per layer**, a PP stage with $L_{\text{stage}} = L/PP$ layers has $L_{\text{stage}} P_{\text{attn}}$ attention parameters. These are sharded across $TP$ devices.
 
-With FlashAttention reducing attention-parameter traffic by $\gamma_{FA}$, the per-token attention
-parameter traffic per device in this PP stage is
+Since every weight must be read per token:
 
 $$
 T_{\theta,\text{attn}}
-\approx
+=
 \frac{L}{PP}
 \cdot
-\frac{P_{\text{attn}} \, b}{TP \cdot \gamma_{FA}}
+\frac{P_{\text{attn}} \, b}{TP}
 $$
 
 ### FFN parameter traffic
 
-Modern FFN/MLP implementations (e.g., GLU/SwiGLU-based MLPs in LLaMA, Qwen, PaLM)
-use **three** linear projections (gate, up, down), giving the true parameter
-count
-
-$$
-P_{\text{FFN}} = 3 H I N_{\text{exp}}.
-$$
-
-However, optimized inference kernels such as **FlashMLP**, TensorRT-LLM fused MLP,
-and Megatron-Core grouped-GEMM fuse the **gate** and **up** projections into a
-single memory stream. As a result, the *effective* memory traffic of the FFN
-behaves closer to a **2-projection** design.
-
-To model this we introduce an empirical reduction factor
-
-$$
-\gamma_{\text{FMLP}} \approx 1.5,
-$$
-
-so that the **effective FFN parameter-traffic contribution** per-token per-device in this PP stage is becomes
+Similarly, the FFN parameters $P_{\text{FFN}}$ are sharded by both **TP** and **EP**. Although fused kernels (e.g., FlashMLP) avoid writing intermediate activations (like the gate tensor) to HBM, they still require reading the gate, up, and down projection weights fully.
 
 $$
 T_{\theta,\text{FFN}}
 =
 \frac{L}{PP}\;
-\frac{P_{\text{FFN}}}{TP \cdot EP \cdot \gamma_{\text{FMLP}}}\; b
+\frac{P_{\text{FFN}}}{TP \cdot EP}\; b
 $$
 
-This mirrors the use of $\gamma_{\text{FA}}$ for attention and highlights that
-in practice, FFN parameter traffic is **significantly lower** than its raw
-3-projection parameter count would suggest.
+### Final parameter-traffic expression
 
-### Final approximate parameter-traffic expression
-
-Dropping $P_{\text{emb}}$ and $P_{\text{lm}}$ (as in the intermediate-stage memory model of Section 2),
-we obtain
+Combining these terms:
 
 $$
 T_{\theta,\text{device}}
 \approx
 \frac{L}{PP}
 \left(
-  \frac{P_{\text{attn}}}{TP \cdot \gamma_{FA}}
+  \frac{P_{\text{attn}}}{TP}
   +
-  \frac{P_{\text{FFN}}}{TP \cdot EP \cdot \gamma_{\text{FMLP}}}
+  \frac{P_{\text{FFN}}}{TP \cdot EP}
 \right) b
 =
 \frac{L}{PP}\;
 \left(
-\frac{H^2 + 3 H H_{kv}}{TP \cdot \gamma_{FA}}
+\frac{H^2 + 3 H H_{kv}}{TP}
 \;+\;
-\frac{3 H I N_{\text{exp}}}{TP \cdot EP \cdot \gamma_{\text{FMLP}}}
+\frac{3 H I N_{\text{exp}}}{TP \cdot EP}
 \right) b
 $$
 
@@ -878,40 +820,27 @@ $$
 
 ## 2.2 Activation Traffic $T_{\text{act,device}}$
 
-Section 1 showed that the per-layer activation footprint for a single decoding token is small.
-These $H$-dimensional vectors must still be loaded/stored at HBM during attention and FFN/MoE
-processing. Unlike KV cache, activation traffic does **not** scale with the sequence length $S$.
+Section 1 showed that the per-layer activation footprint for a single decoding token is small. However, without optimization, the traffic to read/write these activations—especially the $S \times S$ attention scores—would be massive ($O(S^2)$).
 
-Empirical kernel traces from FlashAttention-2/3 (Dao et al. 2022–2024), xFormers (Meta 2023),
-TensorRT-LLM, and FasterTransformer consistently show:
+### The Role of FlashAttention
+**FlashAttention** avoids this $O(S^2)$ traffic by tiling the attention computation in SRAM. It ensures that the large attention score matrix is never written to or read from global memory.
 
-- ~5–12 reads/writes of an $H$-vector per layer per decoding step.
+Because FlashAttention eliminates the dominant score traffic, the only activation traffic remaining is the **linear** $O(H)$ traffic for input/output of the hidden states and FFN buffers.
 
-Therefore we approximate:
+### Empirical Activation Constant ($c_{\text{act}}$)
+We model this "residual" traffic as a small multiple of the hidden size:
 
 $$
-T_{\text{act,layer}} \approx c_{\text{act}} \, H \, b,
-\qquad
+T_{\text{act,layer}} \approx c_{\text{act}} \, H \, b
+$$
+
+Empirical kernel traces from FlashAttention-2/3, xFormers, and TensorRT-LLM consistently show:
+
+$$
 c_{\text{act}} \approx 8\text{–}12.
 $$
 
-### Relationship between $c_{\text{act}}$ and $\gamma_{FA}$
-
-It is important to distinguish:
-
-- **$\gamma_{FA}$** — reduces **attention parameter traffic** by tiling and fusing Q/K/V/O
-  computations to minimize DRAM reads of weights and attention intermediates.
-
-- **$c_{\text{act}}$** — captures the **residual activation I/O that remains even after** the
-  FlashAttention optimization (e.g., reading/writing the hidden state, attention accumulators,
-  FFN input/output buffers).
-
-FlashAttention eliminates most of the attention *score-path* memory movement, but as noted in the
-FlashAttention papers and in Meta and NVIDIA kernel traces, it **cannot eliminate hidden-vector
-I/O**. These unavoidable loads/stores are precisely what $c_{\text{act}}$ models. Thus:
-
-- **$c_{\text{act}}$ is already a “post-FlashAttention” empirical constant**,  
-- and we **do not** apply $\gamma_{FA}$ again to $T_{\text{act,device}}$.
+This constant accounts for unavoidable loads/stores of the hidden state, attention output, and FFN residuals that remain even after fusion.
 
 ### Final activation-traffic expression
 
@@ -923,24 +852,16 @@ T_{\text{act,device}}
 \frac{L}{PP} \, c_{\text{act}} \, H \, b
 $$
 
-As with activation *memory* in Section 4, this traffic is **not sharded** by TP, EP, or SP because:
-
-- the hidden state $h \in \mathbb{R}^{H}$ must be replicated across TP ranks, and  
-- fused kernels require the full activation vector before any weight sharding applies.
-
-Activation traffic is typically smaller than KV and parameter traffic but is included for completeness.
+As with activation *memory*, this traffic is **not sharded** by TP or EP because fused kernels typically operate on the full hidden state (or rank-local equivalents) before sharding logic applies.
 
 ---
 
 ## 2.3 KV Cache Traffic $T_{\text{KV,device}}$
 
-KV cache must be **fully read** for each new token:
+KV cache must be **fully read** for each new token to compute attention against the history.
+For large $S$, the write term (appending the new token) is negligible compared to reading the history.
 
-- Keys: $S \cdot H_{kv}$  
-- Values: $S \cdot H_{kv}$  
-- Write new K/V: $2 H_{kv}$  
-
-For large $S$, the write term is negligible, so the per-layer KV access is approximately:
+The per-layer KV access is approximately:
 
 $$
 T_{\text{KV,layer}}
@@ -948,18 +869,9 @@ T_{\text{KV,layer}}
 2 S H_{kv} \, b
 $$
 
-Consistent with Section 1, KV is sharded by **TP** (channel/head dimension) and **SP**
-(sequence dimension), but *not* by EP, DP, or PP. Thus each device only sees a
-$\frac{1}{TP \cdot SP}$ shard of this per-layer traffic:
+Consistent with Section 1, KV is sharded by **TP** (channel/head dimension) and **SP** (sequence dimension). Thus each device only sees a $\frac{1}{TP \cdot SP}$ shard of this per-layer traffic.
 
-$$
-T_{\text{KV,layer}}
-\approx
-\frac{2 S H_{kv} \, b}{TP \cdot SP}
-$$
-
-A PP stage holds $L/PP$ attention layers, so the **per-device KV traffic per token** on this
-PP stage is:
+For a PP stage with $L/PP$ layers, the **per-device KV traffic per token** is:
 
 $$
 T_{\text{KV,device}}
@@ -969,17 +881,13 @@ T_{\text{KV,device}}
 \frac{2 S H_{kv} \, b}{TP \cdot SP}
 $$
 
-Note that some attention kernel implementations (e.g., FA-2 streaming kernels) may read portions of $K$ or $V$ twice due to numerical scaling or alignment. This introduces a small multiplicative overhead (typically 1.1–1.3×).  
-For analytical modeling, we treat KV reads as exactly $2S H_{kv} b$ per layer, which matches the dominant asymptotic behavior.
-
-FlashAttention **does not** reduce KV traffic: keys and values must always be read in rull (and new
-entries written) for every decoded token, regardless of kernel fusion or tiling strategy. 
+FlashAttention does **not** reduce this term: keys and values from history must always be loaded to compute the current token's attention, regardless of tiling strategy.
 
 ---
 
 ## 2.4 Total and Effective Traffic
 
-Combining the expressions derived in Sections 2.1–2.3, the **effective** total per-token traffic is simply:
+Combining the expressions derived in Sections 2.1–2.3, the **effective** total per-token traffic is:
 
 $$
 T_{\text{token,device}}^{eff}
@@ -991,7 +899,7 @@ T_{\text{act,device}}
 T_{\text{KV,device}}.
 $$
 
-Substituting everything yields the **final fully expanded expression**:
+Substituting the corrected components yields the **final fully expanded expression**:
 
 $$
 \boxed{
@@ -1000,15 +908,23 @@ T_{\text{token,device}}^{eff}
 \;\approx\;
 &
 \frac{L}{PP}
+\left[
+\underbrace{
 \left(
-\frac{H^2 + 3 H H_{kv}}{TP \cdot \gamma_{FA}}
+\frac{H^2 + 3 H H_{kv}}{TP}
 \;+\;
-\frac{3 H I N_{\text{exp}}}{TP \cdot EP \cdot \gamma_{FMLP}}
-+
-c_{\text{act}} \, H 
-+
-\frac{2 S H_{kv}}{TP \cdot SP}
+\frac{3 H I N_{\text{exp}}}{TP \cdot EP}
 \right) b
+}_{\text{Weights (Must load 100\%)}}
+\;+\;
+\underbrace{
+c_{\text{act}} \, H \, b
+}_{\text{Activations}}
+\;+\;
+\underbrace{
+\frac{2 S H_{kv}}{TP \cdot SP} b
+}_{\text{KV Cache}}
+\right]
 \end{aligned}
 }
 $$
@@ -1019,86 +935,22 @@ $$
 
 Sections 1 and 2 play different roles in the overall performance model:
 
-### **Static Memory Footprint (Section 1)**  
-Determines whether a $(DP, PP, EP, TP, SP)$ configuration can *fit* on a device:
+### **Static Memory Footprint (Section 1)** Determines whether a $(DP, PP, EP, TP, SP)$ configuration can *fit* on a device (Capacity Constraint):
 
 $$
-M_{\text{device}}^{\text{total}}
-=
-M_{\theta,\text{device}}
-+
-M_{\text{act,device}}
-+
-M_{\text{KV,device}}
-\le M_{\text{HBM}}.
+M_{\text{device}}^{\text{total}} \le M_{\text{HBM}}
 $$
 
-Using the fully expanded expression from Section 1:
-
-$$
-M_{\text{device}}^{\text{total}} = 
-\frac{L}{PP}\!
-\left(
-\frac{H^2 + 3 H H_{kv}}{TP}
-+
-\frac{3 H I N_{\text{exp}}}{TP\cdot EP}
-+
-(4H + 2H_{kv})
-+
-\frac{2 S H_{kv}}{TP\cdot SP}
-\right) b
-+
-\frac{V H}{TP} b .
-$$
-
-This is a **capacity constraint**:  
-> *“Does the entire model and KV-cache fit in HBM?”*
-
----
-
-### **Memory Traffic (Section 2)**  
-Determines the *bandwidth-limited latency* per decoded token:
-
-$$
-T_{\text{token,device}}^{eff}
-\approx
-\frac{L}{PP}
-\left(
-\frac{H^2 + 3 H H_{kv}}{TP\gamma_{FA}}
-+
-\frac{3 H I N_{\text{exp}}}{TP\cdot EP \cdot \gamma_{FMLP}}
-+
-c_{\text{act}} H
-+
-\frac{2 S H_{kv}}{TP\cdot SP}
-\right) b.
-$$
-
-This traffic produces a memory-bound latency:
+### **Memory Traffic (Section 2)** Determines the *bandwidth-limited latency* per decoded token (Bandwidth Constraint):
 
 $$
 t_{\text{mem}}
 =
 \frac{T_{\text{token,device}}^{eff}}
-     {B_{\text{eff,mem}}}.
+     {B_{\text{eff,mem}}}
 $$
 
-This is a **bandwidth constraint**:  
-> *“Given this sharding, how slow is HBM?”*
-
----
-
-### **Why this distinction matters**
-
-- Section 1 tells us **which parallelism configurations are even viable** under HBM limits.  
-- Section 2 tells us **how fast decoding can proceed** for those viable configurations.  
-- Section 6 will combine:
-  - static footprint (HBM capacity),
-  - memory-bound latency $t_{\text{mem}}$,
-  - compute-bound latency $t_{\text{compute}}$,
-  - and communication latency $t_{\text{comm}}$.
-
-Together they determine the **per-token throughput**, **pipeline bottleneck**, and **TTFT**.
+This distinction is critical: Section 1 tells us **which parallelism configurations are viable**, while Section 2 tells us **how fast decoding can proceed** for those viable configurations.
 
 ---
 
@@ -1601,22 +1453,19 @@ $$
 t_{\text{local}} = \max(t_{\text{compute}}, t_{\text{mem}})
 $$
 
-We now incorporate the **inter-device communication time** that arises during decoding under
-distributed parallelism. In the nested parallelism structure used throughout this document:
+We now incorporate the **inter-device communication time** that arises during decoding under distributed parallelism. In the nested parallelism structure used throughout this document:
 
 $$
 \textbf{PP} \;\rightarrow\; \textbf{EP} \;\rightarrow\; \textbf{TP} \;\rightarrow\; \textbf{SP}
 $$
 
-each axis contributes its own per-token communication term. All communication costs follow the
-standard $\alpha$–$B$ model:
+each axis contributes its own per-token communication term. All communication costs follow the standard $\alpha$–$B$ model:
 
 $$
 t_{\text{comm}} = \alpha + \frac{\text{message size}}{B_{\text{eff}}}
 $$
 
-where $\alpha$ is the collective or hop latency, and $B_{\text{eff}}$ is the sustained bandwidth of the
-communication path.
+where $\alpha$ is the collective or hop latency, and $B_{\text{eff}}$ is the sustained bandwidth of the communication path.
 
 The parameters $\alpha$ and $B_{\text{eff}}$ in this model are not abstract: they are
 **topology-dependent physical properties** of the underlying interconnect. Different
@@ -1634,16 +1483,23 @@ actual deployment mapping.
 
 ### Message sizes and their shard structure
 
-To remain consistent with the compute and memory models in previous sections:
+To remain consistent with the compute and memory models, we strictly define the payload size for each collective type. Note the distinction between *storage size* (sharded) and *communication payload* (often full-width):
 
-- **PP** communication uses **activation shards** of width $\approx H/TP$  
-  (rank-aligned, TP-preserving pipeline mapping)
-- **EP** communication uses **full activations** for each expert, with a message size of $k \cdot H$  
-  (MoE routing and expert FFNs require full-hidden-state inputs)
-- **TP** communication uses **activation shards** of width $\approx H/TP$
-- **SP** communication uses **KV-cache shards** of size $\frac{S}{SP} \cdot \frac{2H_{kv}}{TP}$
+- **PP (Pipeline Parallel):**
+  Uses **activation shards** of width $\approx H/TP$.
+  *Rationale:* High-performance PP (e.g., Megatron-LM) preserves TP rank alignment, so only the local TP shard needs to be forwarded to the next stage.
 
-These message sizes match the per-device shard dimensions used in Section 2.
+- **EP (Expert Parallel):**
+  Uses **full activations** of width $k \cdot H$.
+  *Rationale:* MoE routing sends token activations to experts. While the traffic is bidirectional (Dispatch + Combine), we model this by applying a factor of 2 to the *collective steps* in Section 5.2 rather than doubling the base message size here.
+
+- **TP (Tensor Parallel):**
+  Uses **full hidden state vectors** of width $H$.
+  *Rationale:* Row-Parallel matrix multiplication produces a vector of **partial sums** that has the full width $H$. These must be All-Reduced across ranks, requiring the transfer of the full vector, not a shard.
+
+- **SP (Sequence Parallel):**
+  Uses **KV-cache blocks** of size $\frac{S}{SP} \cdot \frac{2H_{kv}}{TP}$.
+  *Rationale:* Ring Attention streams the distributed KV blocks around the ring. Each rank receives and passes chunks of this size in a continuous stream.
 
 ---
 
@@ -1681,70 +1537,54 @@ and inference systems.
 
 ## 5.2 Expert Parallel (EP) All-to-All (MoE Dispatch and Combine)
 
-MoE layers require exchanging token activations across the expert-parallel (EP) dimension. In
-contrast to TP collectives—which must perform a two-phase reduce-then-broadcast—EP communication
-follows a **single-pass dispatch-and-combine pattern**:
+MoE layers require exchanging token activations across the expert-parallel (EP) dimension. In contrast to TP collectives (which perform a reduce-then-broadcast) or PP hops (which are unidirectional), EP communication follows a **bidirectional dispatch-and-combine pattern**:
 
-1. Token activations are **dispatched** to the appropriate experts (top-k routing).  
-2. Expert outputs are **returned** to the originating ranks within the same all-to-all schedule.  
-3. Expert FFN computation occurs locally; no second communication phase is needed.
+1.  **Dispatch:** Token activations are routed from the source rank to the rank holding the selected expert (top-$k$ routing).
+2.  **Combine:** The expert's output must be sent **back** to the source rank to be added to the residual stream.
 
-Because dispatch and combine are fused into a single all-to-all exchange, EP communication behaves
-as a **one-directional exchange**, not a two-pass reduction. This leads to noticeably different
-latency characteristics compared to TP and SP collectives.
+Because the token must traverse the link twice (once to the expert, once back), the network traffic is double that of a simplex transfer.
 
-Within a single DP replica, the nested structure is PP → EP → TP → SP:
-
-- EP groups **enclose** TP groups.  
-- MoE routing consumes the **full hidden-state vector** $h \in \mathbb{R}^H$.  
-- Expert FFNs also require full-$H$ inputs before internal TP sharding.
-
-Thus, EP communication always operates on **full-H activations**.
-
-Let $k$ denote the number of active experts per token (top-$k$ routing).  
-Each device transmits approximately $k H b$ bytes per token during routing.
+Let $k$ denote the number of active experts per token.
+Each device transmits approximately $k H b$ bytes per token during Dispatch and receives $k H b$ bytes during Combine.
 
 ---
 
 ### 5.2.1 Ring-Style EP All-to-All
 
-A ring all-to-all across $EP$ devices performs $(EP - 1)$ exchange rounds.  
-A **per-token, per-layer** latency model is:
+A ring all-to-all across $EP$ devices performs $(EP - 1)$ exchange rounds.
+Including the factor of 2 for the round-trip nature of MoE routing, the **per-token, per-layer** latency model is:
 
 $$
 t_{EP}^{\text{ring}}
 =
-(EP - 1)\alpha_{EP}
+2(EP - 1)\alpha_{EP}
 +
-(EP - 1)
+2(EP - 1)
 \frac{k H \, b}{EP \cdot B_{\text{eff,EP}}}
 $$
 
 Interpretation:
-
+- The factor of **2** accounts for the full round trip (Dispatch + Combine).
 - Communication depth grows linearly with $(EP - 1)$.
-- Each device sends the equivalent of $k H b$ bytes per token, amortized across the rounds.
-- This provides a conservative (higher-latency) bound.
+- Each device sends the equivalent of $2 k H b$ bytes total per token.
 
 ---
 
 ### 5.2.2 Log-Style (Tree/Recursive) EP All-to-All
 
-Optimized implementations can reduce collective depth via recursive-doubling or tree-style
-schedules, and the **per-token, per-layer** latency can be modeled as:
+Optimized implementations can reduce collective depth via recursive-doubling or tree-style schedules. The **per-token, per-layer** latency can be modeled as:
 
 $$
 t_{EP}^{\text{tree}}
 \approx
-\lceil \log_2(EP)\rceil \alpha_{EP}
+2\lceil \log_2(EP)\rceil \alpha_{EP}
 +
-\frac{k H \, b}{B_{\text{eff,EP}}}
+2\frac{k H \, b}{B_{\text{eff,EP}}}
 $$
 
 Here:
-
-- The exchange requires only $\lceil\log_2(EP)\rceil$ rounds.
-- The per-device payload remains $k H b$; only scheduling depth changes.
+- The exchange requires only $\lceil\log_2(EP)\rceil$ rounds per direction.
+- The per-device payload remains $2 k H b$ (Dispatch + Combine).
 
 For dense models ($EP = 1$), we have $t_{EP} = 0$.
 
@@ -1752,16 +1592,16 @@ For dense models ($EP = 1$), we have $t_{EP} = 0$.
 
 ## 5.3 Tensor Parallel (TP) Communication
 
-TP groups compute each layer in parallel across $TP$ devices. Each device holds a shard of width
-$\approx H/TP$ and must participate in synchronization collectives per layer. These collectives must
-both **combine** partial results and **redistribute** the combined outputs, which is why TP
-collectives typically have a factor of 2 (reduce + broadcast).
+TP groups compute each layer in parallel across $TP$ devices. The most common operation is the **All-Reduce** required at the end of the MLP (Row Parallel) and Attention (Output) blocks to sum the partial results across ranks.
+
+**Critical Note on Message Size:**
+Unlike PP (which sends a shard), the TP All-Reduce operates on the **full hidden state vector** ($H$). Although each device only "owns" a shard of the weights, the partial output computed by Row Parallelism is a vector of size $H$ (containing partial sums). These must be reduced globally.
 
 ---
 
-### 5.3.1 TP Ring All-Reduce / All-Gather
+### 5.3.1 TP Ring All-Reduce
 
-For a ring all-reduce, the **per-token, per-layer** latency can be modeled as:
+For a ring all-reduce, the **per-token, per-layer** latency is:
 
 $$
 t_{TP}^{\text{ring}}
@@ -1770,132 +1610,87 @@ t_{TP}^{\text{ring}}
 +
 2\frac{TP - 1}{TP}
 \cdot
-\frac{(H/TP)\, b}{B_{\text{eff,TP}}}
+\frac{H \, b}{B_{\text{eff,TP}}}
 $$
 
-Interpretation of the factor of 2:
-
-- A full all-reduce consists of **two phases**:  
-  **reduce-scatter** (devices exchange and accumulate partial results) and  
-  **all-gather** (devices exchange and reconstruct the full output).
-- Each phase sends a fraction $\frac{TP - 1}{TP}$ of the local shard.
-- This two-phase structure is inherent to all-reduce semantics and cannot be avoided when combining
-  TP-sharded partial results.
-
-Thus, TP ring all-reduce inherently introduces a **two-pass communication pattern**, unlike EP
-all-to-all (single pass) or PP hops (single peer exchange).
+Interpretation:
+- The factor of **2** comes from the two phases of All-Reduce: **Reduce-Scatter** + **All-Gather**.
+- The payload is the **full** hidden size $H$, not the shard size $H/TP$.
+- Each device sends and receives approximately $2H$ bytes per collective (for large $TP$).
 
 ---
 
-### 5.3.2 TP Tree All-Reduce / All-Gather
+### 5.3.2 TP Tree All-Reduce
 
-For a tree algorithm, the **per-token, per-layer** latency can be modeled as:
+For a tree algorithm:
 
 $$
 t_{TP}^{\text{tree}}
 \approx
 2\lceil \log_2(TP)\rceil \alpha_{TP}
 +
-2\frac{(H/TP)\, b}{B_{\text{eff,TP}}}
+2\frac{H \, b}{B_{\text{eff,TP}}}
 $$
 
-Interpretation:
-
-- The **tree reduction** accumulates partial results across a tree of depth
-  $\lceil \log_2(TP)\rceil$.
-- The **tree broadcast** redistributes the final output.
-- Both stages transfer the same $(H/TP)\,b$ shard, hence the factor of 2.
-
-Tree-based all-reduce reduces latency relative to ring, especially when:
-
-- $TP$ is large,
-- the interconnect latency $\alpha_{TP}$ dominates,
-- or the shard size $(H/TP)$ is relatively small.
+Tree algorithms reduce the latency term (logarithmic steps) but often utilize the same bandwidth (sending the full vector $H$ up and down the tree).
 
 ---
 
 ## 5.4 Sequence Parallel (SP) Communication
 
-Sequence Parallelism (SP) partitions the KV cache along the sequence dimension. For each
-Transformer layer, the layer’s KV cache has shape $S \times \frac{2H_{kv}}{TP}$, and SP assigns each rank a
-contiguous shard of this cache of size $(S/SP)\cdot \frac{2H_{kv}}{TP}$. Because every layer maintains its own
-$K$ and $V$ representations, each layer independently uses its own sharded KV matrix during decoding.
+Sequence Parallelism (SP) in inference typically refers to **Ring Attention**. Here, the KV cache is partitioned along the sequence dimension $S$. To compute attention for a new token:
+1.  The Query ($Q$) remains local on the device.
+2.  The KV blocks are **rotated** around the ring so that the local $Q$ can attend to the full history.
 
-When a new token arrives, its self-attention in a given layer must incorporate contributions from
-all $S$ past positions. Under SP, each rank holds only a portion of these positions, so each layer
-performs a "scatter–gather" style exchange over its KV shard: each rank first computes partial
-attention results using the tokens in its $(S/SP)$ slice and then exchanges these partial results
-with all other SP ranks to assemble the full attention output for that layer. This two-pass
-"scatter–gather" structure (distributing partial contributions and then collecting the aggregated
-results) leads to a per-layer communication cost with effective message size proportional to
-$(S/SP)\cdot \frac{2H_{kv}}{TP}$ and is why SP communication inherently has the **same factor of 2**
-seen in reduce–broadcast collectives. Unlike EP (which is a single-pass dispatch-and-combine), SP
-attention depends on *both* sending out partial results and receiving all other ranks’ partial
-results.
+This is effectively an **All-Gather** operation (streaming the distributed KV cache to every rank), not an All-Reduce.
 
-While tree-based variants are theoretically possible, practical implementations (e.g., Megatron-LM
-SP, DeepSpeed-Ulysses, and fused attention kernels) consistently use ring-style schedules: KV shards
-are large, non-contiguous in memory, and must be processed in left-to-right sequence order, making
-tree-style SP impractical.
+While tree-based variants are theoretically possible, practical implementations (e.g., Megatron-LM SP, DeepSpeed-Ulysses, and fused attention kernels) consistently use ring-style schedules: KV shards are large, non-contiguous in memory, and must be processed in left-to-right sequence order, making tree-style SP impractical.
 
 Thus, for modeling purposes, we assume **ring-style SP communication**.
 
----
-
 ### SP Ring Communication Latency
 
-A ring with $SP$ ranks performs $(SP - 1)$ exchange rounds, and the scatter–gather structure requires
-two full passes, giving the factor of 2. The **per-token, per-layer** latency can therefore be expressed as:
+A ring with $SP$ ranks performs $(SP - 1)$ uni-directional shifts. Unlike the two-pass scatter-gather structure of TP All-Reduce, Ring Attention is a **single-pass** streaming operation.
+
+The **per-token, per-layer** latency can be expressed as:
 
 $$
 t_{SP}
 =
-2(SP - 1)\alpha_{SP}
+(SP - 1)\alpha_{SP}
 +
-2\frac{SP - 1}{SP}
+(SP - 1)
 \cdot
 \frac{\left(\frac{S}{SP}\cdot \frac{2H_{kv}}{TP}\right) b}{B_{\text{eff,SP}}}
 $$
 
 Interpretation:
-
-- The first pass distributes (scatters) partial attention contributions.  
-- The second pass collects (gathers) the contributions needed to form final attention outputs.  
-- Both passes operate on KV shards of size $\frac{S}{SP} \cdot \frac{2H_{kv}}{TP}$.
-
-This two-pass requirement distinguishes SP from the **single-pass** EP all-to-all and from the
-simple one-hop PP communication. SP behaves more like TP all-reduce in its communication structure,
-but the underlying data patterns (KV shards and attention sequencing) make ring-style scheduling the
-dominant practical choice.
+- **1 Pass:** We do not scatter partial results; we simply stream the KV shards.
+- **Message Size:** In each step, we pass the local KV shard. The total volume transferred per device is the size of the *entire* rest of the KV cache: $\frac{SP-1}{SP} \times \text{TotalKV}$.
 
 ---
 
 ## 5.5 Total Communication Time Per Token on a PP Stage
 
-Sections 5.1–5.4 provide **per-token, per-layer** communication costs for each parallelism axis
-(TP, EP, SP), and a **per-token, per-hop** cost for PP.  
-We now clarify how these terms combine to form the total per-token communication time on a given
-pipeline-parallel (PP) stage.
+Sections 5.1–5.4 provide **per-token, per-layer** communication costs for each parallelism axis (TP, EP, SP), and a **per-token, per-hop** cost for PP.  
+We now clarify how these terms combine to form the total per-token communication time on a given pipeline-parallel (PP) stage.
 
 ### Per-layer vs. per-stage normalization
 
-A Transformer layer contains exactly one Attention block and one MLP/MoE block. Each block triggers
-a fixed number of communication collectives, and within each layer, TP, EP, and SP collectives are stricly ordered:
+A Transformer layer contains exactly one Attention block and one MLP/MoE block. Each block triggers a fixed number of communication collectives, and within each layer, TP, EP, and SP collectives are strictly ordered:
 
 - **Attention**
-  - 1 TP collective
+  - 1 TP collective (Output Projection)
   - 1 SP collective (if SP is enabled)
 
 - **MLP (dense)**
-  - 1 TP collective
+  - 1 TP collective (Output Projection)
 
 - **MoE block**
   - 1 EP all-to-all
-  - 1 TP collective (for expert-FFN output projection)
+  - 1 TP collective (Expert Output Projection)
 
-
-These collectives must complete before the token can advance to the next layer. Since a PP stage
-contains $L/PP$ *sequential* layers, the total communication work for that stage is:
+These collectives must complete before the token can advance to the next layer. Since a PP stage contains $L/PP$ *sequential* layers, the total communication work for that stage is:
 
 - $n_{TP}$ TP collectives per layer  
 - $n_{EP}$ EP collectives per layer (0 for dense layers, 1 for MoE layers)  
@@ -1917,21 +1712,13 @@ t_{SP}
 $$
 
 Where:
-
-- $t_{EP}$, $t_{TP}$, $t_{SP}$  
-  are the **per-token, per-layer** communication costs given in Sections 5.2–5.4.
-
-- $n_{TP}$, $n_{EP}$  
-  are the counts of TP and EP collectives executed inside each layer on this PP stage. Typical
-  values are:
-  - Dense layers: $n_{TP}=2$, $n_{EP}=0$  
-  - MoE layers: $n_{TP}=2$, $n_{EP}=1$
+- $t_{EP}$, $t_{TP}$, $t_{SP}$ are the **per-token, per-layer** communication costs given in Sections 5.2–5.4.
+- $n_{TP}$ is typically **2** (one for Attention, one for FFN).
+- $n_{EP}$ is **1** for MoE layers and **0** for dense layers.
 
 ### Adding PP hop cost
 
-The PP hop is different: it is a **per-token, per-hop** cost rather than a per-layer cost. A token
-is forwarded once from PP stage $s$ to stage $s{+}1$, with latency $t_{PP}$ as defined in Section
-5.1.
+The PP hop is different: it is a **per-token, per-hop** cost rather than a per-layer cost. A token is forwarded once from PP stage $s$ to stage $s{+}1$, with latency $t_{PP}$ as defined in Section 5.1.
 
 Thus, the total per-token communication time for this stage is:
 
@@ -1954,12 +1741,9 @@ $$
 
 ### Interpretation
 
-- The first term accumulates **all TP, EP, and SP collectives** required by the $L/PP$ layers on
-  this PP stage.  
+- The first term accumulates **all TP, EP, and SP collectives** required by the $L/PP$ layers on this PP stage.  
 - The second term accounts for the **one PP hop** that forwards the token to the next stage.  
-- This combined expression represents the **total communication work** per token for the stage.  
-  Whether this communication becomes the latency bottleneck or is hidden by overlap is addressed in
-  Section 4’s roofline-style model and Section 6’s end-to-end pipeline analysis.
+- This combined expression represents the **total communication work** per token for the stage. Whether this communication becomes the latency bottleneck or is hidden by overlap is addressed in Section 4’s roofline-style model and Section 6’s end-to-end pipeline analysis.
 
 
 ### Summary of Collective Types and Message Sizes
@@ -1967,13 +1751,9 @@ $$
 | Parallelism | Occurs in | Collective Type | Passes | Message Size (per device) |
 |-------------|-----------|------------------|---------|----------------------------|
 | **PP** | between layers | point-to-point | 1 | $(H/TP)\,b$ |
-| **TP** | attn + FFN | all-reduce (ring/tree) | 2 | $(H/TP)\,b$ |
-| **EP** | MoE FFN | all-to-all | 1 | $kH\,b$ |
-| **SP** | attention | scatter–gather | 2 | $(S/SP)\cdot (2H_{kv}/TP)\, b$ |
-
-This table highlights that EP is full-$H$ and one-pass,  
-TP and SP are shard-sized and two-pass,  
-and PP forwards only TP-aligned shards.
+| **TP** | attn + FFN | all-reduce (ring/tree) | 2 | $H\,b$ |
+| **EP** | MoE FFN | all-to-all | 2 | $kH\,b$ |
+| **SP** | attention | all–gather (ring) | 1 | $(S/SP)\cdot (2H_{kv}/TP)\, b$ |
 
 ### Practical Guidance: When to Use Ring vs. Tree Collectives
 
@@ -2041,7 +1821,7 @@ Using the per-device memory expressions derived in Section&nbsp;1, the **fully e
 
 $$
 \frac{L}{PP}\;
-\left(
+\left[
 \frac{H^2 + 3 H H_{kv}}{TP}
 \;+\;
 \frac{3 H I N_{\text{exp}}}{TP \cdot EP}
@@ -2049,7 +1829,7 @@ $$
 (4H + 2H_{kv})
 +
 \frac{2 S H_{kv}}{TP \cdot SP}
-\right) b
+\right] b
 +
 \frac{V H}{TP} b
 \le\;
