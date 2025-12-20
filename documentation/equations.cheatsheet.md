@@ -7,7 +7,7 @@
 - $I$ (FFN dim), $I_{\text{eff}} = I_{\text{dense}}$ or $k I_{\text{moe}}$  
 - $N_{\text{eff}} = 0$ (dense) or $N_{\text{exp}}$ (MoE)
 
-**Parallelism:** $DP \rightarrow PP \rightarrow EP \rightarrow TP \rightarrow SP$
+**Parallelism:** $DP = \lfloor N_{\text{GPUs}} / (PP \cdot EP \cdot TP \cdot SP) \rfloor$
 
 **Sequence / precision:** $S$ (context), $b$ (bytes/elt), $c_{\text{act}}\approx 8$–$12$
 
@@ -62,6 +62,8 @@ M_{\theta,\text{device}}
 + M_{\text{act,device}}
 + M_{\text{KV,device}}
 $$
+
+**Constraint:** $M_{\text{device}}^{\text{total}} \le M_{\text{HBM}}$
 
 ---
 

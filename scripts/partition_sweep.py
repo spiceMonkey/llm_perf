@@ -67,16 +67,20 @@ def sweep_partitions(
     system_path: Path,
     tuner_path: Path,
     cluster_size: int,
-    dp: int = 1,
 ) -> Tuple[List[SweepRecord], str]:
     model = load_model_spec(model_path)
     system = load_system_spec(system_path)
     tuner = load_tuning_spec(tuner_path)
 
+    # Override system size for the sweep if needed
     if cluster_size > system.num_devices:
         raise ValueError(
             f"Cluster size {cluster_size} exceeds system capacity {system.num_devices}"
         )
+    
+    # Temporarily adjust system size to match the sweep target
+    # This ensures DP calculation in compute_latency uses the sweep cluster size
+    system.num_devices = cluster_size
 
     max_ep = model.moe.n_experts if model.moe is not None else 1
 
@@ -87,10 +91,16 @@ def sweep_partitions(
         if model.moe is None and EP != 1:
             continue
 
-        partition = PartitionSpec(DP=dp, PP=PP, TP=TP, EP=EP, SP=SP)
+        partition = PartitionSpec(PP=PP, TP=TP, EP=EP, SP=SP)
         calc = InferenceCalculator(model, system, partition, tuner)
         result = calc.run()
-        total_devices = dp * PP * TP * EP * SP
+        
+        # DP is inferred inside calc.run() -> compute_latency()
+        # But we can also derive it here for logging
+        replica_size = PP * TP * EP * SP
+        dp = cluster_size // replica_size
+        total_devices = dp * replica_size
+        
         memory_param_gb = result.memory.M_theta_device / GB_TO_BYTES
         memory_act_gb = result.memory.M_act_device / GB_TO_BYTES
         memory_kv_gb = result.memory.M_kv_device / GB_TO_BYTES
@@ -276,12 +286,6 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="Optional custom path for the scatter plot (default auto-includes system name)",
     )
-    parser.add_argument(
-        "--dp",
-        default=1,
-        type=int,
-        help="Data parallel replicas (fixed for this sweep)",
-    )
     return parser.parse_args()
 
 
@@ -292,7 +296,6 @@ def main() -> None:
         args.system,
         args.tuner,
         args.cluster_size,
-        dp=args.dp,
     )
     if not records:
         raise SystemExit("No valid configurations satisfied the constraints.")

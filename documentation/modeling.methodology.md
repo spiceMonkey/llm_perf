@@ -92,8 +92,8 @@ Our symbol notation used in this documentation is aligned with:
 ### Parallelism Dimensions
 
 - $DP$ — Data Parallelism  
-  Full model replicated across devices. Each DP replica handles disjoint input batches. Mostly relevant for
-  throughput scaling across independent requests.
+  The number of full model replicas. Each DP replica handles disjoint input batches. $DP$ is limited by total cluster size and the memory footprint of the sharded model:
+  $$DP = \left\lfloor \frac{N_{\text{GPUs}}}{PP \cdot EP \cdot TP \cdot SP} \right\rfloor$$
 
 - $PP$ — Pipeline Parallelism  
   Layers split into pipeline stages. Let total layers be $L$ and pipeline degree be $PP$, then each stage holds $L_{\text{stage}} = \frac{L}{PP}$
@@ -169,15 +169,16 @@ We also define:
 
 ### Device Compute and Bandwidth
 
-- $R_{\text{GPU}}$ — Effective compute throughput of the device (FLOPs/s).  
-- $B_{\text{eff,mem}}$ — Effective HBM bandwidth (bytes/s).  
+- $N_{\text{GPUs}}$ — Total number of GPUs/devices available in the cluster
+- $R_{\text{GPU}}$ — Effective compute throughput of the device (FLOPs/s)  
+- $B_{\text{eff,mem}}$ — Effective HBM bandwidth (bytes/s)  
 
 ### Networking
 
 - $\alpha_{TP}, \alpha_{EP}, \alpha_{SP}, \alpha_{PP}$ — Startup latency constants for TP, EP, SP, and PP
-  collectives, respectively (modeled in an $\alpha$–$B$ style latency + bandwidth formulation).
+  collectives, respectively (modeled in an $\alpha$–$B$ style latency + bandwidth formulation)
 - $B_{\text{eff,TP}}$, $B_{\text{eff,EP}}$, $B_{\text{eff,SP}}$, $B_{\text{eff,PP}}$ — Effective interconnect
-  bandwidths for TP, EP, SP, and PP communication.  
+  bandwidths for TP, EP, SP, and PP communication  
 - $n_{TP}$ — Number of TP collective iterations per-layer per-token 
 - $n_{EP}$ — Number of EP collective iterations per-layer per-token 
 - $n_{SP}$ — Number of SP collective iterations per-layer per-token (typically 1, during Attention)
@@ -186,20 +187,20 @@ We also define:
 
 FLOPs (floating point operations) per token and per layer:
 
-- $F_Q, F_K, F_V, F_O$ — FLOPs for the Q, K, V, and output projections.  
-- $F_{\text{proj}}$ — Combined Q/K/V/O projection FLOPs.  
-- $F_{\text{score}}$ — FLOPs to compute attention scores ($Q K^\top$).  
-- $F_{\text{value}}$ — FLOPs to apply attention weights to values.  
-- $F_{\text{attn,KV}}$ — FLOPs for the attention score + value application terms.  
-- $F_{\text{attn}}$ — Total attention FLOPs per layer (projections + attention score/value application).  
+- $F_Q, F_K, F_V, F_O$ — FLOPs for the Q, K, V, and output projections  
+- $F_{\text{proj}}$ — Combined Q/K/V/O projection FLOPs  
+- $F_{\text{score}}$ — FLOPs to compute attention scores ($Q K^\top$)  
+- $F_{\text{value}}$ — FLOPs to apply attention weights to values  
+- $F_{\text{attn,KV}}$ — FLOPs for the attention score + value application terms  
+- $F_{\text{attn}}$ — Total attention FLOPs per layer (projections + attention score/value application)  
 
 FFN and MoE FLOPs:
 
-- $F_{\text{ffn,dense}}$ — Dense FFN FLOPs per layer.  
-- $F_{\text{router}}$ — Router FLOPs per token for MoE.  
-- $F_{\text{expert}}$ — FLOPs per expert MLP (for one expert and one token).  
-- $F_{\text{ffn,moe}}$ — MoE FFN FLOPs per layer.  
-- $F_{\text{ffn}}$ — Unified FFN FLOPs (dense or MoE), used throughout Section 5.  
+- $F_{\text{ffn,dense}}$ — Dense FFN FLOPs per layer  
+- $F_{\text{router}}$ — Router FLOPs per token for MoE  
+- $F_{\text{expert}}$ — FLOPs per expert MLP (for one expert and one token)  
+- $F_{\text{ffn,moe}}$ — MoE FFN FLOPs per layer  
+- $F_{\text{ffn}}$ — Unified FFN FLOPs (dense or MoE), used throughout Section 5  
 
 Layer and token FLOPs:
 
@@ -1819,7 +1820,7 @@ M_{\text{KV,device}}
 M_{\text{HBM}}
 $$
 
-Using the per-device memory expressions derived in Section&nbsp;1, the **fully expanded** form is:
+Using the per-device memory expressions derived in Section 1, the **fully expanded** form is:
 
 $$
 \frac{L}{PP}\;
@@ -1839,12 +1840,29 @@ M_{\text{HBM}}
 $$
 
 where:
-
-- the bracketed term is the **intermediate PP-stage** footprint (parameters, activations, KV cache),
-- and the final $\frac{V H}{TP} b$ term models the **worst-case embedding / LM-head overhead** on boundary PP stages  
-  (for both tied and untied heads, one of $W_{\text{emb}}$ or $W_{\text{lm}}$ of size $V H$ resides on a given device, TP-sharded but not PP-sharded).
+- the bracketed term is the **intermediate PP-stage** footprint (parameters, activations, KV cache).
+- and the final $\frac{V H}{TP} b$ term models the **worst-case embedding / LM-head overhead** on boundary PP stages.
 - for a **dense MLP model**: $I = I_{\text{dense}}$, and $N_{\text{exp}} = EP = 1$.
 - for a **MoE model**: $I = I_{\text{moe}}$, with $N_{\text{exp}} > 1$ and $EP \ge 1$.
+
+### Calculating DP for a Fixed Total HBM Capacity
+
+The total Data Parallelism degree ($DP$) is constrained by both the total cluster size ($N_{\text{GPUs}}$) and the memory headroom available on each device. 
+
+1. **Memory Headroom Requirement:** $DP$ scaling is only possible if $M_{\text{device}}^{\text{total}} \le M_{\text{HBM}}$ for the chosen inner sharding degrees ($PP, EP, TP, SP$).
+2. **Replication Logic:** Each model replica requires a dedicated group of $PP \cdot EP \cdot TP \cdot SP$ devices.
+
+Let $N_{\text{GPUs}}$ be the total number of devices in the cluster. The maximum achievable $DP$ count is:
+
+$$
+\boxed{
+DP = \left\lfloor \frac{N_{\text{GPUs}}}{PP \cdot EP \cdot TP \cdot SP} \right\rfloor
+}
+$$
+
+**Physical Interpretation:**
+* **Scaling Limit:** To increase $DP$ for higher throughput ($TTPS$), one must either add more total GPUs to the cluster or increase inner sharding (e.g., higher $PP$ or $SP$) to reduce $M_{\text{device}}^{\text{total}}$, though the latter consumes more devices per replica.
+* **Footprint vs. Replica Count:** There is a direct trade-off: higher sharding degrees "thin out" the memory footprint per device to fit large context $S$ or large models, but they simultaneously reduce the number of independent replicas that can fit in a fixed cluster.
 
 ---
 
