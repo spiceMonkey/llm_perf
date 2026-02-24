@@ -2,9 +2,11 @@
 
 ## 1. Key Symbols
 
-**Model dims:** - $L$ (layers), $H$ (hidden size), $n_q$ (query heads), $n_{kv}$ (KV heads),  
-- $d_{\text{head}} = H/n_q$, $H_{kv} = n_{kv} d_{\text{head}}$  
-- $I$ (FFN dim), $I_{\text{eff}} = I_{\text{dense}}$ or $k I_{\text{moe}}$  
+**Model dims:** - $L$ (layers), $H$ (hidden size), $n_q$ (query heads), $n_{kv}$ (KV heads),
+- $d_{\text{head}} = H/n_q$, $H_{kv} = n_{kv} d_{\text{head}}$
+- $L_{\text{moe}}$ (MoE layers), $L_{\text{dense}} = L - L_{\text{moe}}$ (dense layers)
+- $I_{\text{dense}}$ (dense FFN dim), $I_{\text{moe}}$ (MoE expert FFN dim)
+- $I_{\text{eff}} = I_{\text{dense}}$ (dense) or $k I_{\text{moe}}$ (MoE)
 - $N_{\text{eff}} = 0$ (dense) or $N_{\text{exp}}$ (MoE)
 
 **Parallelism:** $DP = \lfloor N_{\text{GPUs}} / (PP \cdot EP \cdot TP \cdot SP) \rfloor$
@@ -55,7 +57,7 @@ M_{\text{KV,device}} =
 \frac{2 S H_{kv} b}{TP \cdot SP}
 $$
 
-**Total** 
+**Total**
 $$
 M_{\text{device}}^{\text{total}} =
 M_{\theta,\text{device}}
@@ -64,6 +66,12 @@ M_{\theta,\text{device}}
 $$
 
 **Constraint:** $M_{\text{device}}^{\text{total}} \le M_{\text{HBM}}$
+
+**Mixed architectures:** For $L_{\text{moe}} < L$, split parameter memory:
+$$
+M_{\theta,\text{device}} = M_{\theta,\text{dense}} + M_{\theta,\text{moe}} + \frac{VH}{TP}b
+$$
+where dense layers use $I_{\text{dense}}$, $EP=1$, and MoE layers use $I_{\text{moe}}$, $N_{\text{exp}}$, $EP$.
 
 ---
 
@@ -92,7 +100,7 @@ T_{\text{KV}} =
 \frac{2 S H_{kv} b}{TP \cdot SP}
 $$
 
-**Total** 
+**Total**
 $$
 T_{\text{token,device}}^{eff}
 \approx
@@ -104,6 +112,8 @@ T_{\text{token,device}}^{eff}
 + \frac{2 S H_{kv}}{TP\cdot SP}
 \right)b
 $$
+
+**Mixed architectures:** For $L_{\text{moe}} < L$, split parameter traffic $T_\theta$ between dense and MoE layers.
 
 ---
 
@@ -118,7 +128,7 @@ $$F_{\text{attn,KV}} = 4 S H_{kv}$$
 **Unified FFN FLOPs** 
 $$F_{\text{ffn}} = 4H I_{\text{eff}} + 2H N_{\text{eff}}$$
 
-**Per-device FLOPs** 
+**Per-device FLOPs**
 $$
 F_{\text{token,device}} \approx
 \frac{L}{PP}
@@ -129,6 +139,12 @@ F_{\text{token,device}} \approx
 + 2H N_{\text{eff}}
 \right)
 $$
+
+**Mixed architectures:** For $L_{\text{moe}} < L$, split FLOPs:
+$$
+F_{\text{token,device}} = F_{\text{dense,device}} + F_{\text{moe,device}}
+$$
+Dense layers: no router FLOPs ($N_{\text{eff}}=0$), $EP=1$. MoE layers: include router FLOPs ($2HN_{\text{exp}}$).
 
 ---
 
@@ -202,13 +218,16 @@ $$
 ### Total PP-stage communication
 $$
 t_{\text{comm}} =
-\frac{L}{PP}(n_{TP}t_{TP} + n_{EP}t_{EP} + n_{SP}t_{SP})
+\frac{L}{PP}(n_{TP}t_{TP} + n_{SP}t_{SP})
++ \frac{L_{\text{moe}}}{PP}(n_{EP}t_{EP})
 + t_{PP}
 $$
 
+**Note:** EP collectives only apply to MoE layers ($L_{\text{moe}}$), while TP and SP apply to all layers.
+
 **Typical counts:**
-* **Dense:** $n_{TP}=2, n_{EP}=0, n_{SP}=1$
-* **MoE:** $n_{TP}=1, n_{EP}=1, n_{SP}=1$ (assuming EP-only experts)
+* **Dense layers:** $n_{TP}=2, n_{EP}=0, n_{SP}=1$
+* **MoE layers:** $n_{TP}=2, n_{EP}=1, n_{SP}=1$
 
 ---
 

@@ -113,20 +113,21 @@ Our symbol notation used in this documentation is aligned with:
 
 ### Model Dimensions
 
-- $L$ — Number of transformer layers.  
-- $V$ — Vocabulary size (number of tokens in the tokenizer).  
-- $H$ — Hidden size (model dimension). Hidden-state dimension $H$ applies to embeddings, LM head, FFN blocks, and attention projections. 
-- $n_q$ — Number of query heads.  
-- $d_{\text{head}}$ — Head dimension, typically $H / n_q$.  
-- $n_{kv}$ — Number of KV heads (in GQA, $n_{kv} < n_q$).  
+- $L$ — Number of transformer layers.
+- $L_{\text{moe}}$ — Number of MoE layers (for mixed architectures where some layers are MoE and some are dense). If not specified, defaults to $L$ when MoE is present, or $0$ for pure dense models.
+- $L_{\text{dense}} = L - L_{\text{moe}}$ — Number of dense layers.
+- $V$ — Vocabulary size (number of tokens in the tokenizer).
+- $H$ — Hidden size (model dimension). Hidden-state dimension $H$ applies to embeddings, LM head, FFN blocks, and attention projections.
+- $n_q$ — Number of query heads.
+- $d_{\text{head}}$ — Head dimension, typically $H / n_q$.
+- $n_{kv}$ — Number of KV heads (in GQA, $n_{kv} < n_q$).
 - $H_{kv} = n_{kv} d_{\text{head}}$ — Total KV projection dimension. KV dimension $H_{kv}$ applies specifically to K/V projections and cache storage.
-- $I$ — Unified FFN intermediate dimension  
-  - $I = I_{\text{dense}}$ for dense layers  
-  - $I = I_{\text{moe}}$ for MoE layers  
+- $I_{\text{dense}}$ — FFN intermediate dimension for dense layers
+- $I_{\text{moe}}$ — FFN intermediate dimension for MoE expert layers
 - $I_{\text{eff}}$ — Unified FFN intermediate dimension for FLOPs calculation
-  - $I_{\text{eff}} = I_{\text{dense}}$ for dense layers  
-  - $I_{\text{eff}} = k I_{\text{moe}}$ for MoE layers  
-- $N_{\text{exp}}$ — Number of experts per MoE layer  
+  - $I_{\text{eff}} = I_{\text{dense}}$ for dense layers
+  - $I_{\text{eff}} = k I_{\text{moe}}$ for MoE layers
+- $N_{\text{exp}}$ — Number of experts per MoE layer
 - $N_{\text{eff}}$ — Unified number of experts per MoE layer for FLOPs calculation
   - $N_{\text{eff}} = 0$ for dense layers
   - $N_{\text{eff}} = N_{\text{exp}}$ for MoE layers
@@ -664,6 +665,42 @@ For a **dense MLP model**: $I = I_{\text{dense}}$, and $N_{\text{exp}} = EP = 1$
 
 For a **MoE model**: $I = I_{\text{moe}}$, with $N_{\text{exp}} > 1$ and $EP \ge 1$.
 
+### Mixed MoE/Dense Architectures
+
+Many modern architectures use a **mixed** design where only some layers are MoE (e.g., alternating dense and MoE layers, or MoE only in deeper layers). For such models, the parameter memory must be computed separately for dense and MoE layers:
+
+$$
+M_{\theta,\text{device}}
+=
+M_{\theta,\text{dense}} + M_{\theta,\text{moe}} + \frac{VH}{TP} b
+$$
+
+where:
+
+$$
+M_{\theta,\text{dense}}
+=
+\frac{L_{\text{dense}}}{PP}\;
+\left(
+\frac{H^2 + 3 H H_{kv}}{TP}
+\;+\;
+\frac{3 H I_{\text{dense}}}{TP}
+\right) b
+$$
+
+$$
+M_{\theta,\text{moe}}
+=
+\frac{L_{\text{moe}}}{PP}\;
+\left(
+\frac{H^2 + 3 H H_{kv}}{TP}
+\;+\;
+\frac{3 H I_{\text{moe}} N_{\text{exp}}}{TP \cdot EP}
+\right) b
+$$
+
+Note that dense layers use $EP = 1$ and $N_{\text{exp}} = 1$ implicitly, while MoE layers use the specified $EP$ and $N_{\text{exp}}$ values.
+
 ### Per-device Activation Memory 
 
 The per-layer working activation footprint for one decoding token is: $4H + 2H_{kv}$.
@@ -713,15 +750,17 @@ which:
 - Each decoded token adds only $2H_{kv} b$, which is negligible compared to the pre-fill KV footprint.
 
 ### Total Per-device Static Memory Footprint
-Summing all the memory footprint we dervive from section 1.1 - 1.4 together, we can therefore get the "minimum required" memory size for the device to host the model under a particular PP/EP/TP/SP partition.
+Summing all the memory footprint we derive from section 1.1 - 1.4 together, we can therefore get the "minimum required" memory size for the device to host the model under a particular PP/EP/TP/SP partition.
 
 $$
 M_{\text{device}}^{\text{total}} = M_{\theta,\text{device}} + M_{\text{act,device}} + M_{\text{KV,device}}
 $$
 
+For **uniform architectures** (all dense or all MoE):
+
 $$
 \boxed{
-M_{\text{device}}^{\text{total}} = 
+M_{\text{device}}^{\text{total}} =
 \frac{L}{PP}\;
 \left[
 \frac{H^2 + 3 H H_{kv}}{TP}
@@ -736,9 +775,42 @@ M_{\text{device}}^{\text{total}} =
 }
 $$
 
-For a dense model: $I = I_{\text{dense}}, \text{ } N_{\text{exp}}=EP=1$ 
+For a dense model: $I = I_{\text{dense}}, \text{ } N_{\text{exp}}=EP=1$
 
-And for a MoE model: $I = I_{\text{moe}}$ 
+And for a MoE model: $I = I_{\text{moe}}$
+
+For **mixed MoE/dense architectures** (where $L_{\text{moe}} < L$):
+
+$$
+\boxed{
+\begin{aligned}
+M_{\text{device}}^{\text{total}} = \;&
+\frac{L_{\text{dense}}}{PP}\;
+\left[
+\frac{H^2 + 3 H H_{kv}}{TP}
++
+\frac{3 H I_{\text{dense}}}{TP}
+\right] b \\
++\;&
+\frac{L_{\text{moe}}}{PP}\;
+\left[
+\frac{H^2 + 3 H H_{kv}}{TP}
++
+\frac{3 H I_{\text{moe}} N_{\text{exp}}}{TP \cdot EP}
+\right] b \\
++\;&
+\frac{L}{PP}\;
+\left[
+(4H + 2H_{kv})
++
+\frac{2 S H_{kv}}{TP \cdot SP}
+\right] b
++\frac{VH}{TP} b
+\end{aligned}
+}
+$$
+
+Note: Activation memory and KV cache apply to all $L$ layers (both dense and MoE layers have attention blocks). 
 
 ---
 
@@ -817,6 +889,40 @@ $$
 **For a dense MLP model:** $I = I_{\text{dense}}, \text{ } N_{\text{exp}} = EP = 1$
 
 **And for a MoE model:** $I = I_{\text{moe}}$
+
+### Mixed MoE/Dense Architectures
+
+For mixed architectures, parameter traffic is computed separately for dense and MoE layers:
+
+$$
+T_{\theta,\text{device}}
+=
+T_{\theta,\text{dense}} + T_{\theta,\text{moe}}
+$$
+
+where:
+
+$$
+T_{\theta,\text{dense}}
+=
+\frac{L_{\text{dense}}}{PP}\;
+\left(
+\frac{H^2 + 3 H H_{kv}}{TP}
+\;+\;
+\frac{3 H I_{\text{dense}}}{TP}
+\right) b
+$$
+
+$$
+T_{\theta,\text{moe}}
+=
+\frac{L_{\text{moe}}}{PP}\;
+\left(
+\frac{H^2 + 3 H H_{kv}}{TP}
+\;+\;
+\frac{3 H I_{\text{moe}} N_{\text{exp}}}{TP \cdot EP}
+\right) b
+$$
 
 ---
 
@@ -1261,7 +1367,7 @@ $$
 
 
 ### Total Per-device FLOPs:
-Droping the negligible $F_{\text{norm}}$ and also substituting everything yields the **final fully expanded expression** per-device FLOPs for a single decoded token:
+Dropping the negligible $F_{\text{norm}}$ and also substituting everything yields the **final fully expanded expression** per-device FLOPs for a single decoded token:
 
 $$
 \boxed{
@@ -1283,6 +1389,52 @@ $$
 For a **dense MLP model**: $I_{\text{eff}} = I_{\text{dense}},\quad N_{\text{eff}} = 0,\quad EP = 1$
 
 For a **MoE model**: $I_{\text{eff}} = k I_{\text{moe}},\quad N_{\text{eff}} = N_{\text{exp}},\quad EP \ge 1$
+
+### Mixed MoE/Dense Architectures
+
+For mixed architectures, FLOPs are computed separately for dense and MoE layers:
+
+$$
+F_{\text{token,device}}
+=
+F_{\text{dense,device}} + F_{\text{moe,device}}
+$$
+
+**Dense layer FLOPs** (per device, for all dense layers on this PP stage):
+
+$$
+F_{\text{dense,device}}
+=
+\frac{L_{\text{dense}}}{PP}
+\left(
+\frac{2H^{2} + 6H H_{kv}}{TP}
+\;+\;
+\frac{4H I_{\text{dense}}}{TP}
+\;+\;
+\frac{4 S H_{kv}}{TP \cdot SP}
+\right)
+$$
+
+Note: Dense layers have no router FLOPs and use $EP = 1$.
+
+**MoE layer FLOPs** (per device, for all MoE layers on this PP stage):
+
+$$
+F_{\text{moe,device}}
+=
+\frac{L_{\text{moe}}}{PP}
+\left(
+\frac{2H^{2} + 6H H_{kv}}{TP}
+\;+\;
+\frac{4H k I_{\text{moe}}}{TP \cdot EP}
+\;+\;
+\frac{4 S H_{kv}}{TP \cdot SP}
+\;+\;
+2H N_{\text{exp}}
+\right)
+$$
+
+Note: The router term $2H N_{\text{exp}}$ is unsharded (applied to the full hidden state before expert selection).
 
 ---
 
@@ -1733,9 +1885,12 @@ t_{\text{comm}}
 \bigl(
 n_{TP}\, t_{TP}
 +
-n_{EP}\, t_{EP}
-+
 n_{SP}\, t_{SP}
+\bigr)
++
+\frac{L_{\text{moe}}}{PP}
+\bigl(
+n_{EP}\, t_{EP}
 \bigr)
 +
 t_{PP}
@@ -1744,19 +1899,28 @@ $$
 
 ### Interpretation
 
-- The first term accumulates **all TP, EP, and SP collectives** required by the $L/PP$ layers on this PP stage.  
-- The second term accounts for the **one PP hop** that forwards the token to the next stage.  
-- This combined expression represents the **total communication work** per token for the stage. Whether this communication becomes the latency bottleneck or is hidden by overlap is addressed in Section 4’s roofline-style model and Section 6’s end-to-end pipeline analysis.
+- The first term accumulates **TP and SP collectives** required by all $L/PP$ layers on this PP stage (both dense and MoE layers have attention blocks requiring these collectives).
+- The second term accumulates **EP collectives** required only by the $L_{\text{moe}}/PP$ MoE layers on this PP stage. Dense layers do not require EP communication.
+- The third term accounts for the **one PP hop** that forwards the token to the next stage.
+- This combined expression represents the **total communication work** per token for the stage. Whether this communication becomes the latency bottleneck or is hidden by overlap is addressed in Section 4's roofline-style model and Section 6's end-to-end pipeline analysis.
+
+### Mixed MoE/Dense Architectures
+
+For architectures where only some layers are MoE (e.g., $L_{\text{moe}} < L$), the EP communication cost is proportionally reduced. This is particularly important for models like DeepSeek-V2 or Mixtral variants that alternate between dense and MoE layers.
+
+For a **pure dense model**: $L_{\text{moe}} = 0$, so the EP term vanishes entirely.
+
+For a **pure MoE model**: $L_{\text{moe}} = L$, recovering the original formula.
 
 
 ### Summary of Collective Types and Message Sizes
 
-| Parallelism | Occurs in | Collective Type | Passes | Message Size (per device) |
-|-------------|-----------|------------------|---------|----------------------------|
-| **PP** | between layers | point-to-point | 1 | $(H/TP)\,b$ |
-| **TP** | attn + FFN | all-reduce (ring/tree) | 2 | $H\,b$ |
-| **EP** | MoE FFN | all-to-all | 2 | $kH\,b$ |
-| **SP** | attention | all–gather (ring) | 1 | $(S/SP)\cdot (2H_{kv}/TP)\, b$ |
+| Parallelism | Occurs in | Collective Type | Passes | Message Size (per device) | Layer Types |
+|-------------|-----------|------------------|---------|----------------------------|-------------|
+| **PP** | between layers | point-to-point | 1 | $(H/TP)\,b$ | All |
+| **TP** | attn + FFN | all-reduce (ring/tree) | 2 | $H\,b$ | All |
+| **EP** | MoE FFN | all-to-all | 2 | $kH\,b$ | MoE only |
+| **SP** | attention | all-gather (ring) | 1 | $(S/SP)\cdot (2H_{kv}/TP)\, b$ | All |
 
 ### Practical Guidance: When to Use Ring vs. Tree Collectives
 
@@ -1820,7 +1984,7 @@ M_{\text{KV,device}}
 M_{\text{HBM}}
 $$
 
-Using the per-device memory expressions derived in Section 1, the **fully expanded** form is:
+Using the per-device memory expressions derived in Section 1, the **fully expanded** form for uniform architectures is:
 
 $$
 \frac{L}{PP}\;
@@ -1844,6 +2008,8 @@ where:
 - and the final $\frac{V H}{TP} b$ term models the **worst-case embedding / LM-head overhead** on boundary PP stages.
 - for a **dense MLP model**: $I = I_{\text{dense}}$, and $N_{\text{exp}} = EP = 1$.
 - for a **MoE model**: $I = I_{\text{moe}}$, with $N_{\text{exp}} > 1$ and $EP \ge 1$.
+
+For **mixed MoE/dense architectures**, the memory constraint uses the split formula from Section 1.4, where dense and MoE layer contributions are computed separately.
 
 ### Calculating DP for a Fixed Total HBM Capacity
 
@@ -1901,13 +2067,18 @@ t_{\text{comm}}
 \bigl(
 n_{TP}\, t_{TP}
 +
-n_{EP}\, t_{EP}
+n_{SP}\, t_{SP}
+\bigr)
 +
-t_{SP}
+\frac{L_{\text{moe}}}{PP}
+\bigl(
+n_{EP}\, t_{EP}
 \bigr)
 +
 t_{PP}
 $$
+
+Note: EP collectives only apply to MoE layers ($L_{\text{moe}}$), while TP and SP collectives apply to all layers.
 
 ### Unified Overlap Model
 
