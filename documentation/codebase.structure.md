@@ -21,7 +21,6 @@ Below is the high-level layout and the role of each module.
 ├── quickstart.ipynb                  # end-to-end tutorial notebook
 ├── documentation/
 │   ├── codebase.structure.md
-│   ├── equations.cheetsheet.{md,pdf}
 │   └── modeling.tpot.{md,pdf}
 ├── scripts/
 │   ├── convert_hf_model.py
