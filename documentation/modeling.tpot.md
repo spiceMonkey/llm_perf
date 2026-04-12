@@ -38,7 +38,7 @@ cluster topology, performance modeling
   - [3.3 FFN FLOPs (Unified Dense + MoE)](#33-ffn-flops-unified-dense--moe)
   - [3.4 LayerNorm and Elementwise FLOPs](#34-layernorm-and-elementwise-flops)
   - [3.5 Per-Device FLOPs per Layer Under TP, SP, EP, and PP](#35-per-device-flops-per-layer-under-tp-sp-ep-and-pp)
-  - [3.6 Prefill FLOPs (Supplementary Reference)](#36-prefill-flops-supplementary-reference)
+  - [3.6 Prefill FLOPs](#36-prefill-flops)
 
 - [4. Compute vs. Memory Bound (Roofline Model)](#4-compute-vs-memory-bound-roofline-model)
   - [4.1 Operational Intensity (Ops:Byte)](#41-operational-intensity-opsbyte)
@@ -57,7 +57,7 @@ cluster topology, performance modeling
   - [6.1 Model Partition Strategy from HBM Constraints](#61-model-partition-strategy-from-hbm-constraints)
   - [6.2 Local and Networking Per-Token Latency](#62-local-and-networking-per-token-latency)
   - [6.3 TPS and TTPS — Pipeline Throughput](#63-tps-and-ttps--pipeline-throughput)
-  - [6.4 TTFT — Time To First Token (Prefill on a Separate Cluster)](#64-ttft--time-to-first-token-prefill-on-a-separate-cluster)
+  - [6.4 Batch-Size Scaling and Throughput–Latency Tradeoff](#64-batch-size-scaling-and-throughputlatency-tradeoff)
 
 ---
 
@@ -1104,33 +1104,9 @@ Note: The router term $2H N_{\text{exp}}$ is unsharded (applied to the full hidd
 
 ---
 
-## 3.6 Prefill FLOPs (Supplementary Reference)
+## 3.6 Prefill FLOPs
 
-The expressions in Sections 3.1–3.5 apply strictly to **decoding**, where only one new token is processed
-per step and FLOPs scale as $O(S)$ through the $F_{\text{attn,KV}}$ term.
-
-For completeness, we summarize the **prefill (full-sequence)** FLOPs here. Prefill is
-**GEMM-dominant** and substantially more expensive than decoding, but its cost is incurred **once per
-request**, not per generated token.
-
-A coarse scaling for prefill FLOPs is:
-
-$$
-F_{\text{prefill}}
-=
-O(B S L H^2)
-\;+\;
-O(B L S^2 H_{kv})
-$$
-
-- The first term corresponds to projections and FFN blocks across all $S$ input tokens.  
-- The second term corresponds to full attention score computation over the $S \times S$
-  attention matrix per layer.
-
-**Why this section is supplementary:**  
-Prefill FLOPs do **not** affect decoding throughput ($TPS_{\text{single}}$) and do not enter the
-per-device roofline model (Sections 5.5, 7). They only contribute to **TTFT** (time-to-first-token), which
-is modeled in Section 9.
+Prefill FLOPs are covered in [modeling.prefill.md](modeling.prefill.md).
 
 ---
 
@@ -1830,79 +1806,248 @@ Here:
 
 ---
 
-## 6.4 TTFT — Time To First Token (Prefill on a Separate Cluster)
+## 6.4 Batch-Size Scaling and Throughput–Latency Tradeoff
 
-This section models TTFT assuming the **prefill runs on a separate cluster**, and the decoding
-cluster receives the final KV cache before emitting the first token.
+TTFT and prefill analysis are covered in [modeling.prefill.md](modeling.prefill.md).
+This section analyzes how decoding performance changes as the **static batch size** $B$ grows —
+where $B$ sequences are decoded together and each contributes one token per step.
+The central question is: how does batching shift the operational regime from memory-bound
+to compute-bound, and what is the resulting throughput–latency tradeoff?
 
-For clarity, TTFT consists of three sequential phases:
+---
 
-1. **Prefill latency** (could be on a separate cluster)  
-2. **KV-cache transfer**  
-3. **Pipeline traversal delay** (empty pipeline warm-up)
+### 6.4.1 Arithmetic Intensity as a Function of Batch Size $B$
 
-Only after all PP stages have processed the first token can the first decoded
-token be emitted.
+For a static batch of $B$ sequences decoded together, the key observation is that **parameter
+weights are loaded once from HBM and reused across all $B$ tokens in the same step**. The FLOPs
+scale with $B$, while weight traffic remains independent of $B$:
 
-### Prefill latency (other cluster)
+- **Tokens per step:** $B$ (one per sequence)
+- **FLOPs per step:** $B \times F_{\text{token,device}}$ (scales linearly with $B$)
+- **Weight traffic per step:** $T_{\theta,\text{device}}$ (loaded once, shared across all $B$ tokens)
+- **KV cache traffic per step:** $B \times T_{\text{KV,device}}$ (each sequence has its own KV history)
 
-Let the prefill cluster have:
-
-- Compute rate: $R_{\text{GPU,pre}}$  
-- Memory bandwidth: $B_{\text{eff,mem,pre}}$
-
-Then:
+The **operational intensity** at batch size $B$ is therefore:
 
 $$
-t_{\text{prefill}}
-\approx
+\text{OI}(B)
+=
+\frac{B \times F_{\text{token,device}}}
+     {T_{\theta,\text{device}} + B \times T_{\text{KV,device}}}
+$$
+
+#### Two limiting regimes
+
+**Memory-bound limit** ($B \to 0$, or equivalently when weight traffic dominates KV traffic):
+
+$$
+\lim_{B \to 0} \text{OI}(B)
+=
+\frac{B \times F_{\text{token,device}}}{T_{\theta,\text{device}}}
+\;\to\; 0
+$$
+
+At small $B$, weights dominate the denominator, and the model is **weight-traffic-limited**.
+The $B=1$ case recovers the single-token OI from §4.1: $\text{OI}(1) \approx 2/b$, which lies
+far below the ridge point $R_{\text{GPU}} / B_{\text{eff,mem}}$ for all practical GPUs and
+precisions — confirming that single-request decode is always memory-bound.
+
+**Compute-bound limit** ($B \to \infty$, or when KV traffic dominates weight traffic):
+
+$$
+\lim_{B \to \infty} \text{OI}(B)
+=
+\frac{F_{\text{token,device}}}{T_{\text{KV,device}}}
+$$
+
+At large $B$, KV cache reads dominate the denominator and the intensity saturates.
+This ceiling is reached when the KV term $B \times T_{\text{KV,device}}$ overwhelms
+$T_{\theta,\text{device}}$.
+
+#### Ridge-point crossover
+
+The **crossover batch size** $B^*$ is the point at which the roofline transitions from
+memory-bound to compute-bound. Setting $\text{OI}(B^*) = R_{\text{GPU}} / B_{\text{eff,mem}}$
+(the ridge point per [ROOFLINE]) and solving:
+
+$$
+\frac{B^* \times F_{\text{token,device}}}
+     {T_{\theta,\text{device}} + B^* \times T_{\text{KV,device}}}
+=
+\frac{R_{\text{GPU}}}{B_{\text{eff,mem}}}
+$$
+
+$$
+\boxed{
+B^*
+=
+\frac{T_{\theta,\text{device}} \times R_{\text{GPU}}}
+     {F_{\text{token,device}} \times B_{\text{eff,mem}} - T_{\text{KV,device}} \times R_{\text{GPU}}}
+}
+$$
+
+When $T_{\text{KV,device}}$ is small relative to $T_{\theta,\text{device}} / B^*$
+(i.e., short-context decode where weight traffic dominates), this simplifies to the
+weight-dominated approximation:
+
+$$
+B^*
+\;\approx\;
+\frac{T_{\theta,\text{device}}}{F_{\text{token,device}}}
+\times
+\frac{R_{\text{GPU}}}{B_{\text{eff,mem}}}
+\qquad (\text{weight-dominated regime})
+$$
+
+This expression has an intuitive interpretation: $T_{\theta,\text{device}} / F_{\text{token,device}}$
+is the inverse OI for a single token (bytes per FLOP), and $R_{\text{GPU}} / B_{\text{eff,mem}}$
+is the ridge point (FLOPs per byte). Their product gives the batch size at which weight reuse
+tips the balance from memory-bound to compute-bound.
+
+---
+
+### 6.4.2 Batched TPOT and the Compute-Bound Crossover
+
+With $B$ sequences batched together, the per-step local execution time becomes:
+
+$$
+t_{\text{local}}(B)
+=
 \max\!\left(
-\frac{F_{\text{prefill}}}{R_{\text{GPU,pre}}},
-\;
-\frac{T_{\text{prefill}}}{B_{\text{eff,mem,pre}}}
+\frac{B \times F_{\text{token,device}}}{R_{\text{GPU}}},
+\;\;
+\frac{T_{\theta,\text{device}} + B \times T_{\text{KV,device}}}{B_{\text{eff,mem}}}
 \right)
 $$
 
-### KV-cache transfer
-
-Total KV size:
+The **per-sequence** Time Per Output Token (TPOT) — the latency experienced by a single sequence
+in the batch — is:
 
 $$
-M_{\text{KV,total}}
+\boxed{
+\text{TPOT}(B)
 =
-2 S H_{kv} b \cdot L
+\frac{t_{\text{token}}(B)}{B}
+}
 $$
 
-If inter-cluster link bandwidth is $B_{\text{link,cluster}}$:
+where $t_{\text{token}}(B) = t_{\text{local}}(B) + \max(0,\; t_{\text{comm}} - \rho \cdot t_{\text{local}}(B))$
+is the full overlap-aware per-step time from §6.2.
+
+#### Regime analysis for TPOT
+
+**Memory-bound regime** ($B \ll B^*$, weight-dominated):
 
 $$
-t_{\text{KV-transfer}}
+t_{\text{local}}(B)
 \approx
-\frac{M_{\text{KV,total}}}{B_{\text{link,cluster}}}
-$$
-
-### Pipeline traversal latency (decoding cluster)
-
-The first decoded token must traverse all $PP$ stages **sequentially**, since the pipeline is empty:
-
-$$
-t_{\text{decode,first-token}}
+\frac{T_{\theta,\text{device}}}{B_{\text{eff,mem}}}
+\quad \Rightarrow \quad
+\text{TPOT}(B)
 \approx
-\sum_{j=1}^{PP} t_{\text{stage},j}
+\frac{T_{\theta,\text{device}}}{B \times B_{\text{eff,mem}}}
 $$
 
-### Final TTFT
+TPOT **decreases** with $B$ in this regime: more sequences share the fixed cost of loading weights,
+so each sequence's amortized latency improves.
+
+**Compute-bound regime** ($B \gg B^*$, KV-dominated):
 
 $$
-TTFT
+t_{\text{local}}(B)
 \approx
-t_{\text{prefill}}
-+
-t_{\text{KV-transfer}}
-+
-\sum_{j=1}^{PP} t_{\text{stage},j}
-+
-t_{\text{startup}}
+\frac{B \times F_{\text{token,device}}}{R_{\text{GPU}}}
+\quad \Rightarrow \quad
+\text{TPOT}(B)
+\approx
+\frac{F_{\text{token,device}}}{R_{\text{GPU}}}
 $$
+
+TPOT **flattens** to a constant set by the compute rate. Adding more sequences to the batch
+no longer improves per-sequence latency — instead, all sequences wait proportionally longer.
+
+**Summary table:**
+
+| Regime | Condition | $t_{\text{local}}(B)$ | $\text{TPOT}(B)$ |
+|--------|-----------|-----------------------|------------------|
+| Memory-bound | $B \ll B^*$ | $\approx T_{\theta} / B_{\text{eff,mem}}$ (flat) | $\propto 1/B$ (decreasing) |
+| Crossover | $B = B^*$ | ridge point | minimum TPOT for given throughput |
+| Compute-bound | $B \gg B^*$ | $\propto B$ (growing) | $\approx F_{\text{token,device}} / R_{\text{GPU}}$ (flat) |
+
+---
+
+### 6.4.3 Throughput–Latency Pareto Curve
+
+Define the two key metrics as a function of $B$:
+
+- **Throughput** (tokens per second, all sequences in the batch):
+  $$
+  \text{Throughput}(B)
+  =
+  \frac{B}{t_{\text{token}}(B)}
+  $$
+
+- **TPOT** (per-sequence latency, seconds per output token):
+  $$
+  \text{TPOT}(B)
+  =
+  \frac{t_{\text{token}}(B)}{B}
+  $$
+
+These two metrics are always in tension: increasing $B$ raises throughput but, once the
+system crosses $B^*$, also increases TPOT. The resulting curve sweeping $B$ from $1$ to
+$\infty$ traces a **Pareto frontier** in the (Throughput, TPOT) plane.
+
+#### Three zones of the Pareto curve
+
+**Zone 1 — Memory-bound ($B < B^*$):**
+
+Both throughput and TPOT improve as $B$ increases. Weight traffic is amortized across more
+tokens; each additional sequence in the batch is essentially "free" from a bandwidth perspective.
+Throughput grows approximately linearly with $B$; TPOT falls proportionally.
+
+$$
+\text{Throughput}(B) \approx \frac{B \times B_{\text{eff,mem}}}{T_{\theta,\text{device}}},
+\qquad
+\text{TPOT}(B) \approx \frac{T_{\theta,\text{device}}}{B \times B_{\text{eff,mem}}}
+$$
+
+**Zone 2 — Crossover ($B \approx B^*$):**
+
+The system reaches the ridge point. This is the operating point with the best
+throughput-per-unit-TPOT ratio — the "knee" of the Pareto curve where further batching
+starts to cost latency.
+
+**Zone 3 — Compute-bound ($B > B^*$):**
+
+Throughput plateaus toward a ceiling set by compute capacity:
+
+$$
+\text{Throughput}_{\max}
+=
+\frac{R_{\text{GPU}}}{F_{\text{token,device}}}
+$$
+
+TPOT remains approximately **constant** in this regime: per-sequence latency is determined solely by the compute rate, independent of batch size. The total batch step time $t_{\text{local}}(B) \approx B \times F / R_{\text{GPU}}$ grows with $B$, but dividing by $B$ sequences cancels that growth.
+
+$$
+\text{Throughput}(B) \to \frac{R_{\text{GPU}}}{F_{\text{token,device}}},
+\qquad
+\text{TPOT}(B) \approx \frac{F_{\text{token,device}}}{R_{\text{GPU}}}
+$$
+
+#### Connection to InferenceX benchmark axes
+
+The InferenceX benchmark [INFERENCEX] plots **Throughput/GPU** (output tokens per second per GPU)
+against **Interactivity** (output tokens per second per request, i.e., $1/\text{TPOT}$).
+The three zones above directly map onto its axes:
+
+- Moving left-to-right along the InferenceX Pareto frontier corresponds to increasing $B$
+  from the memory-bound zone through the crossover into the compute-bound zone.
+- The **maximum throughput** point (rightmost on the throughput axis) corresponds to
+  $B \gg B^*$ and yields low interactivity (high TPOT).
+- The **maximum interactivity** point ($B = 1$) yields low throughput but minimum TPOT.
+- Production deployments target an operating point near $B^*$, balancing GPU utilization
+  with acceptable per-request latency SLAs.
 
 ---
