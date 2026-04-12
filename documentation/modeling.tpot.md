@@ -119,7 +119,7 @@ $$
 ### Attention Parameters
 
 For hidden size $H$, head dimension $d_{\text{head}}$, and KV dimension  
-$H_{kv} = n_{kv} \, d_{\text{head}}$:
+$H_{kv} = n_{kv} \, d_{\text{head}}$ (supporting grouped-query attention where $n_{kv} \le n_q$ [GQA] and multi-query attention where $n_{kv} = 1$ [MQA]):
 
 - $W_Q \in \mathbb{R}^{H \times H}$  
 - $W_K \in \mathbb{R}^{H \times H_{kv}}$  
@@ -268,6 +268,8 @@ For a single attention layer, the KV cache consists of:
 
 - Keys: $K \in \mathbb{R}^{S \times H_{kv}}$  
 - Values: $V \in \mathbb{R}^{S \times H_{kv}}$
+
+The KV cache size scales with $H_{kv} = n_{kv} d_{\text{head}}$; using grouped-query attention ($n_{kv} < n_q$) [GQA] or multi-query attention ($n_{kv} = 1$) [MQA] directly reduces this footprint.
 
 Thus, the total KV elements for one layer are:
 
@@ -852,7 +854,7 @@ Dense FFN layers always have $EP = 1$.
 
 ### MoE FFN FLOPs
 
-For MoE layers:
+For MoE layers, each token is routed to $k$ active experts (top-$k$ gating) [DEEPSPEED-MOE]; in practice $k=1$ [SWITCH] or $k=2$ [MIXTRAL]:
 
 - the **router** is applied to the full hidden vector:
   $$
@@ -947,7 +949,7 @@ To find **per-device FLOPs**, we apply sharding from TP, SP, EP and then multipl
 
 ### TP (Tensor Parallelism)
 
-TP shards all **GEMV/GEMM-like** FLOPs:
+TP shards all **GEMV/GEMM-like** FLOPs using column- and row-parallel linear layers [MEGATRON]:
 
 - projections ($F_{\text{proj}}$),
 - attention score/value FLOPs ($F_{\text{attn,KV}}$),
@@ -963,7 +965,7 @@ $$
 
 ### SP (Sequence Parallelism)
 
-SP shards the **sequence dimension** across $SP$ ranks.  
+SP shards the **sequence dimension** across $SP$ ranks [MEGATRON3].  
 Thus **only** the sequence-dependent FLOPs:
 
 $$
@@ -1132,7 +1134,7 @@ Both reflect *sustained* performance, not peak specs.
 
 ## 4.1 Operational Intensity (Ops:Byte)
 
-The **operational intensity** for decoding on this device is:
+The **operational intensity** for decoding on this device is [ROOFLINE]:
 
 $$
 \text{OI}
@@ -1146,7 +1148,7 @@ High-level interpretation:
 - **High OI** → more FLOPs per byte → *compute-bound*  
 - **Low OI** → fewer FLOPs per byte → *memory-bound*
 
-This rating is compared to the device’s memory-to-compute ratio:
+This rating is compared to the device’s memory-to-compute ratio (the ridge point):
 
 $$
 \frac{R_{\text{GPU}}}{B_{\text{eff,mem}}}
@@ -1255,7 +1257,7 @@ $$
 \textbf{PP} \;\rightarrow\; \textbf{EP} \;\rightarrow\; \textbf{TP} \;\rightarrow\; \textbf{SP}
 $$
 
-each axis contributes its own per-token communication term. All communication costs follow the standard $\alpha$–$B$ model:
+each axis contributes its own per-token communication term. All communication costs follow the standard $\alpha$–$\beta$ latency model [ALPHA-BETA]:
 
 $$
 t_{\text{comm}} = \alpha + \frac{\text{message size}}{B_{\text{eff}}}
@@ -1301,7 +1303,7 @@ To remain consistent with the compute and memory models, we strictly define the 
 
 ## 5.1 Pipeline Parallel (PP) Hop
 
-Pipeline Parallelism (PP) forwards activations from one pipeline stage to the next. Because TP is
+Pipeline Parallelism (PP) forwards activations from one pipeline stage to the next [MEGATRON3]. Because TP is
 nested inside PP, high-performance implementations (e.g., Megatron-LM PP, DeepSpeed PP, NVIDIA NeMo,
 and FasterTransformer) preserve the **TP rank alignment** across all PP stages. That is, TP rank $i$
 in stage $s$ corresponds directly to TP rank $i$ in stage $s{+}1$.  
@@ -1333,7 +1335,7 @@ and inference systems.
 
 ## 5.2 Expert Parallel (EP) All-to-All (MoE Dispatch and Combine)
 
-MoE layers require exchanging token activations across the expert-parallel (EP) dimension. In contrast to TP collectives (which perform a reduce-then-broadcast) or PP hops (which are unidirectional), EP communication follows a **bidirectional dispatch-and-combine pattern**:
+MoE layers require exchanging token activations across the expert-parallel (EP) dimension via all-to-all routing [DEEPSPEED-MOE]. In contrast to TP collectives (which perform a reduce-then-broadcast) or PP hops (which are unidirectional), EP communication follows a **bidirectional dispatch-and-combine pattern**:
 
 1.  **Dispatch:** Token activations are routed from the source rank to the rank holding the selected expert (top-$k$ routing).
 2.  **Combine:** The expert's output must be sent **back** to the source rank to be added to the residual stream.
@@ -1388,7 +1390,7 @@ For dense models ($EP = 1$), we have $t_{EP} = 0$.
 
 ## 5.3 Tensor Parallel (TP) Communication
 
-TP groups compute each layer in parallel across $TP$ devices. The most common operation is the **All-Reduce** required at the end of the MLP (Row Parallel) and Attention (Output) blocks to sum the partial results across ranks.
+TP groups compute each layer in parallel across $TP$ devices using column- and row-parallel linear layers [MEGATRON]. The most common operation is the **All-Reduce** required at the end of the MLP (Row Parallel) and Attention (Output) blocks to sum the partial results across ranks.
 
 **Critical Note on Message Size:**
 Unlike PP (which sends a shard), the TP All-Reduce operates on the **full hidden state vector** ($H$). Although each device only "owns" a shard of the weights, the partial output computed by Row Parallelism is a vector of size $H$ (containing partial sums). These must be reduced globally.
