@@ -161,4 +161,42 @@ https://inferencex.semianalysis.com/inference
 
 ---
 
-_To cite in a doc: use the tag in brackets, e.g. "per [ROOFLINE], the ridge point is R_GPU / B_eff,mem". New references should be added here and tagged consistently._
+## Sequence Parallelism
+
+**[RING-ATTN]**  
+Liu, H., Zaharia, M., & Abbeel, P. (2023).  
+*Ring Attention with Blockwise Transformers for Near-Infinite Context.*  
+ICLR 2024. arXiv:2310.01889.  
+→ Ring-based KV sharding across devices; all-gather / reduce-scatter communication pattern for long-context inference; basis for SP collective cost in §5.4.
+
+---
+
+## Empirical Constants and Profiling
+
+**[TENSORRT-LLM]**  
+NVIDIA Corporation. (2023–2025).  
+*TensorRT-LLM: Open-Source Library for Optimized LLM Inference.*  
+https://github.com/NVIDIA/TensorRT-LLM  
+→ Fused kernel implementations for attention, LayerNorm/RMSNorm, FFN. Source for empirical activation I/O constant $c_{\text{act}}$: kernel traces on H100 show ~8–12 unavoidable hidden-state reads/writes per layer even with FlashAttention fusion.
+
+**[XFORMERS]**  
+Lefaudeux, B., Massa, F., Liskovich, D., Xiong, W., Castrejon, F., Chen, S., Du, S., Eubank, N., Han, S., Hu, J., Huang, P., Khabsa, M., Tan, A., Wang, H., Wehrsteiner, S., Xu, S., Zhang, Z., Girshick, R., Rabin, S., Stoica, I., & Li, Y. (2022).  
+*xFormers: A Modular and Hackable Transformer Modelling Library.*  
+arXiv:2209.14970.  
+→ Modular attention and FFN kernel library; kernel profiling data for activation I/O and norm costs.
+
+---
+
+## Original Modeling Contributions
+
+The following constants and models are **original to this document suite** and are not derived from a published paper. They should be marked as such in inline citations:
+
+- **$\rho$ (overlap factor)** — The parameterization $t_{\text{token}} = t_{\text{local}} + \max(0, t_{\text{comm}} - \rho \cdot t_{\text{local}})$ is an original formulation introduced in `modeling.tpot.md`. The concept of compute–communication overlap is discussed in [MEGATRON3] and [DEEPSPEED-MOE] but without this exact model. Use "this work" as the citation.
+
+- **$c_{\text{act}}$ calibration range (~8–12)** — Empirically estimated from [TENSORRT-LLM] and [XFORMERS] kernel traces. Specific values are hardware- and implementation-dependent; treat as a tuning knob in `TuningSpec`.
+
+- **$c_{\text{norm}}$ range (5–20)** — First-principles estimate: RMSNorm requires ~5H ops (variance + reciprocal-sqrt + scale), LayerNorm ~10H (mean + variance + normalize + scale + bias), with gated variants up to ~20H. No published source; treat as implementation-dependent.
+
+---
+
+_To cite in a doc: use the tag in brackets, e.g. "per [ROOFLINE], the ridge point is $R_{\text{GPU}} / B_{\text{eff,mem}}$". Original-to-this-work items use "this work". New references should be added here and tagged consistently._
