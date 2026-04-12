@@ -184,52 +184,135 @@ _(→ modeling.tpot.md)_
 ---
 
 ## 10. Batch Scaling
-_(→ modeling.tpot.md §6.4 — to be populated)_
+_(→ modeling.tpot.md §6.4)_
 
-_Symbols for arithmetic intensity as a function of B, batched TPOT, and the
-throughput–latency Pareto curve. Defined in modeling.tpot.md §6.4._
+- $OI(B)$ — Operational intensity as a function of batch size $B$:
+  $$OI(B) = \frac{B \times F_{\text{token,device}}}{T_{\theta,\text{device}} + B \times T_{\text{KV,device}}}$$
+- $B^*$ — Crossover batch size where the roofline transitions from memory-bound to compute-bound:
+  $$B^* = \frac{T_{\theta,\text{device}} \times R_{\text{GPU}}}{F_{\text{token,device}} \times B_{\text{eff,mem}} - T_{\text{KV,device}} \times R_{\text{GPU}}}$$
+- $\text{TPOT}(B)$ — Batched Time Per Output Token (per sequence): $t_{\text{token}}(B) / B$.
+  Memory-bound: $\approx T_{\theta,\text{device}} / (B \times B_{\text{eff,mem}})$; compute-bound: $\approx F_{\text{token,device}} / R_{\text{GPU}}$.
 
 ---
 
 ## 11. Prefill and TTFT
-_(→ modeling.prefill.md — to be populated)_
+_(→ modeling.prefill.md)_
 
-- $F_{\text{prefill}}$ — Total FLOPs for the prefill pass (processes full input sequence).
-- $t_{\text{prefill,local}}$ — Prefill compute + memory time on device.
-- $t_{\text{prefill,comm}}$ — Prefill communication time.
-- $TTFT$ — Time To First Token: total latency from request receipt to first generated token.
+FLOPs:
+- $F_{\text{proj,prefill}}$ — Q/K/V/O projection FLOPs for prefill: $(2H^2 + 6HH_{kv}) S_{\text{input}}$.
+- $F_{\text{score,prefill}}$ — Attention score FLOPs: $2 S_{\text{input}}^2 H_{kv}$.
+- $F_{\text{value,prefill}}$ — Value application FLOPs: $2 S_{\text{input}}^2 H_{kv}$.
+- $F_{\text{ffn,prefill}}$ — FFN FLOPs for prefill: $4 H I_{\text{eff}} S_{\text{input}}$.
+- $F_{\text{layer,prefill}}$ — Per-layer prefill FLOPs (projections + $S^2$ attention).
+- $F_{\text{prefill,device}}$ — Total prefill FLOPs per device across all layers on this PP stage.
 
-_Additional prefill batch and chunked-prefill symbols defined in modeling.prefill.md._
+Timing:
+- $t_{\text{prefill,compute}}$ — Prefill compute time: $F_{\text{prefill,device}} / R_{\text{GPU}}$.
+- $t_{\text{prefill,mem}}$ — Prefill memory time: $T_{\text{prefill,device}} / B_{\text{eff,mem}}$.
+- $t_{\text{prefill,local}}$ — Prefill roofline local time: $\max(t_{\text{prefill,compute}}, t_{\text{prefill,mem}})$.
+- $t_{\text{prefill,comm}}$ — Total prefill communication time (TP/EP/SP/PP collectives).
+- $t_{\text{chunk}}$ — Latency of one chunked-prefill iteration.
+- $t_{\text{pipeline,warmup}}$ — Pipeline fill time: $(PP-1) \times t_{\text{stage}}$.
+- $TTFT$ — Time To First Token: $t_{\text{sched}} + t_{\text{tok}} + t_{\text{prefill}} + t_{\text{KV\_transfer}} + t_{\text{token}}$.
+- $TTFT_{\text{disagg}}$ — TTFT for disaggregated prefill architecture (includes KV transfer).
+
+Chunked prefill:
+- $C$ — Chunk size in tokens.
+- $N_{\text{chunks}}$ — Number of chunks: $\lceil S_{\text{input}} / C \rceil$.
+
+Crossover:
+- $S_{\text{input}}^{\star}$ — Prefill compute-bound crossover: $S_{\text{input}}^{\star} = (b/2) \times R_{\text{ridge}}$.
+- $R_{\text{ridge}}$ — Device ridge point: $R_{\text{GPU}} / B_{\text{eff,mem}}$ (FLOPs/byte).
+
+KV transfer:
+- $M_{\text{KV,total}}$ — Total KV bytes from one prefill pass: $2 L S_{\text{input}} H_{kv} b$.
+- $t_{\text{KV,transfer}}$ — KV transfer latency: $\alpha_{\text{inter}} + M_{\text{KV,total}} / B_{\text{eff,inter}}$.
+- $B_{\text{eff,inter}}$ — Effective inter-cluster bandwidth.
+- $\alpha_{\text{inter}}$ — Inter-cluster link startup latency.
 
 ---
 
 ## 12. KV Cache Management
-_(→ modeling.kv.md — to be populated)_
+_(→ modeling.kv.md)_
 
-_Symbols for PagedAttention block size, fragmentation factor, and effective
-HBM capacity after paging overhead. Defined in modeling.kv.md._
+- $B_{\text{block}}$ — KV block size in tokens (PagedAttention page size; typical: 16 or 32).
+- $N_{\text{blocks}}(S)$ — Blocks allocated for a sequence of length $S$: $\lceil S / B_{\text{block}} \rceil$.
+- $\varphi(S)$ — Fragmentation factor: ratio of allocated KV memory to ideally occupied KV memory.
+  $$\varphi(S) = \frac{\lceil S / B_{\text{block}} \rceil \times B_{\text{block}}}{S}, \qquad \varphi_{\text{avg}} \approx 1 + \frac{B_{\text{block}}}{2S}$$
+- $M_{\text{HBM,KV,avail}}$ — HBM capacity available for KV storage after weights and activations.
+- $S_{\max}$ — Maximum supportable context length given $M_{\text{HBM,KV,avail}}$ and $\varphi$:
+  $$S_{\max} \approx \frac{M_{\text{HBM,KV,avail}} \times TP \times SP}{\varphi_{\text{avg}} \times 2 H_{kv} b \times L/PP}$$
 
 ---
 
 ## 13. Framework Overhead
-_(→ modeling.framework.md — to be populated)_
+_(→ modeling.framework.md)_
 
-- $t_{\text{startup}}$ — Kernel warmup and CUDA graph capture overhead.
+Per-request (once):
+- $t_{\text{tok}}$ — Tokenization latency (CPU BPE/SP processing).
+- $t_{\text{sched}}$ — Request scheduling / batch assembly latency.
 
-_Additional per-phase framework latency constants defined in modeling.framework.md._
+Per-step (each decode iteration):
+- $t_{\text{launch}}$ — CUDA kernel launch overhead per decode step (no CUDA graph).
+- $t_{\text{graph}}$ — CUDA graph replay latency per decode step.
+- $t_{\text{sample}}$ — Token sampling latency (logits → token ID).
+- $t_{\text{detok}}$ — Response streaming / detokenization latency per output token.
+
+Disaggregated serving:
+- $t_{\text{KV\_transfer}}$ — KV cache transfer latency from prefill to decode cluster (α–β model).
+- $M_{\text{KV\_transfer}}$ — KV bytes transferred per device: $2 S_{\text{input}} H_{kv} b \times L / (PP \times TP \times SP)$.
+
+Empirical calibration constants (defined in modeling.framework.md; negligible in roofline):
+- $c_{\text{act}}$ — Activation I/O constant: unavoidable hidden-state HBM transfers per layer (~8–12).
+- $c_{\text{norm}}$ — Norm FLOP constant: per-element norm operation count (~5–20).
+
+Total framework overhead:
+- $T_{\text{out}}$ — Number of output tokens per request.
+- $t_{\text{framework}} = t_{\text{tok}} + t_{\text{sched}} + T_{\text{out}} \times (t_{\text{graph}} + t_{\text{sample}} + t_{\text{detok}}) + t_{\text{KV\_transfer}}$.
 
 ---
 
 ## 14. End-to-End Metrics
-_(→ modeling.e2e.md — to be populated)_
+_(→ modeling.e2e.md)_
 
-_Symbols for TPOT, interactivity, throughput/GPU, and Pareto frontier
-under continuous batching. Defined in modeling.e2e.md._
+Core metrics:
+- $TTFT$ — Time To First Token (defined in §11 above; assembled in modeling.e2e.md §2).
+- $\text{TPOT}(B)$ — Time Per Output Token (per sequence): $t_{\text{token}}(B) / B$ (defined in §10 above).
+- $\text{E2E}(N_{\text{out}})$ — End-to-end latency: $TTFT + (N_{\text{out}} - 1) \times \text{TPOT}$.
+- $\text{Tput/GPU}$ — Output tokens per second per GPU: $TTPS / N_{\text{GPUs}}$.
+- $\text{Interactivity}$ — Per-user output rate: $1 / \text{TPOT} = B / t_{\text{token}}(B)$ (tokens/s/request).
+- $\text{Goodput}$ — Fraction of GPU time spent on useful token generation.
+
+Continuous batching:
+- $\lambda$ — Request arrival rate (requests/second).
+- $N_{\text{out}}$ — Number of output tokens in a single response.
+- $N_{\text{out}}^{\star}$ — Crossover output length where TTFT = decode contribution: $N_{\text{out}}^{\star} \approx TTFT / \text{TPOT}$.
+- $\overline{B_{\text{eff}}}$ — Mean effective batch size in steady-state continuous batching.
+- $\overline{\text{TPOT}}$ — Average TPOT over a request's decode lifetime.
+- $N_{\text{GPUs,per-replica}}$ — GPUs per DP replica: $PP \cdot TP \cdot EP \cdot SP$.
+
+Pareto ceiling:
+$$\text{Tput/GPU} \times \text{TPOT} = \frac{1}{N_{\text{GPUs,per-replica}}}$$
 
 ---
 
 ## 15. 3D DRAM
-_(→ modeling.dram3d.md — to be populated)_
+_(→ modeling.dram3d.md)_
 
-_Symbols for hybrid bonding pitch, die area, pin density, data rate per pin,
-and derived equivalent bandwidth. Defined in modeling.dram3d.md._
+Physical parameters:
+- $A_{\text{die}}$ — DRAM die area (mm²).
+- $p_{HB}$ — Hybrid bonding pitch: center-to-center pad spacing (µm).
+- $\eta_{\text{data}}$ — Data pin fraction: proportion of pads carrying data signals.
+- $f_{\text{data}}$ — Data rate per pin (Gbps).
+- $N_{\text{dies}}$ — Number of DRAM dies stacked on the logic die.
+
+Derived:
+- $N_{\text{pins,total}}$ — Total pad count (area-limited): $\lfloor A_{\text{die}} / p_{HB}^2 \rfloor$.
+- $N_{\text{pins,data}}$ — Data pad count: $N_{\text{pins,total}} \times \eta_{\text{data}}$.
+- $BW_{\text{die}}$ — Raw bandwidth per die interface: $N_{\text{pins,data}} \times f_{\text{data}} / 8$ (GB/s).
+- $BW_{\text{conservative}}$ — Lower bound: single logic-facing interface ($= BW_{\text{die}}$).
+- $BW_{\text{optimistic}}$ — Upper bound: independent per-die interfaces ($= N_{\text{dies}} \times BW_{\text{die}}$).
+
+Latency:
+- $k_{\text{interconnect}}$ — Latency reduction factor vs. standard HBM bump interconnect.
+- $\ell_{3D}$ — Estimated 3D DRAM read latency: $\ell_{\text{HBM}} / k_{\text{interconnect}}$ (ns).
