@@ -119,7 +119,6 @@ Memory traffic (bytes **moved** between HBM and compute per token):
 - $T_{\text{act,device}}$ — Activation traffic (intermediate reads/writes).
 - $T_{\text{token,device}}$ — Total per-token traffic on this device.
 - $T_{\text{token,device}}^{\text{eff}}$ — Effective traffic after FlashAttention-style optimizations.
-- $c_{\text{act}}$ — Empirical activation I/O constant per layer (unavoidable even with FlashAttention).
 
 ---
 
@@ -162,9 +161,7 @@ FFN and MoE:
 - $F_{\text{ffn}}$ — Unified FFN FLOPs (dense or MoE).
 
 Layer and token:
-- $F_{\text{norm}}$ — Normalization FLOPs per layer ($\approx c_{\text{norm}} H$).
-- $c_{\text{norm}}$ — Norm FLOP coefficient (typically 5–10).
-- $F_{\text{layer}}$ — Total FLOPs per layer (attention + FFN + norm).
+- $F_{\text{layer}}$ — Total FLOPs per layer (attention + FFN; norm dropped as negligible).
 - $F_{\text{layer,device}}$ — FLOPs per layer per device after sharding.
 - $F_{\text{token,device}}$ — Total FLOPs per generated token on this device (decode).
 

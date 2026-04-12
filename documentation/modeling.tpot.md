@@ -651,34 +651,7 @@ Section 1 showed that the per-layer activation footprint for a single decoding t
 ### The Role of FlashAttention
 **FlashAttention** avoids this $O(S^2)$ traffic by tiling the attention computation in SRAM. It ensures that the large attention score matrix is never written to or read from global memory.
 
-Because FlashAttention eliminates the dominant score traffic, the only activation traffic remaining is the **linear** $O(H)$ traffic for input/output of the hidden states and FFN buffers.
-
-### Empirical Activation Constant ($c_{\text{act}}$)
-We model this "residual" traffic as a small multiple of the hidden size:
-
-$$
-T_{\text{act,layer}} \approx c_{\text{act}} \, H \, b
-$$
-
-Empirical kernel traces from FlashAttention-2/3, xFormers, and TensorRT-LLM consistently show:
-
-$$
-c_{\text{act}} \approx 8\text{–}12.
-$$
-
-This constant accounts for unavoidable loads/stores of the hidden state, attention output, and FFN residuals that remain even after fusion.
-
-### Final activation-traffic expression
-
-For a PP stage containing $L/PP$ layers:
-
-$$
-T_{\text{act,device}}
-=
-\frac{L}{PP} \, c_{\text{act}} \, H \, b
-$$
-
-As with activation *memory*, this traffic is **not sharded** by TP or EP because fused kernels typically operate on the full hidden state (or rank-local equivalents) before sharding logic applies.
+Because FlashAttention eliminates the dominant score traffic, the residual activation traffic (hidden-state loads/stores, FFN buffers) is $O(H)$ per layer — negligible compared to the weight and KV cache terms for large models. We drop $T_{\text{act,device}}$ from the traffic model here. Residual kernel-level activation overhead is treated as an empirical correction in `modeling.framework.md`.
 
 ---
 
@@ -713,19 +686,17 @@ FlashAttention does **not** reduce this term: keys and values from history must 
 
 ## 2.4 Total and Effective Traffic
 
-Combining the expressions derived in Sections 2.1–2.3, the **effective** total per-token traffic is:
+Combining the expressions derived in Sections 2.1–2.3 (with activation traffic dropped as negligible), the **effective** total per-token traffic is:
 
 $$
 T_{\text{token,device}}^{eff}
 \approx
 T_{\theta,\text{device}}
 +
-T_{\text{act,device}}
-+
 T_{\text{KV,device}}.
 $$
 
-Substituting the corrected components yields the **final fully expanded expression**:
+Substituting yields the **final fully expanded expression**:
 
 $$
 \boxed{
@@ -741,11 +712,7 @@ T_{\text{token,device}}^{eff}
 \;+\;
 \frac{3 H I N_{\text{exp}}}{TP \cdot EP}
 \right) b
-}_{\text{Weights (Must load 100\%)}}
-\;+\;
-\underbrace{
-c_{\text{act}} \, H \, b
-}_{\text{Activations}}
+}_{\text{Weights}}
 \;+\;
 \underbrace{
 \frac{2 S H_{kv}}{TP \cdot SP} b
@@ -948,20 +915,7 @@ This matches:
 
 ## 3.4 LayerNorm and Elementwise FLOPs
 
-LayerNorm, RMSNorm, residual additions, and small elementwise operations all scale linearly with $H$.
-Although these costs are much smaller than attention and FFN FLOPs, we include them for completeness.
-
-We write:
-
-$$
-F_{\text{norm}} = c_{\text{norm}} H
-$$
-
-where $c_{\text{norm}}$ is a small implementation-dependent constant (typically 5–20).
-
-In practice, $F_{\text{norm}}$ is much smaller than the projection, attention, and FFN FLOPs. In the
-per-device FLOP expressions below, we will neglect $F_{\text{norm}}$ and write approximate equalities
-($\approx$) to avoid clutter, noting that this introduces only a small relative error.
+LayerNorm, RMSNorm, residual additions, and elementwise ops scale linearly with $H$ and are ~4 orders of magnitude smaller than the dominant FFN FLOPs for large models. We drop $F_{\text{norm}}$ from all per-device expressions. Norm overhead is an empirical correction handled in `modeling.framework.md`.
 
 ---
 
@@ -971,19 +925,19 @@ For a single decoding token, the FLOPs for one transformer layer are:
 
 $$
 F_{\text{layer}}
-=
+\approx
 F_{\text{proj}}
 + F_{\text{attn,KV}}
-+ F_{\text{ffn}}
-+ F_{\text{norm}},
++ F_{\text{ffn}},
 $$
 
 where:
 
 - $F_{\text{proj}} = 2H^2 + 6H H_{kv}$ (Section 3.1),
 - $F_{\text{attn,KV}} = 4 S H_{kv}$ (Section 3.2),
-- $F_{\text{ffn}}$ is dense or MoE (Section 3.3),
-- $F_{\text{norm}} = c_{\text{norm}} H$ (Section 3.4).
+- $F_{\text{ffn}}$ is dense or MoE (Section 3.3).
+
+$F_{\text{norm}}$ is dropped per Section 3.4.
 
 To find **per-device FLOPs**, we apply sharding from TP, SP, EP and then multiply by the number of layers on the PP stage.
 
@@ -1001,12 +955,6 @@ Thus:
 
 $$
 F_{\text{tensor}}^{\text{device}} = \frac{1}{TP} F_{\text{tensor}}
-$$
-
-Normalization FLOPs $F_{\text{norm}}$ are tiny and unsharded:
-
-$$
-F_{\text{norm}}^{\text{device}} = F_{\text{norm}}
 $$
 
 ---
@@ -1033,8 +981,7 @@ SP does **not** reduce:
 
 - $F_{\text{proj}}$ (single token),
 - $F_{\text{ffn}}$ (dense or MoE),
-- router FLOPs,
-- normalization FLOPs.
+- router FLOPs.
 
 ---
 
@@ -1073,13 +1020,12 @@ Thus:
 
 $$
 F_{\text{token, device}}
-=
+\approx
 \frac{L}{PP}
 \left(
 F_{\text{proj}}^{\text{device}}
 + F_{\text{attn,KV}}^{\text{device}}
 + F_{\text{ffn}}^{\text{device}}
-+ F_{\text{norm}}
 \right)
 $$
 

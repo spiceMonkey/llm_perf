@@ -193,9 +193,7 @@ The following constants and models are **original to this document suite** and a
 
 - **$\rho$ (overlap factor)** — The parameterization $t_{\text{token}} = t_{\text{local}} + \max(0, t_{\text{comm}} - \rho \cdot t_{\text{local}})$ is an original formulation introduced in `modeling.tpot.md`. The concept of compute–communication overlap is discussed in [MEGATRON3] and [DEEPSPEED-MOE] but without this exact model. Use "this work" as the citation.
 
-- **$c_{\text{act}}$ calibration range (~8–12)** — Empirically estimated from [TENSORRT-LLM] and [XFORMERS] kernel traces. Specific values are hardware- and implementation-dependent; treat as a tuning knob in `TuningSpec`.
-
-- **$c_{\text{norm}}$ range (5–20)** — First-principles estimate: RMSNorm requires ~5H ops (variance + reciprocal-sqrt + scale), LayerNorm ~10H (mean + variance + normalize + scale + bias), with gated variants up to ~20H. No published source; treat as implementation-dependent.
+- **$c_{\text{act}}$ and $c_{\text{norm}}$** — Removed from `modeling.tpot.md` (negligible at large model scale: ~3–4 orders of magnitude below dominant weight and FFN terms). Defined as empirical calibration constants in `modeling.framework.md`. Sources: [TENSORRT-LLM] and [XFORMERS] for $c_{\text{act}}$; first-principles for $c_{\text{norm}}$ (RMSNorm ~5H ops, LayerNorm ~10H ops).
 
 ---
 
