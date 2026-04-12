@@ -19,8 +19,8 @@ cluster topology, performance modeling
 # Table of Contents
 
 - [0. Introduction and Notation](#0-introduction-and-notation)
-  - [0.1 Symbol Notation](#01-symbol-notation) _(→ modeling.notation.md)_
-  - [0.2 Parallelism Architecture](#02-parallelism-architecture)
+  - [0.1 Symbol Notation](#01-symbol-notation) _(→ modeling.notation.md §1–14)_
+  - [0.2 Parallelism Architecture](#02-parallelism-architecture) _(→ modeling.notation.md §0)_
 
 - [1. Memory Footprint](#1-memory-footprint)
   - [1.0 Parameter Definitions (P vs W)](#10-parameter-definitions-p-vs-w)
@@ -86,106 +86,8 @@ All symbols used in this document are defined in **[modeling.notation.md](modeli
 
 ## 0.2 Parallelism Architecture
 
-We adopt a fixed nesting order for all parallelism dimensions:
-
-$$
-\boxed{\text{DP} \;\rightarrow\; \text{PP} \;\rightarrow\; \text{EP} \;\rightarrow\; \text{TP} \;\rightarrow\; \text{SP}}
-$$
-
-This order reflects how model state is partitioned and reused during inference. Each level depends on all outer levels having already determined the weight placement, token routing, or tensor partitioning.
-
-### Summary of Nesting Rationale
-
-| Level | What it partitions | Why this ordering is required |
-|-------|--------------------|------------------------------|
-| **DP** | Entire model replica | Must wrap all state; inner groups cannot cross DP boundaries. |
-| **PP** | Layers | Layer ownership must be decided before experts/tensor shards are assigned. |
-| **EP** | Experts | Expert placement must be fixed before tensor sharding splits expert matrices. |
-| **TP** | Weight matrices | TP defines weight shards used identically across all SP ranks. |
-| **SP** | KV cache sequence dimension | KV is activation state only; must be sharded after all weight placement. |
-
----
-
-### DP is the outermost level (replicated model weights)
-**Why:**  
-- DP creates fully independent model replicas for throughput.  
-- No weight partitioning happens inside DP groups.  
-- All deeper parallelism dimensions (PP, EP, TP, SP) apply **within** each DP replica.
-
-**Therefore:**  
-$$
-\text{DP is always outermost}
-$$
----
-
-### PP is inside DP (layers assigned before experts/tensor sharding)
-PP splits *layers* of the model across devices.
-
-**Why PP must come before EP, TP, SP:**
-- PP determines **which layers live on which devices**.
-- Only after PP is fixed can we partition:
-  - Experts (EP) across devices
-  - Tensor dimensions (TP) inside each block
-  - KV sequence partitions (SP) inside each attention layer
-- PP stages own their local KV cache and local weights.
-
-**Therefore:**
-$$
-\text{DP → PP}
-$$
----
-
-### EP is inside PP (expert groups belong to specific layers)
-
-EP distributes MoE experts **within the layers assigned by PP**.
-
-**Why EP must come before TP and SP:**
-- Expert weights must be assigned to EP ranks resolved **before** tensor-parallel shards apply.
-- TP cannot shard expert weights until expert placement is set by EP. 
-- SP does not affect expert routing; EP must be outer.
-
-In addition, for each MoE layer with $N_{\text{exp}}$ experts, the expert-parallel degree must satisfy
-
-$$
-EP \le N_{\text{exp}},
-$$
-
-so that each EP rank can host at least one expert. In practice, EP is usually chosen to divide $N_{\text{exp}}$
-(e.g., $EP \mid N_{\text{exp}}$), but the only hard requirement in this model is $EP \le N_{\text{exp}}$.
-
-**Therefore:**
-$$
-\text{DP → PP → EP}
-$$
-
----
-
-### TP is inside EP (tensor sharding within a defined expert/layer partition)
-TP splits matrices *within each expert or dense block*.
-
-**Why TP must come before SP:**
-- TP shards Q/K/V/O projections, MLP layers, and expert MLPs.
-- After TP, each rank holds a **fraction of $H$ or $H_{kv}$**.
-- SP requires all SP ranks to share identical TP-sharded weights.
-
-**Therefore:**  
-$$
-\text{DP → PP → EP → TP}
-$$
----
-
-### SP is innermost (KV sharding after all weights are fixed)
-SP shards the **KV cache**, not model parameters.
-
-**Why SP must be last:**
-- SP only partitions activation state (KV), not weights.
-- SP requires all TP ranks to already have consistent weight shards.
-- Only after DP/PP/EP/TP are fixed can we shard the KV cache.
-
-**Therefore:**  
-$$
-\text{DP → PP → EP → TP → SP}
-$$
+See **[modeling.notation.md §0](modeling.notation.md)** for the full nesting rationale
+($\text{DP} \to \text{PP} \to \text{EP} \to \text{TP} \to \text{SP}$).
 
 ---
 

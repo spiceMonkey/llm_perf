@@ -1,10 +1,53 @@
 # Notation Reference
 
-Shared symbol definitions for all `modeling.*.md` documents.  
+Shared symbol definitions and architectural conventions for all `modeling.*.md` documents.  
 Aligned with Megatron-LM (Shoeybi et al., 2019), DeepSpeed-MoE (Rajbhandari et al., 2022),
 FlashAttention (Dao et al., 2022, 2023), and NVIDIA CUTLASS / cuBLAS GEMM dataflow.
 
 Each section notes which document first uses or extends the symbols.
+
+---
+
+## 0. Parallelism Architecture
+_(→ modeling.tpot.md §0.2)_
+
+All documents in this suite assume a fixed nesting order for parallelism dimensions:
+
+$$
+\boxed{\text{DP} \;\rightarrow\; \text{PP} \;\rightarrow\; \text{EP} \;\rightarrow\; \text{TP} \;\rightarrow\; \text{SP}}
+$$
+
+This order reflects how model state is partitioned and reused during inference. Each level depends on all outer levels having already determined weight placement, token routing, or tensor partitioning.
+
+| Level | What it partitions | Why this ordering is required |
+|-------|--------------------|------------------------------|
+| **DP** | Entire model replica | Must wrap all state; inner groups cannot cross DP boundaries. |
+| **PP** | Layers | Layer ownership must be decided before experts/tensor shards are assigned. |
+| **EP** | Experts | Expert placement must be fixed before tensor sharding splits expert matrices. |
+| **TP** | Weight matrices | TP defines weight shards used identically across all SP ranks. |
+| **SP** | KV cache sequence dimension | KV is activation state only; must be sharded after all weight placement. |
+
+### DP — outermost (replicated model weights)
+
+DP creates fully independent model replicas for throughput scaling. No weight partitioning happens inside DP groups; all inner dimensions (PP, EP, TP, SP) apply **within** each DP replica.
+
+### PP — inside DP (layers assigned before experts/tensor sharding)
+
+PP determines **which layers live on which devices**. Only after PP is fixed can experts (EP), tensor dimensions (TP), and KV partitions (SP) be assigned. PP stages own their local weights and KV cache.
+
+### EP — inside PP (expert groups belong to specific layers)
+
+EP distributes MoE experts within the layers assigned by PP. Expert weights must be placed (EP) before tensor-parallel shards apply (TP). The expert-parallel degree must satisfy:
+$$EP \le N_{\text{exp}}$$
+In practice EP usually divides $N_{\text{exp}}$, but the only hard constraint is $EP \le N_{\text{exp}}$.
+
+### TP — inside EP (tensor sharding within a defined expert/layer partition)
+
+TP splits matrices within each expert or dense block. After TP, each rank holds a fraction of $H$ or $H_{kv}$. SP requires all SP ranks to share identical TP-sharded weights, so TP must precede SP.
+
+### SP — innermost (KV sharding after all weights are fixed)
+
+SP shards the **KV cache** (activation state), not model parameters. Only after DP/PP/EP/TP are fixed can the KV sequence dimension be partitioned.
 
 ---
 
