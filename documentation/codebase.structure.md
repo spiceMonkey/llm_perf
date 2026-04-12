@@ -14,14 +14,21 @@ Below is the high-level layout and the role of each module.
 
 ---
 
-## 1. Repository Layout (Nov 2025)
+## 1. Repository Layout (Apr 2026)
 
 ```text
 .
 ├── quickstart.ipynb                  # end-to-end tutorial notebook
 ├── documentation/
-│   ├── codebase.structure.md
-│   └── modeling.tpot.{md,pdf}
+│   ├── codebase.structure.md         # this file
+│   ├── modeling.notation.md          # shared symbol reference (§1–15)
+│   ├── modeling.references.md        # shared bibliography ([TAG] citations)
+│   ├── modeling.tpot.md              # decode TPOT: memory, FLOPs, traffic, comm, latency
+│   ├── modeling.prefill.md           # prefill FLOPs, TTFT, chunked/disaggregated prefill
+│   ├── modeling.kv.md                # PagedAttention block structure, fragmentation, S_max
+│   ├── modeling.framework.md         # per-phase framework overhead (non-roofline latency terms)
+│   ├── modeling.dram3d.md            # 3D-stacked DRAM BW derivation (hybrid bonding)
+│   └── modeling.e2e.md               # E2E metrics: TTFT, TPOT, Throughput/GPU, Pareto frontier
 ├── scripts/
 │   ├── convert_hf_model.py
 │   └── partition_sweep.py
@@ -291,7 +298,14 @@ Provides canonical model/system configs for rapid experimentation.
 ## 9. Tutorials & Examples
 
 - `quickstart.ipynb` — step-by-step walkthrough of ID discovery, optional HF conversion, and `InferenceCalculator` diagnostics
-- Inline doc snippets (this file, `documentation/modeling.tpot.md`, etc.) for conceptual coverage
+- `documentation/modeling.tpot.md` — primary analytical reference for decode TPOT modeling
+- `documentation/modeling.prefill.md` — prefill FLOPs, TTFT, chunked/disaggregated prefill
+- `documentation/modeling.kv.md` — KV cache paging, fragmentation, and context-length limits
+- `documentation/modeling.framework.md` — non-roofline latency terms (scheduling, sampling, KV transfer)
+- `documentation/modeling.dram3d.md` — 3D-stacked DRAM bandwidth derivation
+- `documentation/modeling.e2e.md` — end-to-end metrics and the throughput–latency Pareto frontier
+- `documentation/modeling.notation.md` — shared symbol reference for the entire doc suite
+- `documentation/modeling.references.md` — shared bibliography
 
 Standalone `test_*.py` drivers were removed to keep the repo lean; rely on the notebook or your own scripts for validation.
 
