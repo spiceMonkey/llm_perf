@@ -150,6 +150,8 @@ always implemented as a gated MLP (GeLU/SiLU/GLU/SwiGLU–style) with **three** 
 - an “up” projection (expansion),
 - a “down” projection (contraction).
 
+> **Convention:** This document assumes **gated FFN (SwiGLU/GeGLU style) throughout**, giving three weight matrices per FFN block. Standard (non-gated) FFN uses two matrices (up + down), yielding $2HI$ parameters. The gated form is used by LLaMA, Qwen, DeepSeek, and most modern LLMs.
+
 For a hidden size $H$ and FFN intermediate dimension $I$, this yields an FFN parameter count
 
 $$
@@ -649,9 +651,9 @@ $$
 Section 1 showed that the per-layer activation footprint for a single decoding token is small. However, without optimization, the traffic to read/write these activations—especially the $S \times S$ attention scores—would be massive ($O(S^2)$).
 
 ### The Role of FlashAttention
-**FlashAttention** avoids this $O(S^2)$ traffic by tiling the attention computation in SRAM. It ensures that the large attention score matrix is never written to or read from global memory.
+**FlashAttention** [FA1, FA2] avoids materializing the $S \times S$ score matrix in HBM by streaming the tiled attention computation through on-chip SRAM. More precisely: Q, K, V reads remain $O(SH)$; the $O(S^2)$ score matrix traffic is reduced by a factor of approximately $M$ (SRAM size) to $O(S^2/M)$ via tiling. For large $S$ and modern GPU SRAM sizes, this makes the $O(S^2)$ term negligible and leaves KV reads as the dominant activation traffic.
 
-Because FlashAttention eliminates the dominant score traffic, the residual activation traffic (hidden-state loads/stores, FFN buffers) is $O(H)$ per layer — negligible compared to the weight and KV cache terms for large models. We drop $T_{\text{act,device}}$ from the traffic model here. Residual kernel-level activation overhead is treated as an empirical correction in `modeling.framework.md`.
+Because FlashAttention drastically reduces the score matrix traffic, the residual activation traffic (hidden-state loads/stores, FFN buffers) is $O(H)$ per layer — negligible compared to the weight and KV cache terms for large models. We drop $T_{\text{act,device}}$ from the traffic model here. Residual kernel-level activation overhead is treated as an empirical correction in `modeling.framework.md`.
 
 ---
 
