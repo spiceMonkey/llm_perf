@@ -1456,21 +1456,23 @@ Tree algorithms reduce the latency term (logarithmic steps) but often utilize th
 
 ## 5.4 Sequence Parallel (SP) Communication
 
-Sequence Parallelism (SP) in inference typically refers to **Ring Attention**. Here, the KV cache is partitioned along the sequence dimension $S$. To compute attention for a new token:
-1.  The Query ($Q$) remains local on the device.
-2.  The KV blocks are **rotated** around the ring so that the local $Q$ can attend to the full history.
+Sequence Parallelism (SP) in inference typically refers to **Ring Attention** [RING-ATTN]. Here, the KV cache is partitioned along the sequence dimension $S$. To compute attention for a new token:
+1. The Query ($Q$) remains local on the device.
+2. The KV blocks are **rotated** around the ring so that the local $Q$ can attend to the full history.
 
-This is effectively an **All-Gather** operation (streaming the distributed KV cache to every rank), not an All-Reduce.
+This is a **pass-KV** ring variant: each device circulates its KV shard while keeping $Q$ stationary. This is the standard choice for KV-cache-dominated inference where KV is large relative to $Q$. (A pass-Q variant exists for training, where $Q$ is full-sequence; see [HUANG-CP-2024].)
 
-While tree-based variants are theoretically possible, practical implementations (e.g., Megatron-LM SP, DeepSpeed-Ulysses, and fused attention kernels) consistently use ring-style schedules: KV shards are large, non-contiguous in memory, and must be processed in left-to-right sequence order, making tree-style SP impractical.
+This is effectively an **All-Gather** operation (streaming the distributed KV cache to every rank), not an All-Reduce. Note that DeepSpeed-Ulysses [DEEPSPEED-ULYSSES] is an alternative SP approach using all-to-all instead of ring; unlike ring, it is bounded by the number of attention heads rather than the number of devices.
 
-Thus, for modeling purposes, we assume **ring-style SP communication**.
+While tree-based variants are theoretically possible, practical implementations (e.g., Megatron-LM SP and fused attention kernels) consistently use ring-style schedules: KV shards are large and must be processed in sequence order, making tree-style SP impractical.
+
+Thus, for modeling purposes, we assume **ring-style, pass-KV SP communication**.
 
 ### SP Ring Communication Latency
 
 A ring with $SP$ ranks performs $(SP - 1)$ uni-directional shifts. Unlike the two-pass scatter-gather structure of TP All-Reduce, Ring Attention is a **single-pass** streaming operation.
 
-The **per-token, per-layer** latency can be expressed as:
+The **per-token, per-layer** latency is:
 
 $$
 t_{SP}
@@ -1483,8 +1485,9 @@ t_{SP}
 $$
 
 Interpretation:
-- **1 Pass:** We do not scatter partial results; we simply stream the KV shards.
-- **Message Size:** In each step, we pass the local KV shard. The total volume transferred per device is the size of the *entire* rest of the KV cache: $\frac{SP-1}{SP} \times \text{TotalKV}$.
+- **Single pass:** KV shards circulate once around the ring; no scatter phase.
+- **Message size per step:** The local KV shard — $S/SP$ rows × $2H_{kv}/TP$ columns (TP and SP are orthogonal partitions of head and sequence dimensions respectively). Total volume transferred per device: $\frac{SP-1}{SP} \times \text{TotalKV}$.
+- **Decode note:** In single-token decode, per-token compute time is small, so communication overlap with compute ($\rho$) is unlikely to be significant for SP. Use $\rho \approx 0$ for SP when modeling decode latency.
 
 ---
 

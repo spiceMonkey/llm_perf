@@ -167,7 +167,19 @@ https://inferencex.semianalysis.com/inference
 Liu, H., Zaharia, M., & Abbeel, P. (2023).  
 *Ring Attention with Blockwise Transformers for Near-Infinite Context.*  
 ICLR 2024. arXiv:2310.01889.  
-→ Ring-based KV sharding across devices; all-gather / reduce-scatter communication pattern for long-context inference; basis for SP collective cost in §5.4.
+→ Ring-based KV sharding; pass-KV variant; (SP-1) rotation steps; single-pass streaming (no scatter phase). Basis for SP collective latency equation in §5.4.
+
+**[HUANG-CP-2024]**  
+Huang, Y., et al. (2024).  
+*Context Parallelism for Scalable Million-Token Inference.*  
+arXiv:2411.01783.  
+→ Extends Ring Attention with pass-KV and pass-Q variants; latency analysis for decode vs. prefill; used to confirm TP × SP interaction and per-step message size in §5.4.
+
+**[DEEPSPEED-ULYSSES]**  
+Rajbhandari, S., et al. (2023).  
+*DeepSpeed-Ulysses: System Optimizations for Enabling Training of Extreme Long Sequence Transformer Models.*  
+arXiv:2309.14509.  
+→ Alternative SP approach using all-to-all (not ring). Bounded by number of attention heads (cannot exceed $n_{kv}$). Contrasted with ring SP in §5.4 to justify ring assumption for large-context inference.
 
 ---
 
