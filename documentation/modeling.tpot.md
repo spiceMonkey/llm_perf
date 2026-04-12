@@ -18,10 +18,6 @@ cluster topology, performance modeling
 
 # Table of Contents
 
-- [0. Introduction and Notation](#0-introduction-and-notation)
-  - [0.1 Symbol Notation](#01-symbol-notation) _(→ modeling.notation.md §1–14)_
-  - [0.2 Parallelism Architecture](#02-parallelism-architecture) _(→ modeling.notation.md §0)_
-
 - [1. Memory Footprint](#1-memory-footprint)
   - [1.0 Parameter Definitions (P vs W)](#10-parameter-definitions-p-vs-w)
   - [1.1 Model Parameter Memory](#11-model-parameter-memory)
@@ -62,32 +58,6 @@ cluster topology, performance modeling
   - [6.2 Local and Networking Per-Token Latency](#62-local-and-networking-per-token-latency)
   - [6.3 TPS and TTPS — Pipeline Throughput](#63-tps-and-ttps--pipeline-throughput)
   - [6.4 TTFT — Time To First Token (Prefill on a Separate Cluster)](#64-ttft--time-to-first-token-prefill-on-a-separate-cluster)
-
----
-
-<div style="page-break-before: always;"></div>
-
-# 0. Introduction and Notation
-
-This document presents a unified performance model for large-scale LLM inference on multi-GPU/NPU clusters.
-The focus is **autoregressive decoding**, where performance depends on:
-
-- model dimensions $(H, n_q, n_{kv}, L, I_{\text{dense}}, I_{\text{moe}})$,
-- parallelism configuration $(DP, PP, EP, TP, SP)$,
-- compute and memory efficiency (FlashAttention),
-- KV-cache layout and size,
-- interconnect topology and collective bandwidth.
-
-## 0.1 Symbol Notation
-
-All symbols used in this document are defined in **[modeling.notation.md](modeling.notation.md)**.
-
----
-
-## 0.2 Parallelism Architecture
-
-See **[modeling.notation.md §0](modeling.notation.md)** for the full nesting rationale
-($\text{DP} \to \text{PP} \to \text{EP} \to \text{TP} \to \text{SP}$).
 
 ---
 

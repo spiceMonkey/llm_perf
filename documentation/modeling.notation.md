@@ -8,8 +8,8 @@ Each section notes which document first uses or extends the symbols.
 
 ---
 
-## 0. Parallelism Architecture
-_(→ modeling.tpot.md §0.2)_
+## 1. Parallelism Architecture
+_(→ modeling.tpot.md)_
 
 All documents in this suite assume a fixed nesting order for parallelism dimensions:
 
@@ -51,7 +51,7 @@ SP shards the **KV cache** (activation state), not model parameters. Only after 
 
 ---
 
-## 1. Parallelism Dimensions
+## 2. Parallelism Dimensions
 _(→ modeling.tpot.md)_
 
 - $DP$ — Data Parallelism. Number of full model replicas; each handles disjoint input batches.
@@ -64,7 +64,7 @@ _(→ modeling.tpot.md)_
 
 ---
 
-## 2. Model Dimensions
+## 3. Model Dimensions
 _(→ modeling.tpot.md)_
 
 - $L$ — Number of transformer layers.
@@ -86,7 +86,7 @@ _(→ modeling.tpot.md)_
 
 ---
 
-## 3. Sequence, Batch, and Precision
+## 4. Sequence, Batch, and Precision
 _(→ modeling.tpot.md §6.4 for batch scaling; → modeling.prefill.md for prefill batch)_
 
 - $S$ — Decode context length (tokens in KV cache during decoding).
@@ -98,7 +98,7 @@ _(→ modeling.tpot.md §6.4 for batch scaling; → modeling.prefill.md for pref
 
 ---
 
-## 4. Memory
+## 5. Memory
 _(→ modeling.tpot.md; → modeling.kv.md for paging extensions)_
 
 Parameter sizes:
@@ -123,7 +123,7 @@ Memory traffic (bytes **moved** between HBM and compute per token):
 
 ---
 
-## 5. Device Compute and Bandwidth
+## 6. Device Compute and Bandwidth
 _(→ modeling.tpot.md; → modeling.dram3d.md for 3D DRAM extensions)_
 
 - $N_{\text{GPUs}}$ — Total devices in the cluster.
@@ -132,7 +132,7 @@ _(→ modeling.tpot.md; → modeling.dram3d.md for 3D DRAM extensions)_
 
 ---
 
-## 6. Networking
+## 7. Networking
 _(→ modeling.tpot.md)_
 
 - $\alpha_{TP}, \alpha_{EP}, \alpha_{SP}, \alpha_{PP}$ — Per-collective startup latency (α–β model).
@@ -143,7 +143,7 @@ _(→ modeling.tpot.md)_
 
 ---
 
-## 7. FLOPs
+## 8. FLOPs
 _(→ modeling.tpot.md)_
 
 Attention:
@@ -170,7 +170,7 @@ Layer and token:
 
 ---
 
-## 8. Decode Timing and Throughput
+## 9. Decode Timing and Throughput
 _(→ modeling.tpot.md)_
 
 - $t_{\text{compute}}$ — Per-token compute time: $F_{\text{token,device}} / R_{\text{GPU}}$.
@@ -186,7 +186,7 @@ _(→ modeling.tpot.md)_
 
 ---
 
-## 9. Batch Scaling
+## 10. Batch Scaling
 _(→ modeling.tpot.md §6.4 — to be populated)_
 
 _Symbols for arithmetic intensity as a function of B, batched TPOT, and the
@@ -194,7 +194,7 @@ throughput–latency Pareto curve. Defined in modeling.tpot.md §6.4._
 
 ---
 
-## 10. Prefill and TTFT
+## 11. Prefill and TTFT
 _(→ modeling.prefill.md — to be populated)_
 
 - $F_{\text{prefill}}$ — Total FLOPs for the prefill pass (processes full input sequence).
@@ -206,7 +206,7 @@ _Additional prefill batch and chunked-prefill symbols defined in modeling.prefil
 
 ---
 
-## 11. KV Cache Management
+## 12. KV Cache Management
 _(→ modeling.kv.md — to be populated)_
 
 _Symbols for PagedAttention block size, fragmentation factor, and effective
@@ -214,7 +214,7 @@ HBM capacity after paging overhead. Defined in modeling.kv.md._
 
 ---
 
-## 12. Framework Overhead
+## 13. Framework Overhead
 _(→ modeling.framework.md — to be populated)_
 
 - $t_{\text{startup}}$ — Kernel warmup and CUDA graph capture overhead.
@@ -223,7 +223,7 @@ _Additional per-phase framework latency constants defined in modeling.framework.
 
 ---
 
-## 13. End-to-End Metrics
+## 14. End-to-End Metrics
 _(→ modeling.e2e.md — to be populated)_
 
 _Symbols for TPOT, interactivity, throughput/GPU, and Pareto frontier
@@ -231,7 +231,7 @@ under continuous batching. Defined in modeling.e2e.md._
 
 ---
 
-## 14. 3D DRAM
+## 15. 3D DRAM
 _(→ modeling.dram3d.md — to be populated)_
 
 _Symbols for hybrid bonding pitch, die area, pin density, data rate per pin,
