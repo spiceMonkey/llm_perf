@@ -22,7 +22,7 @@ Below is the high-level layout and the role of each module.
 ├── documentation/
 │   ├── codebase.structure.md
 │   ├── equations.cheetsheet.{md,pdf}
-│   └── modeling.methodology.{md,pdf}
+│   └── modeling.tpot.{md,pdf}
 ├── scripts/
 │   ├── convert_hf_model.py
 │   └── partition_sweep.py
@@ -292,7 +292,7 @@ Provides canonical model/system configs for rapid experimentation.
 ## 9. Tutorials & Examples
 
 - `quickstart.ipynb` — step-by-step walkthrough of ID discovery, optional HF conversion, and `InferenceCalculator` diagnostics
-- Inline doc snippets (this file, `documentation/modeling.methodology.md`, etc.) for conceptual coverage
+- Inline doc snippets (this file, `documentation/modeling.tpot.md`, etc.) for conceptual coverage
 
 Standalone `test_*.py` drivers were removed to keep the repo lean; rely on the notebook or your own scripts for validation.
 
