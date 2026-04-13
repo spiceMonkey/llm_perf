@@ -294,7 +294,7 @@ $$
 I^* = \frac{R_{\text{GPU}}}{B_{\text{eff,mem}}}
 $$
 
-Increasing $B_{\text{eff,mem}}$ from 3.35 TB/s (H100 HBM3E, per [H100-SPEC]) toward 10 TB/s (Scenario 2 above) raises $I^*$ by a factor of ~3×, meaning that workloads previously compute-bound may become memory-bound under 3D DRAM, and vice versa.
+Increasing $B_{\text{eff,mem}}$ from 3.35 TB/s (H100 HBM3E, per [H100-SPEC]) toward 10 TB/s (Scenario 2 above) lowers $I^*$ by a factor of ~3×, meaning that workloads previously memory-bound may become compute-bound under 3D DRAM, and vice versa.
 
 **Note on `hbm4e.512dev.json`.** The system spec at `llm_perf/database/system/hbm4e.512dev.json` specifies `hbm_bandwidth_GBps = 6400` (6.4 TB/s per device). This value sits between the H100 HBM3E baseline (3.35 TB/s, [H100-SPEC]) and the near-term hybrid bonding projection (Scenario 2: ~10 TB/s at $p_{HB} = 2\;\mu\text{m}$), making it a reasonable interpolation point for near-future HBM4E devices.
 

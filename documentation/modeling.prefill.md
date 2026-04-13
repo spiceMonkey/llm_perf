@@ -960,6 +960,8 @@ $$
 
 This reduces per-link transfer volume proportionally to the parallelism degree, though the aggregate cluster-level bandwidth requirement remains $M_{\text{KV,total}}$.
 
+> **Scope caveat:** The shard-aware point-to-point formula above assumes the prefill and decode clusters share the **same $(TP, SP)$ partition**. In practice, prefill clusters often run at lower TP (compute-optimal, large-GEMM regime) while decode clusters run at higher TP/SP (memory-optimal, KV-sharded regime). When the two clusters have mismatched parallelism topologies, a direct rank-to-rank transfer is not possible; the transfer layer must instead perform an **all-to-all resharding** across the network to re-shard the KV state from the prefill layout to the decode layout [DISAGG-PREFILL]. The bandwidth model in this case is better approximated by a collective scatter cost rather than $M_{\text{KV,total}} / (TP \cdot SP)$ per link.
+
 ### Transfer latency ($\alpha$–$\beta$ model)
 
 Using the $\alpha$–$\beta$ model [ALPHA-BETA] for the inter-cluster interconnect:
