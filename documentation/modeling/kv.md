@@ -11,7 +11,7 @@ LLM inference, paged memory, beam search, copy-on-write, sequence parallelism
 
 ## Abstract
 
-The baseline KV cache model in `modeling.tpot.md` §1.3 and §2.3 assumes contiguous allocation:
+The baseline KV cache model in `tpot.md` §1.3 and §2.3 assumes contiguous allocation:
 keys and values for all $S$ token positions are stored and accessed as a single dense tensor per layer.
 Real production serving systems, however, use **paged KV allocation** (PagedAttention [VLLM]) to enable
 dynamic memory sharing, efficient preemption, and fine-grained capacity management.
@@ -25,7 +25,7 @@ model, and shows how paging interacts with TP, SP, and PP sharding.
 
 ## Table of Contents
 
-- [1. Baseline KV Model (from modeling.tpot.md)](#1-baseline-kv-model-from-modelingtpotmd)
+- [1. Baseline KV Model (from tpot.md)](#1-baseline-kv-model-from-modelingtpotmd)
 - [2. PagedAttention Block Structure](#2-pagedattention-block-structure)
 - [3. Fragmentation Factor](#3-fragmentation-factor)
   - [3.1 Internal Fragmentation](#31-internal-fragmentation)
@@ -39,9 +39,11 @@ model, and shows how paging interacts with TP, SP, and PP sharding.
 
 ---
 
-## 1. Baseline KV Model (from modeling.tpot.md)
+> **Scope:** This document models standard GQA/MQA KV cache with $H_{kv} = n_{kv} \cdot d_{\text{head}}$ per token per layer. It does **not** model Multi-head Latent Attention (MLA) as used in DeepSeek-V2/V3, where a low-rank latent vector of dimension $d_c \ll H_{kv}$ is stored per token instead. MLA's KV cache volume is computed differently and would require a separate model section.
 
-This section briefly restates the contiguous KV model established in `modeling.tpot.md` §1.3 and §2.3
+## 1. Baseline KV Model (from tpot.md)
+
+This section briefly restates the contiguous KV model established in `tpot.md` §1.3 and §2.3
 as the reference point. The derivations are not repeated here; refer to those sections for the full
 treatment.
 
@@ -62,9 +64,7 @@ Under pipeline parallelism (PP), tensor parallelism (TP), and sequence paralleli
 owns $L/PP$ layers, $1/TP$ of the head-channel dimension, and $1/SP$ of the sequence dimension:
 
 $$
-\boxed{
 M_{\text{KV,device}} = \frac{L}{PP} \cdot \frac{2 \, S \, H_{kv} \, b}{TP \cdot SP}
-}
 $$
 
 ### Per-device KV traffic per token (§2.3)
@@ -101,6 +101,8 @@ M_{\text{block}} = B_{\text{block}} \cdot \frac{2 \, H_{kv} \, b \cdot (L/PP)}{T
 $$
 
 This is the granularity at which memory is allocated and freed.
+
+> **Convention note:** This document defines a KV block at the device level, spanning all $L/PP$ layers on the device. vLLM's implementation allocates blocks per-layer (each block stores $B_{\text{block}}$ tokens for one layer). The two conventions yield identical total memory; the device-level block simplifies the fragmentation and capacity analysis below.
 
 ### Blocks required per sequence
 
@@ -153,9 +155,7 @@ For **uniform** sequence-length distribution over $[1, S_{\max}]$, the expectati
 simplifies to a first-order approximation:
 
 $$
-\boxed{
 \varphi_{\text{avg}} \approx 1 + \frac{B_{\text{block}}}{2 S}
-}
 $$
 
 This approximation holds when $S \gg B_{\text{block}} / 2$, which is satisfied for all realistic
@@ -181,7 +181,7 @@ model here.
 
 ## 4. Block Allocation Traffic Overhead
 
-The baseline KV traffic $T_{\text{KV,device}}$ from `modeling.tpot.md` §2.3 accounts for reading and
+The baseline KV traffic $T_{\text{KV,device}}$ from `tpot.md` §2.3 accounts for reading and
 writing KV tensor values. Paged allocation introduces additional memory operations beyond this:
 block-table lookups, copy-on-write for branching, and preemption.
 
@@ -210,11 +210,17 @@ modify a shared block.
 For beam search with beam width $W$, the expected extra traffic per decode step from CoW copies is:
 
 $$
-T_{\text{CoW}} = (W - 1) \cdot M_{\text{KV,device}}
+T_{\text{CoW}} = (W - 1) \cdot M_{\text{block}}
 $$
 
 This follows because all $W$ beams share a common prefix; each branch eventually needs to write
-into its own physical block, triggering at most $W-1$ block copies per branch point.
+into its own physical block, triggering at most $W-1$ block copies per divergence point.
+PagedAttention [VLLM] performs CoW at block granularity — only the one block being written to at
+the divergence point needs copying, not the shared prefix history. $M_{\text{block}}$ is defined in §2:
+
+$$
+M_{\text{block}} = B_{\text{block}} \cdot \frac{2 \, H_{kv} \, b \cdot (L/PP)}{TP \cdot SP}
+$$
 
 For **greedy decode** ($W = 1$) or **independent parallel sampling** (no shared prefix):
 
@@ -224,19 +230,19 @@ $$
 
 **Analytical model:** for single-sequence greedy decode, CoW traffic is zero and $T_{\text{KV,device}}$
 from the baseline model is exact. For beam search with width $W$, augment $T_{\text{KV,device}}$ by
-the factor $(W - 1)$ for the prefix-copy contribution:
+the block-level copy cost at each branch point:
 
 $$
-\boxed{
 T_{\text{KV,device}}^{\text{paged}}
 \approx
-T_{\text{KV,device}} + (W - 1) \cdot M_{\text{KV,device}}
-}
+T_{\text{KV,device}} + (W - 1) \cdot M_{\text{block}}
 $$
 
-where $T_{\text{KV,device}}$ is the baseline contiguous-allocation traffic and $M_{\text{KV,device}}$
-is the per-device KV capacity. This is a conservative upper bound; in practice, copy events
-amortize over multiple decode steps because only the actively diverged suffix blocks need copying.
+where $T_{\text{KV,device}}$ is the baseline contiguous-allocation traffic and $M_{\text{block}}$ is
+the per-device size of a single KV block (the unit of physical copy). This formula represents the
+actual block-level copy cost per divergence event; using the full per-device KV capacity
+$M_{\text{KV,device}}$ instead would overstate the cost by a factor of $S / B_{\text{block}}$
+(e.g., $256\times$ for $S=4096$, $B_{\text{block}}=16$).
 
 ### 4.3 Preemption and Recompute
 
@@ -251,7 +257,7 @@ substantial overhead:
   $O(S^2)$ FLOPs.
 
 These overheads are **workload-dependent** and not amenable to closed-form analytical treatment.
-They are treated as empirical correction terms in `modeling.framework.md`. The design implication
+They are treated as empirical correction terms in `framework.md`. The design implication
 is that $\varphi$ and $M_{\text{HBM,KV,avail}}$ should be sized conservatively to keep the block
 pool occupancy below ~85–90% in steady state, avoiding preemption entirely under expected workloads.
 
@@ -317,7 +323,7 @@ $$
 
 where $M_{\text{sys}}$ is a system-level overhead reserve (CUDA context, kernel workspace, OS pages;
 typically 1–2 GB per GPU). $M_{\theta,\text{device}}$ and $M_{\text{act,device}}$ are defined in
-`modeling.tpot.md` §1.4.
+`tpot.md` §1.4.
 
 ### KV capacity after fragmentation
 
@@ -341,10 +347,8 @@ $$
 Solving for $S_{\max}$:
 
 $$
-\boxed{
 S_{\max} = \frac{M_{\text{KV,capacity}} \cdot TP \cdot SP}{2 \, H_{kv} \, b \cdot (L/PP)}
 = \frac{\left(M_{\text{HBM}} - M_{\theta,\text{device}} - M_{\text{act,device}} - M_{\text{sys}}\right) \cdot TP \cdot SP}{\varphi_{\text{avg}} \cdot 2 \, H_{kv} \, b \cdot (L/PP)}
-}
 $$
 
 Substituting $\varphi_{\text{avg}} \approx 1 + B_{\text{block}} / (2 S)$ and noting that this gives
@@ -358,7 +362,7 @@ S_{\max} \approx \frac{\hat{S}}{1 + B_{\text{block}} / (2\hat{S})}
 = \hat{S} - \frac{B_{\text{block}}}{2}
 $$
 
-where $\hat{S}$ is the contiguous-allocation estimate from `modeling.tpot.md` §6.1:
+where $\hat{S}$ is the contiguous-allocation estimate from `tpot.md` §6.1:
 
 $$
 \hat{S} = \frac{\left(M_{\text{HBM}} - M_{\theta,\text{device}} - M_{\text{act,device}}\right) \cdot TP \cdot SP}{2 \, H_{kv} \, b \cdot (L/PP)}
@@ -370,25 +374,23 @@ regime $S \lesssim B_{\text{block}}$, where it can reduce usable capacity substa
 
 ### Summary: fragmentation-corrected HBM constraint
 
-The HBM feasibility condition from `modeling.tpot.md` §6.1 is refined by replacing the nominal
+The HBM feasibility condition from `tpot.md` §6.1 is refined by replacing the nominal
 KV capacity with the fragmentation-penalized version:
 
 $$
-\boxed{
 \frac{L}{PP}
 \left[
-\frac{H^2 + 3 H H_{kv}}{TP}
+\frac{2H^2 + 2 H H_{kv}}{TP}
 + \frac{3 H I \, N_{\text{exp}}}{TP \cdot EP}
-+ (4H + 2H_{kv})
 + \varphi_{\text{avg}} \cdot \frac{2 S H_{kv}}{TP \cdot SP}
 \right] b
++ B(4H + 2H_{kv}) b
 + \frac{V H}{TP} b
 \le M_{\text{HBM}} - M_{\text{sys}}
-}
 $$
 
 For $\varphi_{\text{avg}} = 1$ (contiguous allocation), this reduces exactly to the expression in
-§6.1 of `modeling.tpot.md`.
+§6.1 of `tpot.md`.
 
 ---
 
@@ -406,10 +408,10 @@ Ainslie, J., Lee-Thorp, J., de Jong, M., Zelaski, T., Sanghai, S., & Xu, Y. (202
 EMNLP 2023. arXiv:2305.13245.  
 → Grouped-query attention; $n_{kv} < n_q$; KV cache size reduction via $H_{kv} = n_{kv} \cdot d_{\text{head}}$.
 
-**[modeling.tpot.md §1.3]** — Baseline per-layer and per-device KV memory derivation.
+**[tpot.md §1.3]** — Baseline per-layer and per-device KV memory derivation.
 
-**[modeling.tpot.md §2.3]** — Baseline per-device KV traffic per token.
+**[tpot.md §2.3]** — Baseline per-device KV traffic per token.
 
-**[modeling.tpot.md §6.1]** — HBM feasibility constraint under contiguous KV allocation.
+**[tpot.md §6.1]** — HBM feasibility constraint under contiguous KV allocation.
 
-See `documentation/modeling.references.md` for full bibliography.
+See `documentation/references.md` for full bibliography.

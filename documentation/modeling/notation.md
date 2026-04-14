@@ -9,12 +9,12 @@ Each section notes which document first uses or extends the symbols.
 ---
 
 ## 1. Parallelism Architecture
-_(→ modeling.tpot.md)_
+_(→ tpot.md)_
 
 All documents in this suite assume a fixed nesting order for parallelism dimensions:
 
 $$
-\boxed{\text{DP} \;\rightarrow\; \text{PP} \;\rightarrow\; \text{EP} \;\rightarrow\; \text{TP} \;\rightarrow\; \text{SP}}
+\text{DP} \;\rightarrow\; \text{PP} \;\rightarrow\; \text{EP} \;\rightarrow\; \text{TP} \;\rightarrow\; \text{SP}
 $$
 
 This order reflects how model state is partitioned and reused during inference. Each level depends on all outer levels having already determined weight placement, token routing, or tensor partitioning.
@@ -52,7 +52,7 @@ SP shards the **KV cache** (activation state), not model parameters. Only after 
 ---
 
 ## 2. Parallelism Dimensions
-_(→ modeling.tpot.md)_
+_(→ tpot.md)_
 
 - $DP$ — Data Parallelism. Number of full model replicas; each handles disjoint input batches.
   $$DP = \left\lfloor \frac{N_{\text{GPUs}}}{PP \cdot EP \cdot TP \cdot SP} \right\rfloor$$
@@ -65,7 +65,7 @@ _(→ modeling.tpot.md)_
 ---
 
 ## 3. Model Dimensions
-_(→ modeling.tpot.md)_
+_(→ tpot.md)_
 
 - $L$ — Number of transformer layers.
 - $L_{\text{moe}}$ — Number of MoE layers (defaults to $L$ if all layers are MoE, or $0$ for dense).
@@ -87,7 +87,7 @@ _(→ modeling.tpot.md)_
 ---
 
 ## 4. Sequence, Batch, and Precision
-_(→ modeling.tpot.md §6.4 for batch scaling; → modeling.prefill.md for prefill batch)_
+_(→ tpot.md §6.4 for batch scaling; → prefill.md for prefill batch)_
 
 - $S$ — Decode context length (tokens in KV cache during decoding).
 - $S_{\text{input}}$ — Input sequence length for prefill.
@@ -99,7 +99,7 @@ _(→ modeling.tpot.md §6.4 for batch scaling; → modeling.prefill.md for pref
 ---
 
 ## 5. Memory
-_(→ modeling.tpot.md; → modeling.kv.md for paging extensions)_
+_(→ tpot.md; → kv.md for paging extensions)_
 
 Parameter sizes:
 - $P_{\text{attn}}$ — Attention parameter count.
@@ -123,7 +123,7 @@ Memory traffic (bytes **moved** between HBM and compute per token):
 ---
 
 ## 6. Device Compute and Bandwidth
-_(→ modeling.tpot.md; → modeling.dram3d.md for 3D DRAM extensions)_
+_(→ tpot.md; → dram3d.md for 3D DRAM extensions)_
 
 - $N_{\text{GPUs}}$ — Total devices in the cluster.
 - $R_{\text{GPU}}$ — Peak compute throughput (FLOPs/s).
@@ -132,7 +132,7 @@ _(→ modeling.tpot.md; → modeling.dram3d.md for 3D DRAM extensions)_
 ---
 
 ## 7. Networking
-_(→ modeling.tpot.md)_
+_(→ tpot.md)_
 
 - $\alpha_{TP}, \alpha_{EP}, \alpha_{SP}, \alpha_{PP}$ — Per-collective startup latency (α–β model).
 - $B_{\text{eff,TP}}, B_{\text{eff,EP}}, B_{\text{eff,SP}}, B_{\text{eff,PP}}$ — Effective interconnect bandwidths.
@@ -143,7 +143,7 @@ _(→ modeling.tpot.md)_
 ---
 
 ## 8. FLOPs
-_(→ modeling.tpot.md)_
+_(→ tpot.md)_
 
 Attention:
 - $F_Q, F_K, F_V, F_O$ — FLOPs for Q, K, V, output projections.
@@ -168,7 +168,7 @@ Layer and token:
 ---
 
 ## 9. Decode Timing and Throughput
-_(→ modeling.tpot.md)_
+_(→ tpot.md)_
 
 - $t_{\text{compute}}$ — Per-token compute time: $F_{\text{token,device}} / R_{\text{GPU}}$.
 - $t_{\text{mem}}$ — Per-token memory time: $T_{\text{token,device}}^{\text{eff}} / B_{\text{eff,mem}}$.
@@ -184,7 +184,7 @@ _(→ modeling.tpot.md)_
 ---
 
 ## 10. Batch Scaling
-_(→ modeling.tpot.md §6.4)_
+_(→ tpot.md §6.4)_
 
 - $OI(B)$ — Operational intensity as a function of batch size $B$:
   $$OI(B) = \frac{B \times F_{\text{token,device}}}{T_{\theta,\text{device}} + B \times T_{\text{KV,device}}}$$
@@ -196,13 +196,13 @@ _(→ modeling.tpot.md §6.4)_
 ---
 
 ## 11. Prefill and TTFT
-_(→ modeling.prefill.md)_
+_(→ prefill.md)_
 
 FLOPs:
-- $F_{\text{proj,prefill}}$ — Q/K/V/O projection FLOPs for prefill: $(2H^2 + 6HH_{kv}) S_{\text{input}}$.
-- $F_{\text{score,prefill}}$ — Attention score FLOPs: $2 S_{\text{input}}^2 H_{kv}$.
-- $F_{\text{value,prefill}}$ — Value application FLOPs: $2 S_{\text{input}}^2 H_{kv}$.
-- $F_{\text{ffn,prefill}}$ — FFN FLOPs for prefill: $4 H I_{\text{eff}} S_{\text{input}}$.
+- $F_{\text{proj,prefill}}$ — Q/K/V/O projection FLOPs for prefill: $(4H^2 + 4HH_{kv}) S_{\text{input}}$.
+- $F_{\text{score,prefill}}$ — Attention score FLOPs: $2 S_{\text{input}}^2 H$.
+- $F_{\text{value,prefill}}$ — Value application FLOPs: $2 S_{\text{input}}^2 H$.
+- $F_{\text{ffn,prefill}}$ — FFN FLOPs for prefill: $6 H I_{\text{eff}} S_{\text{input}}$.
 - $F_{\text{layer,prefill}}$ — Per-layer prefill FLOPs (projections + $S^2$ attention).
 - $F_{\text{prefill,device}}$ — Total prefill FLOPs per device across all layers on this PP stage.
 
@@ -213,7 +213,7 @@ Timing:
 - $t_{\text{prefill,comm}}$ — Total prefill communication time (TP/EP/SP/PP collectives).
 - $t_{\text{chunk}}$ — Latency of one chunked-prefill iteration.
 - $t_{\text{pipeline,warmup}}$ — Pipeline fill time: $(PP-1) \times t_{\text{stage}}$.
-- $TTFT$ — Time To First Token: $t_{\text{sched}} + t_{\text{tok}} + t_{\text{prefill}} + t_{\text{KV\_transfer}} + t_{\text{token}}$.
+- $TTFT$ — Time To First Token: $t_{\text{sched}} + t_{\text{tok}} + t_{\text{prefill}} + t_{\text{KV-transfer}} + t_{\text{token}}$.
 - $TTFT_{\text{disagg}}$ — TTFT for disaggregated prefill architecture (includes KV transfer).
 
 Chunked prefill:
@@ -233,7 +233,7 @@ KV transfer:
 ---
 
 ## 12. KV Cache Management
-_(→ modeling.kv.md)_
+_(→ kv.md)_
 
 - $B_{\text{block}}$ — KV block size in tokens (PagedAttention page size; typical: 16 or 32).
 - $N_{\text{blocks}}(S)$ — Blocks allocated for a sequence of length $S$: $\lceil S / B_{\text{block}} \rceil$.
@@ -246,7 +246,7 @@ _(→ modeling.kv.md)_
 ---
 
 ## 13. Framework Overhead
-_(→ modeling.framework.md)_
+_(→ framework.md)_
 
 Per-request (once):
 - $t_{\text{tok}}$ — Tokenization latency (CPU BPE/SP processing).
@@ -259,29 +259,29 @@ Per-step (each decode iteration):
 - $t_{\text{detok}}$ — Response streaming / detokenization latency per output token.
 
 Disaggregated serving:
-- $t_{\text{KV\_transfer}}$ — KV cache transfer latency from prefill to decode cluster (α–β model).
-- $M_{\text{KV\_transfer}}$ — KV bytes transferred per device: $2 S_{\text{input}} H_{kv} b \times L / (PP \times TP \times SP)$.
+- $t_{\text{KV-transfer}}$ — KV cache transfer latency from prefill to decode cluster (α–β model).
+- $M_{\text{KV-transfer}}$ — KV bytes transferred per device: $2 S_{\text{input}} H_{kv} b \times L / (PP \times TP \times SP)$.
 
-Empirical calibration constants (defined in modeling.framework.md; negligible in roofline):
+Empirical calibration constants (defined in framework.md; negligible in roofline):
 - $c_{\text{act}}$ — Activation I/O constant: unavoidable hidden-state HBM transfers per layer (~8–12).
 - $c_{\text{norm}}$ — Norm FLOP constant: per-element norm operation count (~5–20).
 
 Total framework overhead:
 - $T_{\text{out}}$ — Number of output tokens per request.
-- $t_{\text{framework}} = t_{\text{tok}} + t_{\text{sched}} + T_{\text{out}} \times (t_{\text{graph}} + t_{\text{sample}} + t_{\text{detok}}) + t_{\text{KV\_transfer}}$.
+- $t_{\text{framework}} = t_{\text{tok}} + T_{\text{out}} \times (t_{\text{sched}} + t_{\text{graph}} + t_{\text{sample}} + t_{\text{detok}}) + t_{\text{KV-transfer}}$.
 
 ---
 
 ## 14. End-to-End Metrics
-_(→ modeling.e2e.md)_
+_(→ e2e.md)_
 
 Core metrics:
-- $TTFT$ — Time To First Token (defined in §11 above; assembled in modeling.e2e.md §2).
+- $TTFT$ — Time To First Token (defined in §11 above; assembled in e2e.md §2).
 - $\text{TPOT}(B)$ — Time Per Output Token (per sequence): $t_{\text{token}}(B) / B$ (defined in §10 above).
 - $\text{E2E}(N_{\text{out}})$ — End-to-end latency: $TTFT + (N_{\text{out}} - 1) \times \text{TPOT}$.
 - $\text{Tput/GPU}$ — Output tokens per second per GPU: $TTPS / N_{\text{GPUs}}$.
 - $\text{Interactivity}$ — Per-user output rate: $1 / \text{TPOT} = B / t_{\text{token}}(B)$ (tokens/s/request).
-- $\text{Goodput}$ — Fraction of GPU time spent on useful token generation.
+- $\text{Goodput}$ — Fraction of GPU time spent on useful token generation (excludes overhead, retries, and rejected speculative tokens). **Scope note:** speculative decoding is not modeled in this suite; the goodput definition is included for completeness but speculative acceptance rates and draft-model overhead are out of scope.
 
 Continuous batching:
 - $\lambda$ — Request arrival rate (requests/second).
@@ -297,7 +297,7 @@ $$\text{Tput/GPU} \times \text{TPOT} = \frac{1}{N_{\text{GPUs,per-replica}}}$$
 ---
 
 ## 15. 3D DRAM
-_(→ modeling.dram3d.md)_
+_(→ dram3d.md)_
 
 Physical parameters:
 - $A_{\text{die}}$ — DRAM die area (mm²).

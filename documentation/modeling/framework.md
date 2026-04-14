@@ -5,7 +5,7 @@
 
 ---
 
-The hardware roofline model in `modeling.tpot.md` establishes a lower bound on per-token decode latency, governed by compute throughput and HBM bandwidth. Real serving systems, however, introduce additional latency above this bound: tokenization at request entry, CUDA kernel launch or graph replay per decode step, request scheduling and batch assembly, token sampling, and response streaming. Some of these overheads are analytically tractable — disaggregated KV transfer, for instance, follows the standard α–β model given network parameters — but most are empirical constants that require profiling on the target system. This document catalogs all such overhead terms, classifies them by phase and derivability, and formally defines the calibration constants $c_{\text{act}}$ and $c_{\text{norm}}$ that were removed from `modeling.tpot.md` as negligible in the dominant-term analysis. Together with `modeling.tpot.md` and `modeling.prefill.md`, this document provides the full per-request cost accounting assembled in `modeling.e2e.md`.
+The hardware roofline model in `tpot.md` establishes a lower bound on per-token decode latency, governed by compute throughput and HBM bandwidth. Real serving systems, however, introduce additional latency above this bound: tokenization at request entry, CUDA kernel launch or graph replay per decode step, request scheduling and batch assembly, token sampling, and response streaming. Some of these overheads are analytically tractable — disaggregated KV transfer, for instance, follows the standard α–β model given network parameters — but most are empirical constants that require profiling on the target system. This document catalogs all such overhead terms, classifies them by phase and derivability, and formally defines the calibration constants $c_{\text{act}}$ and $c_{\text{norm}}$ that were removed from `tpot.md` as negligible in the dominant-term analysis. Together with `tpot.md` and `prefill.md`, this document provides the full per-request cost accounting assembled in `e2e.md`.
 
 ---
 
@@ -42,7 +42,7 @@ The table below catalogs all framework overhead terms, organized by the serving 
 | Request scheduling / batch assembly | Serving | Empirical | $t_{\text{sched}}$ | ~10–200 µs |
 | Token sampling | Decode per-step | Empirical | $t_{\text{sample}}$ | ~20–200 µs |
 | Response streaming / detokenization | Decode per-token | Empirical | $t_{\text{detok}}$ | ~1–10 µs/token |
-| Disaggregated KV transfer | Prefill→decode | Analytical (α–β) | $t_{\text{KV\_transfer}}$ | depends on network |
+| Disaggregated KV transfer | Prefill→decode | Analytical (α–β) | $t_{\text{KV-transfer}}$ | depends on network |
 | Activation I/O residual | Decode per-layer | Empirical | $c_{\text{act}}$ | ~8–12 (dimensionless) |
 | Norm FLOP overhead | Decode per-layer | Empirical | $c_{\text{norm}}$ | ~5–20 (dimensionless) |
 
@@ -77,7 +77,7 @@ Each subsection below describes what the term measures, why it exists at the sys
 **Why it exists.** CUDA kernel launch involves a driver API call (`cuLaunchKernel` or the runtime equivalent), which transfers grid/block parameters to the GPU command processor via a CPU-visible ring buffer. On H100, a single kernel launch costs approximately 5–20 µs of CPU time; the GPU itself sees the kernel only after this submission overhead. For a full transformer layer with attention, FFN, and norm kernels, $n_{\text{kernels}} \approx \mathcal{O}(10\text{–}30)$ per layer, giving:
 
 $$
-t_{\text{launch}} \approx n_{\text{kernels}} \times t_{\text{kernel\_launch}} \approx L \times 10\text{–}600\;\mu\text{s}
+t_{\text{launch}} \approx n_{\text{kernels}} \times t_{\text{kernel-launch}} \approx L \times 10\text{–}600\;\mu\text{s}
 $$
 
 for a model with $L$ layers without any kernel fusion. Fused implementations (e.g., FlashAttention fusing Q/K/V projection + attention + output projection) reduce $n_{\text{kernels}}$ substantially.
@@ -107,6 +107,7 @@ for a model with $L$ layers without any kernel fusion. Fused implementations (e.
 **What it measures.** $t_{\text{sched}}$ is the time the serving scheduler spends at the start of each decode iteration selecting which requests to include in the next batch, allocating or reclaiming KV cache pages, and preparing the batch metadata tensors (token IDs, position IDs, block tables).
 
 **Why it exists.** Continuous batching (the standard production serving mode) requires the scheduler to run between every decode step. The scheduler must:
+
 1. Check the priority queue of waiting requests.
 2. Estimate whether a new request's KV cache pages fit in available HBM.
 3. Run the PagedAttention block allocator [VLLM] to assign physical KV blocks.
@@ -158,24 +159,23 @@ In disaggregated prefill–decode deployments [DISAGG-PREFILL], the prefill pass
 Using the standard α–β latency model [ALPHA-BETA]:
 
 $$
-\boxed{
-t_{\text{KV\_transfer}} = \alpha_{\text{inter}} + \frac{M_{\text{KV\_transfer}}}{B_{\text{eff,inter}}}
-}
+t_{\text{KV-transfer}} = \alpha_{\text{inter}} + \frac{M_{\text{KV-transfer}}}{B_{\text{eff,inter}}}
 $$
 
 where:
 
 - $\alpha_{\text{inter}}$ — inter-cluster network startup latency (InfiniBand or NVLink-C2C round-trip setup)
 - $B_{\text{eff,inter}}$ — effective inter-cluster bandwidth (bytes/s) accounting for protocol overhead
-- $M_{\text{KV\_transfer}}$ — bytes of KV state to transfer for one sequence's shard assigned to this device
+- $M_{\text{KV-transfer}}$ — bytes of KV state to transfer for one sequence's shard assigned to this device
 
 The KV transfer volume per device is:
 
 $$
-M_{\text{KV\_transfer}} = \frac{2 \cdot S_{\text{input}} \cdot H_{kv} \cdot b}{TP \cdot SP} \cdot \frac{L}{PP}
+M_{\text{KV-transfer}} = \frac{2 \cdot S_{\text{input}} \cdot H_{kv} \cdot b}{TP \cdot SP} \cdot \frac{L}{PP}
 $$
 
 Breaking this down:
+
 - $2$ — one key tensor and one value tensor per layer
 - $S_{\text{input}}$ — number of prefill tokens whose KV state must be transferred
 - $H_{kv} = n_{kv} \cdot d_{\text{head}}$ — KV projection dimension (reduced under GQA/MQA)
@@ -186,23 +186,23 @@ Breaking this down:
 **Co-located deployment.** When prefill and decode execute on the same cluster (same physical GPUs or via NVLink within a node), the KV transfer is an in-HBM copy and contributes negligible latency:
 
 $$
-t_{\text{KV\_transfer}} = 0 \quad \text{(co-located)}
+t_{\text{KV-transfer}} = 0 \quad \text{(co-located)}
 $$
 
 **Disaggregated deployment.** For production disaggregated serving (e.g., DistServe [DISAGG-PREFILL] using InfiniBand HDR 200 Gb/s = 25 GB/s per link):
 
 $$
-t_{\text{KV\_transfer}} \approx \alpha_{\text{inter}} + \frac{M_{\text{KV\_transfer}}}{25\;\text{GB/s}}
+t_{\text{KV-transfer}} \approx \alpha_{\text{inter}} + \frac{M_{\text{KV-transfer}}}{25\;\text{GB/s}}
 $$
 
 For a long-context request ($S_{\text{input}} = 32768$, $H_{kv} = 1024$, $b = 2$, $L = 80$, $PP = 1$, $TP = 8$, $SP = 1$):
 
 $$
-M_{\text{KV\_transfer}} = \frac{2 \times 32768 \times 1024 \times 2}{8 \times 1} \times 80 = 1.34\;\text{GB}
+M_{\text{KV-transfer}} = \frac{2 \times 32768 \times 1024 \times 2}{8 \times 1} \times 80 = 1.34\;\text{GB}
 $$
 
 $$
-t_{\text{KV\_transfer}} \approx 10\;\mu\text{s} + \frac{1.34\;\text{GB}}{25\;\text{GB/s}} \approx 53\;\text{ms}
+t_{\text{KV-transfer}} \approx 10\;\mu\text{s} + \frac{1.34\;\text{GB}}{25\;\text{GB/s}} \approx 53\;\text{ms}
 $$
 
 This 50+ ms transfer cost sets a hard lower bound on TTFT in disaggregated systems for long contexts, independent of prefill compute time.
@@ -211,7 +211,7 @@ This 50+ ms transfer cost sets a hard lower bound on TTFT in disaggregated syste
 
 ## 4. Activation I/O and Norm Constants ($c_{\text{act}}$, $c_{\text{norm}}$)
 
-These two constants capture per-layer overhead terms that were present in early drafts of `modeling.tpot.md` but were removed because they are negligible relative to the dominant weight traffic and FFN FLOPs at large model scale. They are defined here for completeness and for calibration in edge cases (small models, specialized hardware, or research into sub-dominant terms).
+These two constants capture per-layer overhead terms that were present in early drafts of `tpot.md` but were removed because they are negligible relative to the dominant weight traffic and FFN FLOPs at large model scale. They are defined here for completeness and for calibration in edge cases (small models, specialized hardware, or research into sub-dominant terms).
 
 ---
 
@@ -226,6 +226,7 @@ $$
 where $b$ is bytes per element and $H$ is the hidden size. The constant $c_{\text{act}}$ counts the number of unavoidable full-hidden-state tensor reads or writes per layer that remain after optimal kernel fusion.
 
 **What contributes to $c_{\text{act}}$.** Even with fully fused FlashAttention kernels, the following inter-kernel boundaries require HBM I/O on the hidden state:
+
 - Residual stream read before attention input projection: +1 load ($H$ elements)
 - Attention output + residual add before layer norm 2: +1 store, +1 load ($2H$ elements)
 - FFN output + residual add: +1 store ($H$ elements)
@@ -247,7 +248,7 @@ $$
 T_{\theta,\text{layer}} \approx P_{\text{attn}} \cdot b + P_{\text{FFN}} \cdot b \approx 550\;\text{MB}
 $$
 
-The activation traffic is approximately three to four orders of magnitude smaller than weight traffic and is correctly omitted from the dominant-term roofline model in `modeling.tpot.md`.
+The activation traffic is approximately three to four orders of magnitude smaller than weight traffic and is correctly omitted from the dominant-term roofline model in `tpot.md`.
 
 ---
 
@@ -283,7 +284,7 @@ $$
 F_{\text{ffn,dense}} = 3 \times 2 H I_{\text{dense}} = 6 H \times 4H = 24 H^2 \approx 1.6 \times 10^9\;\text{FLOPs}
 $$
 
-Norm contributes approximately $5 \times 10^{-5}$ of total FLOPs per layer and is correctly dropped from the dominant-term compute model in `modeling.tpot.md`.
+Norm contributes approximately $5 \times 10^{-5}$ of total FLOPs per layer and is correctly dropped from the dominant-term compute model in `tpot.md`.
 
 ---
 
@@ -292,13 +293,10 @@ Norm contributes approximately $5 \times 10^{-5}$ of total FLOPs per layer and i
 Combining all overhead terms, the total framework latency for a complete request consisting of a prefill pass followed by $T_{\text{out}}$ decode steps is:
 
 $$
-\boxed{
-t_{\text{framework}} = \underbrace{t_{\text{tok}}}_{\text{once, at start}}
-+ \underbrace{t_{\text{sched}}}_{\text{once per batch}}
-+ \underbrace{T_{\text{out}} \cdot \bigl(t_{\text{graph}} + t_{\text{sample}} + t_{\text{detok}}\bigr)}_{\text{per decode step}}
-+ \underbrace{t_{\text{KV\_transfer}}}_{\text{if disaggregated}}
-}
+t_{\text{framework}} = t_{\text{tok}} + t_{\text{sched}} + T_{\text{out}} \cdot (t_{\text{graph}} + t_{\text{sample}} + t_{\text{detok}}) + t_{\text{KV-transfer}}
 $$
+
+where the four groups are: tokenization (once, at start), scheduling (once per batch), per-decode-step overhead (repeated $T_{\text{out}}$ times), and KV transfer (if disaggregated; zero otherwise).
 
 **Notes on this decomposition:**
 
@@ -306,7 +304,7 @@ $$
 
 2. $t_{\text{sched}}$ is charged once per batch assembly event, not once per request. In continuous batching, a new batch is assembled every decode step, so $t_{\text{sched}}$ is effectively per-step for the active batch, not per-request. At the per-request level, it integrates to $T_{\text{out}} \times t_{\text{sched}}$ amortized over all requests in the batch.
 
-3. $t_{\text{KV\_transfer}}$ is charged at the prefill→decode handoff boundary and is zero for co-located deployments.
+3. $t_{\text{KV-transfer}}$ is charged at the prefill→decode handoff boundary and is zero for co-located deployments.
 
 4. $c_{\text{act}}$ and $c_{\text{norm}}$ do not appear in this total because they are sub-dominant at all practically relevant model scales (see §4.1 and §4.2). They are defined here for completeness only.
 
@@ -316,7 +314,7 @@ $$
 t_{\text{total}} = t_{\text{TTFT}} + T_{\text{out}} \cdot t_{\text{token}} + t_{\text{framework}}
 $$
 
-where $t_{\text{TTFT}}$ and $t_{\text{token}}$ are defined in `modeling.prefill.md` and `modeling.tpot.md` respectively. End-to-end assembly is in `modeling.e2e.md`.
+where $t_{\text{TTFT}}$ and $t_{\text{token}}$ are defined in `prefill.md` and `tpot.md` respectively. End-to-end assembly is in `e2e.md`.
 
 **Order-of-magnitude comparison.** For a representative decode-heavy workload ($T_{\text{out}} = 512$, graph mode, greedy sampling, co-located):
 
@@ -335,7 +333,7 @@ Framework overhead is typically 1–5% of total request latency for well-optimiz
 
 ## 6. Symbol Summary
 
-All symbols introduced in this document; these are consolidated into §13 of `modeling.notation.md`.
+All symbols introduced in this document; these are consolidated into §13 of `notation.md`.
 
 | Symbol | Definition | Units |
 |--------|-----------|-------|
@@ -345,13 +343,13 @@ All symbols introduced in this document; these are consolidated into §13 of `mo
 | $t_{\text{sched}}$ | Request scheduling / batch assembly latency | µs |
 | $t_{\text{sample}}$ | Token sampling latency (logits → token ID) | µs/step |
 | $t_{\text{detok}}$ | Response streaming / detokenization latency per token | µs/token |
-| $t_{\text{KV\_transfer}}$ | Disaggregated KV transfer latency (α–β model) | ms |
+| $t_{\text{KV-transfer}}$ | Disaggregated KV transfer latency (α–β model) | ms |
 | $c_{\text{act}}$ | Activation I/O constant: unavoidable hidden-state HBM transfers per layer | dimensionless (~8–12) |
 | $c_{\text{norm}}$ | Norm FLOP constant: per-element norm operation count | dimensionless (~5–20) |
 | $B_{\text{eff,inter}}$ | Effective inter-cluster bandwidth (InfiniBand / NVLink-C2C) | GB/s |
 | $\alpha_{\text{inter}}$ | Inter-cluster network startup latency | µs |
 | $T_{\text{out}}$ | Number of output tokens generated per request | tokens |
-| $M_{\text{KV\_transfer}}$ | KV bytes transferred per device in disaggregated serving | bytes |
+| $M_{\text{KV-transfer}}$ | KV bytes transferred per device in disaggregated serving | bytes |
 
 ---
 
@@ -362,7 +360,7 @@ Kwon et al. (2023). *Efficient Memory Management for Large Language Model Servin
 → Scheduling loop latency; PagedAttention block allocation; batch assembly cost.
 
 **[TENSORRT-LLM]**  
-NVIDIA Corporation (2023–2025). *TensorRT-LLM.* https://github.com/NVIDIA/TensorRT-LLM  
+NVIDIA Corporation (2023–2025). *TensorRT-LLM.* <https://github.com/NVIDIA/TensorRT-LLM>  
 → Fused kernel traces for $c_{\text{act}}$ calibration (~8–12 on H100 with bf16); optimized sampling kernels; CUDA graph integration.
 
 **[XFORMERS]**  
@@ -379,7 +377,7 @@ Zhong et al. (2024). *DistServe: Disaggregating Prefill and Decoding for Goodput
 
 **[ALPHA-BETA]**  
 Hockney, R. (1994). *The Communication Challenge for MPP: Intel Paragon and Meiko CS-2.* Parallel Computing 20(3).  
-→ α–β latency model: $t = \alpha + n/\beta$; basis for $t_{\text{KV\_transfer}}$ derivation in §3.
+→ α–β latency model: $t = \alpha + n/\beta$; basis for $t_{\text{KV-transfer}}$ derivation in §3.
 
 **[H100-SPEC]**  
 NVIDIA Corporation (2022). *NVIDIA H100 Tensor Core GPU Architecture.* NVIDIA Whitepaper WP-10792-001.  

@@ -1,8 +1,4 @@
-# A Unified Performance and Parallelism Model for LLM Inference
-
-**Modeling Memory, FLOPs, and Collectives for Efficient Transformer Inference at Scale**
-
-<br/>
+# Decode and Time-Per-Output-Token (TPOT) Performance Model
 
 **Author:** Yue Lu  
 **Date:** November 2025  
@@ -65,7 +61,7 @@ cluster topology, performance modeling
 
 # 1. Memory Footprint
 
-This section defines parameter sizes and memory footprint for a given set of model parameters. The memory footprint include those from model weights, per-token activation/working memories, and KV cache. 
+This section defines parameter sizes and memory footprint for a given set of model parameters. The memory footprint include those from model weights, per-token activation/working memories, and KV cache.
 We avoid model-wide parameter aggregation here and instead focus on **per-layer** quantities, because
 pipeline-parallel stages own disjoint sets of layers.
 
@@ -78,19 +74,21 @@ All parameter definitions assume stored precision of $b$ bytes per element (e.g.
 For any weight matrix $W$, the parameter count is
 
 $$
-P(W) = \text{number of elements in } W 
+P(W) = \text{number of elements in } W
 $$
 
 Total stored parameter memory is
 
 $$
-M_\theta = P \cdot b 
+M_\theta = P \cdot b
 $$
 
 ---
+
 ## 1.1 Model Parameter Memory
 
 ### Embedding and LM Head Parameters
+
 Modern LLM architectures (GPT-3/4, LLaMA families, PaLM, Qwen, DeepSeek, etc.) typically use embedding dimension
 $E = H$, so all internal projections operate on vectors in $\mathbb{R}^H$.
 
@@ -99,13 +97,13 @@ For the token embedding:
 $$
 W_{\text{emb}} \in \mathbb{R}^{V \times H},
 \quad
-P_{\text{emb}} = V H 
+P_{\text{emb}} = V H
 $$
 
 If the LM head is tied with embeddings, i.e. $W_{lm}=W_{emb}^T$ so that $W_{emb}$ can be re-used:
 
 $$
-P_{\text{lm}} = 0 
+P_{\text{lm}} = 0
 $$
 
 If untied:
@@ -113,7 +111,7 @@ If untied:
 $$
 W_{\text{lm}} \in \mathbb{R}^{H \times V},
 \quad
-P_{\text{lm}} = V H 
+P_{\text{lm}} = V H
 $$
 
 ### Attention Parameters
@@ -124,7 +122,11 @@ $H_{kv} = n_{kv} \, d_{\text{head}}$ (supporting grouped-query attention where $
 - $W_Q \in \mathbb{R}^{H \times H}$  
 - $W_K \in \mathbb{R}^{H \times H_{kv}}$  
 - $W_V \in \mathbb{R}^{H \times H_{kv}}$  
-- $W_O \in \mathbb{R}^{H_{kv} \times H}$  
+- $W_O \in \mathbb{R}^{H \times H}$  
+
+In GQA, each of the $n_q$ query heads produces a $d_{\text{head}}$-dimensional output; the concatenated
+result across all query heads is $n_q \times d_{\text{head}} = H$-dimensional, regardless of how many
+KV heads are used. The output projection therefore always maps $\mathbb{R}^H \to \mathbb{R}^H$.
 
 Parameter counts:
 
@@ -132,7 +134,7 @@ $$
 P_Q = H^2, \qquad
 P_K = H H_{kv}, \qquad
 P_V = H H_{kv}, \qquad
-P_O = H_{kv} H 
+P_O = H^2
 $$
 
 We define attention parameters:
@@ -179,7 +181,7 @@ During autoregressive decoding, the model processes **one token at a time**. As 
 These activations are **not reused** across layers or across tokens and therefore are:
 
 - **not dependent on sequence length** $S$,
-- **not dependent on batch size** $B$,
+- **proportional to batch size** $B$ (each sequence in the batch needs its own working buffers),
 - **not EP- or TP-sharded**,  
 - and **extremely small** relative to model parameter memory (Section 1.1) and KV cache memory (Section 1.3).
 
@@ -199,7 +201,7 @@ $$
 H + 2H_{kv}
 $$
 
-###  Attention score accumulation buffer (FlashAttention-like kernels)
+### Attention score accumulation buffer (FlashAttention-like kernels)
 
 Attention score computation normally requires a temporary buffer.  
 FlashAttention-style fused kernels avoid storing full $S$-length score vectors and instead use
@@ -213,13 +215,11 @@ $$
 
 ### Attention output buffer
 
-After applying attention weights to $V$ and combining across heads, we form the attention output $O_{\text{attn}} \in \mathbb{R}^{H}$. 
+After applying attention weights to $V$ and combining across heads, we form the attention output $O_{\text{attn}} \in \mathbb{R}^{H}$.
 
 This output must exist before the output projection is applied, contributing:
 
-$$
-+ H
-$$
+$$+ H$$
 
 ### FFN working buffer
 
@@ -229,23 +229,22 @@ Even with kernel fusion, this buffer cannot always overlap with the attention in
 
 This adds:
 
-$$
-+ H
-$$
+$$+ H$$
 
-Summing all simultaneously required buffers:
+Summing all simultaneously required buffers per sequence:
 
 $$
 P_{\text{act}} = 4H + 2H_{kv}
 $$
 
-In bytes:
+In bytes, for a batch of $B$ sequences:
 $$
-M_{\text{act,layer}} = (4H + 2H_{kv}) \cdot b
+M_{\text{act,layer}} = B \cdot (4H + 2H_{kv}) \cdot b
 $$
 
-This footprint is **small** compared to parameter memory and KV cache, which is why activation
-memory does not limit decoding capacity under typical inference workloads.
+This footprint is **small** compared to parameter memory and KV cache, even at large batch sizes.
+For example, at $B=128$, $H=8192$, $H_{kv}=1024$, $b=2$: $M_{\text{act,layer}} \approx 9$ MB per
+layer — negligible against hundreds of GB of parameter memory.
 
 ---
 
@@ -280,8 +279,7 @@ $$
 In bytes:
 
 $$
-M_{\mathrm{KV,layer}}
-=
+M_{\mathrm{KV,layer}} =
 2 S H_{kv} \cdot b
 $$
 
@@ -305,8 +303,7 @@ Each transformer layer has two parameter groups:
 For a *single layer* on a device, the stored parameter memory is
 
 $$
-M_{\theta,\text{layer}}
-=
+M_{\theta,\text{layer}} =
 \frac{P_{\text{attn}}\, b}{TP}
 \;+\;
 \frac{P_{\text{FFN}}\, b}{TP \cdot EP}
@@ -319,8 +316,7 @@ $M_{\theta,\text{layer},\ell}$ be the per-layer memory from the expression above
 Excluding embeddings and LM head, the parameter memory per device on PP stage $s$ is
 
 $$
-M_{\theta,\text{layers}}^{(s)}
-=
+M_{\theta,\text{layers}}^{(s)} =
 \sum_{\ell \in L_s}
 M_{\theta,\text{layer},\ell}
 $$
@@ -330,15 +326,14 @@ Embeddings and LM head appear only on two stages:
 - **Intermediate PP stages** (no embedding / LM head):
   $$
   M_{\theta,\text{device}}^{(\text{mid})}
-  =
+
+ =
   M_{\theta,\text{layers}}^{(\text{mid})}
   $$
 
-
 - **First PP stage** (with token embedding):
   $$
-  M_{\theta,\text{device}}^{(1)}
-  =
+  M_{\theta,\text{device}}^{(1)} =
   M_{\theta,\text{layers}}^{(\text{mid})}
   \;+\;
   \frac{P_{\text{emb}}\, b}{TP}
@@ -346,8 +341,7 @@ Embeddings and LM head appear only on two stages:
 
 - **Final PP stage** (with LM head):
   $$
-  M_{\theta,\text{device}}^{(\text{PP})}
-  =
+  M_{\theta,\text{device}}^{(\text{PP})} =
   M_{\theta,\text{layers}}^{(\text{mid})}
   \;+\;
   \frac{P_{\text{lm}}\, b}{TP}
@@ -357,13 +351,11 @@ If each intermediate PP stage holds approximately $L/PP$ layers of similar size,
 representative per-layer values $P_{\text{attn}}$ and $P_{\text{FFN}}$, then
 
 $$
-M_{\theta,\text{device}}^{(\text{mid})}
-=
-\frac{L}{PP} M_{\theta,\text{layer}}
-=
+M_{\theta,\text{device}}^{(\text{mid})} =
+\frac{L}{PP} M_{\theta,\text{layer}} =
 \frac{L}{PP}\;
 \left(
-\frac{H^2 + 3 H H_{kv}}{TP}
+\frac{2H^2 + 2 H H_{kv}}{TP}
 +
 \frac{3 H I N_{\text{exp}}}{TP \cdot EP}
 \right) b
@@ -372,11 +364,10 @@ $$
 For capacity planning we use a worst-case PP stage budget, adding one $\frac{VH}{TP}b$ term to account for embedding/LM weights residing on boundary stages. Intermediate stages are slightly smaller. Therefore:
 
 $$
-M_{\theta,\text{device}}
-=
+M_{\theta,\text{device}} =
 \frac{L}{PP}\;
 \left(
-\frac{H^2 + 3 H H_{kv}}{TP}
+\frac{2H^2 + 2 H H_{kv}}{TP}
 \;+\;
 \frac{3 H I N_{\text{exp}}}{TP \cdot EP}
 \right) b
@@ -392,30 +383,27 @@ For a **MoE model**: $I = I_{\text{moe}}$, with $N_{\text{exp}} > 1$ and $EP \ge
 Many modern architectures use a **mixed** design where only some layers are MoE (e.g., alternating dense and MoE layers, or MoE only in deeper layers). For such models, the parameter memory must be computed separately for dense and MoE layers:
 
 $$
-M_{\theta,\text{device}}
-=
+M_{\theta,\text{device}} =
 M_{\theta,\text{dense}} + M_{\theta,\text{moe}} + \frac{VH}{TP} b
 $$
 
 where:
 
 $$
-M_{\theta,\text{dense}}
-=
+M_{\theta,\text{dense}} =
 \frac{L_{\text{dense}}}{PP}\;
 \left(
-\frac{H^2 + 3 H H_{kv}}{TP}
+\frac{2H^2 + 2 H H_{kv}}{TP}
 \;+\;
 \frac{3 H I_{\text{dense}}}{TP}
 \right) b
 $$
 
 $$
-M_{\theta,\text{moe}}
-=
+M_{\theta,\text{moe}} =
 \frac{L_{\text{moe}}}{PP}\;
 \left(
-\frac{H^2 + 3 H H_{kv}}{TP}
+\frac{2H^2 + 2 H H_{kv}}{TP}
 \;+\;
 \frac{3 H I_{\text{moe}} N_{\text{exp}}}{TP \cdot EP}
 \right) b
@@ -423,18 +411,22 @@ $$
 
 Note that dense layers use $EP = 1$ and $N_{\text{exp}} = 1$ implicitly, while MoE layers use the specified $EP$ and $N_{\text{exp}}$ values.
 
-### Per-device Activation Memory 
+### Per-device Activation Memory
 
-The per-layer working activation footprint for one decoding token is: $4H + 2H_{kv}$.
+The per-layer working activation footprint for a batch of $B$ sequences is $B \cdot (4H + 2H_{kv})$.
 
-This footprint must exist for every layer on the PP stage. Since PP assigns whole layers to devices, each
-device hosts exactly $L/PP$ layers. Therefore, the per-device activation memory during decoding is:
+In standard sequential layer execution, only one layer's activation buffers are live at any time —
+each layer's output overwrites the previous layer's buffer before the next layer begins. Therefore,
+the per-device activation memory during decoding is simply one layer's worth:
 
 $$
-M_{\text{act,device}}
-=
-\frac{L}{PP} \,(4H + 2H_{kv}) \, b
+M_{\text{act,device}} =
+B \cdot (4H + 2H_{kv}) \, b
 $$
+
+> **Note:** The $L/PP$ multiplier is *not* applied here because layers execute sequentially; earlier
+> layers' activations are not retained while later layers execute. A $2\times$ factor could apply
+> when double-buffering for PP communication overlap, but this is negligible in practice and omitted.
 
 ### Per-device KV Cache Memory
 
@@ -449,15 +441,13 @@ EP and DP do not modify KV layout; PP only affects how many layers are assigned 
 Therefore, the **per-device** KV memory footprint is:
 
 $$
-M_{\mathrm{KV,device}}
-=
+M_{\mathrm{KV,device}} =
 \frac{L}{PP}
 \frac{
     M_{\mathrm{KV,layer}}
 }{
     TP \cdot SP
-}
-=
+} =
 \frac{L}{PP}
 \frac{
      (2 S H_{kv}) b
@@ -466,7 +456,7 @@ M_{\mathrm{KV,device}}
 }
 $$
 
-which:   
+which:
 
 - For long-context inference (e.g., $S \in [16\mathrm{k}, 128\mathrm{k}]$), $S(2H_{kv})b$ is large enough that KV can exceed parameter memory unless aggressively reduced through TP and SP.
 - Each decoded token adds only $2H_{kv} b$, which is negligible compared to the pre-fill KV footprint.
@@ -481,20 +471,18 @@ $$
 For **uniform architectures** (all dense or all MoE):
 
 $$
-\boxed{
 M_{\text{device}}^{\text{total}} =
 \frac{L}{PP}\;
 \left[
-\frac{H^2 + 3 H H_{kv}}{TP}
-\;+\;
-\frac{3 H I N_{\text{exp}}}{TP \cdot EP}
-+\;
-(4H + 2H_{kv})
+\frac{2H^2 + 2 H H_{kv}}{TP}
 +
-\frac{2 S H_{kv}}{TP \cdot SP}
+\frac{3 H I N_{\text{exp}}}{TP \cdot EP}
 \right] b
++
+B \cdot \frac{L}{PP} \cdot \frac{2 S H_{kv}}{TP \cdot SP} \cdot b
++
+B(4H + 2H_{kv}) b
 +\frac{VH}{TP} b
-}
 $$
 
 For a dense model: $I = I_{\text{dense}}, \text{ } N_{\text{exp}}=EP=1$
@@ -504,35 +492,32 @@ And for a MoE model: $I = I_{\text{moe}}$
 For **mixed MoE/dense architectures** (where $L_{\text{moe}} < L$):
 
 $$
-\boxed{
 \begin{aligned}
 M_{\text{device}}^{\text{total}} = \;&
 \frac{L_{\text{dense}}}{PP}\;
 \left[
-\frac{H^2 + 3 H H_{kv}}{TP}
+\frac{2H^2 + 2 H H_{kv}}{TP}
 +
 \frac{3 H I_{\text{dense}}}{TP}
 \right] b \\
 +\;&
 \frac{L_{\text{moe}}}{PP}\;
 \left[
-\frac{H^2 + 3 H H_{kv}}{TP}
+\frac{2H^2 + 2 H H_{kv}}{TP}
 +
 \frac{3 H I_{\text{moe}} N_{\text{exp}}}{TP \cdot EP}
 \right] b \\
 +\;&
-\frac{L}{PP}\;
-\left[
-(4H + 2H_{kv})
-+
+B \cdot \frac{L}{PP} \cdot
 \frac{2 S H_{kv}}{TP \cdot SP}
-\right] b
+\cdot b \\
++\;&
+B(4H + 2H_{kv}) b
 +\frac{VH}{TP} b
 \end{aligned}
-}
 $$
 
-Note: Activation memory and KV cache apply to all $L$ layers (both dense and MoE layers have attention blocks). 
+Note: Activation memory ($B(4H+2H_{kv})b$, one layer at a time) and KV cache apply to all $L$ layers. KV cache uses the total layer count $L/PP$ since all layers' KV tensors are concurrently resident.
 
 ---
 
@@ -567,8 +552,7 @@ Because $P_{\text{attn}}$ is defined **per layer**, a PP stage with $L_{\text{st
 Since every weight must be read per token:
 
 $$
-T_{\theta,\text{attn}}
-=
+T_{\theta,\text{attn}} =
 \frac{L}{PP}
 \cdot
 \frac{P_{\text{attn}} \, b}{TP}
@@ -579,8 +563,7 @@ $$
 Similarly, the FFN parameters $P_{\text{FFN}}$ are sharded by both **TP** and **EP**. Although fused kernels (e.g., FlashMLP) avoid writing intermediate activations (like the gate tensor) to HBM, they still require reading the gate, up, and down projection weights fully.
 
 $$
-T_{\theta,\text{FFN}}
-=
+T_{\theta,\text{FFN}} =
 \frac{L}{PP}\;
 \frac{P_{\text{FFN}}}{TP \cdot EP}\; b
 $$
@@ -597,16 +580,14 @@ T_{\theta,\text{device}}
   \frac{P_{\text{attn}}}{TP}
   +
   \frac{P_{\text{FFN}}}{TP \cdot EP}
-\right) b
-=
+\right) b =
 \frac{L}{PP}\;
 \left(
-\frac{H^2 + 3 H H_{kv}}{TP}
+\frac{2H^2 + 2 H H_{kv}}{TP}
 \;+\;
 \frac{3 H I N_{\text{exp}}}{TP \cdot EP}
 \right) b
 $$
-
 
 **For a dense MLP model:** $I = I_{\text{dense}}, \text{ } N_{\text{exp}} = EP = 1$
 
@@ -617,30 +598,27 @@ $$
 For mixed architectures, parameter traffic is computed separately for dense and MoE layers:
 
 $$
-T_{\theta,\text{device}}
-=
+T_{\theta,\text{device}} =
 T_{\theta,\text{dense}} + T_{\theta,\text{moe}}
 $$
 
 where:
 
 $$
-T_{\theta,\text{dense}}
-=
+T_{\theta,\text{dense}} =
 \frac{L_{\text{dense}}}{PP}\;
 \left(
-\frac{H^2 + 3 H H_{kv}}{TP}
+\frac{2H^2 + 2 H H_{kv}}{TP}
 \;+\;
 \frac{3 H I_{\text{dense}}}{TP}
 \right) b
 $$
 
 $$
-T_{\theta,\text{moe}}
-=
+T_{\theta,\text{moe}} =
 \frac{L_{\text{moe}}}{PP}\;
 \left(
-\frac{H^2 + 3 H H_{kv}}{TP}
+\frac{2H^2 + 2 H H_{kv}}{TP}
 \;+\;
 \frac{3 H I_{\text{moe}} N_{\text{exp}}}{TP \cdot EP}
 \right) b
@@ -653,9 +631,9 @@ $$
 Section 1 showed that the per-layer activation footprint for a single decoding token is small. However, without optimization, the traffic to read/write these activations—especially the $S \times S$ attention scores—would be massive ($O(S^2)$).
 
 ### The Role of FlashAttention
-**FlashAttention** [FA1, FA2] avoids materializing the $S \times S$ score matrix in HBM by streaming the tiled attention computation through on-chip SRAM. More precisely: Q, K, V reads remain $O(SH)$; the $O(S^2)$ score matrix traffic is reduced by a factor of approximately $M$ (SRAM size) to $O(S^2/M)$ via tiling. For large $S$ and modern GPU SRAM sizes, this makes the $O(S^2)$ term negligible and leaves KV reads as the dominant activation traffic.
+**FlashAttention** [FA1, FA2] avoids materializing the $S \times S$ score matrix in HBM by streaming the tiled attention computation through on-chip SRAM. More precisely: Q, K, V reads remain $O(SH)$; the $O(S^2 d^2 / M)$ score matrix IO (per [FA1] Theorem 2, where $d = d_{\text{head}}$ and $M$ is SRAM size) is reduced to $O(S^2 d / \sqrt{M})$ via tiling, compared to $O(S^2 d)$ for standard attention. For large $S$ and modern GPU SRAM sizes, this makes the $O(S^2)$ term negligible and leaves KV reads as the dominant activation traffic.
 
-Because FlashAttention drastically reduces the score matrix traffic, the residual activation traffic (hidden-state loads/stores, FFN buffers) is $O(H)$ per layer — negligible compared to the weight and KV cache terms for large models. We drop $T_{\text{act,device}}$ from the traffic model here. Residual kernel-level activation overhead is treated as an empirical correction in `modeling.framework.md`.
+Because FlashAttention drastically reduces the score matrix traffic, the residual activation traffic (hidden-state loads/stores, FFN buffers) is $O(H)$ per layer — negligible compared to the weight and KV cache terms for large models. We drop $T_{\text{act,device}}$ from the traffic model here. Residual kernel-level activation overhead is treated as an empirical correction in `framework.md`.
 
 ---
 
@@ -703,28 +681,21 @@ $$
 Substituting yields the **final fully expanded expression**:
 
 $$
-\boxed{
-\begin{aligned}
 T_{\text{token,device}}^{eff}
 \;\approx\;
-&
 \frac{L}{PP}
 \left[
-\underbrace{
 \left(
-\frac{H^2 + 3 H H_{kv}}{TP}
-\;+\;
+\frac{2H^2 + 2 H H_{kv}}{TP}
++
 \frac{3 H I N_{\text{exp}}}{TP \cdot EP}
 \right) b
-}_{\text{Weights}}
-\;+\;
-\underbrace{
++
 \frac{2 S H_{kv}}{TP \cdot SP} b
-}_{\text{KV Cache}}
 \right]
-\end{aligned}
-}
 $$
+
+The first group inside the brackets is **weight traffic** (loaded once per step), and the second term is **KV cache traffic** (per-token KV reads).
 
 ---
 
@@ -741,8 +712,7 @@ $$
 ### **Memory Traffic (Section 2)** Determines the *bandwidth-limited latency* per decoded token (Bandwidth Constraint):
 
 $$
-t_{\text{mem}}
-=
+t_{\text{mem}} =
 \frac{T_{\text{token,device}}^{eff}}
      {B_{\text{eff,mem}}}
 $$
@@ -771,7 +741,7 @@ Q, K, and V projections are vector–matrix multiplications of shapes:
 - Q: $[1 \times H] \cdot [H \times H]$  
 - K: $[1 \times H] \cdot [H \times H_{kv}]$  
 - V: $[1 \times H] \cdot [H \times H_{kv}]$  
-- Output: $[1 \times H_{kv}] \cdot [H_{kv} \times H]$
+- Output: $[1 \times H] \cdot [H \times H]$
 
 ### Projection FLOPs
 
@@ -779,7 +749,7 @@ $$
 F_Q = 2H^2, \qquad
 F_K = 2H H_{kv}, \qquad
 F_V = 2H H_{kv}, \qquad
-F_O = 2H H_{kv}.
+F_O = 2H^2.
 $$
 
 Where the factor 2 accounts for each multiply-accumulate pair in the standard GEMV convention.
@@ -787,10 +757,10 @@ Where the factor 2 accounts for each multiply-accumulate pair in the standard GE
 ### Total
 
 $$
-F_{\text{proj}} = 2H^2 + 6H H_{kv}
+F_{\text{proj}} = 4H^2 + 4H H_{kv}
 $$
 
-If $H_{kv} = H$, this reduces to $8H^2$.
+If $H_{kv} = H$ (MHA), this reduces to $8H^2$.
 
 ## 3.2 Attention Scores and Value Application
 
@@ -804,22 +774,20 @@ where $H_{kv} = n_{kv} d_{\text{head}}$ is the total KV projection dimension.
 
 ### Scores (Q · Kᵀ)
 
-For the new token, attention scores are computed by taking a dot product between its query representation and
-each of the $S$ cached key vectors of length $H_{kv}$(which matches standard multi-head and GQA scaling up to small constant factors). In aggregate, this behaves like a streamed matrix–vector operation over an $S \times H_{kv}$ key matrix, giving:
+Each of the $n_q$ query heads independently computes a dot product against its corresponding (broadcast) KV head over $S$ cached positions. Per query head: $2 d_{\text{head}} S$ FLOPs. Summed over all $n_q$ query heads:
 
 $$
-F_{\text{score}} = 2 S H_{kv}
+F_{\text{score}} = 2 \, n_q \, d_{\text{head}} \, S = 2 S H
 $$
 
-The factor 2 reflects the standard GEMV convention (each multiply–accumulate counts as 2 FLOPs).
+> **GQA note:** In GQA ($n_{kv} < n_q$), each KV head is shared by $n_q / n_{kv}$ query heads [GQA]. The KV cache **memory** scales with $H_{kv}$ (only $n_{kv}$ unique heads are stored), but the attention **FLOPs** scale with $H$ because every query head independently computes attention scores and value-weighted sums.
 
 ### Value application (Attn · V)
 
-After applying softmax to the scores, the attention weights are used to compute a weighted sum over the
-cached values. This again involves an effective $S \times H_{kv}$ matrix–vector style operation:
+After applying softmax to the scores, each of the $n_q$ query heads computes a weighted sum over the $S$ cached values of its corresponding value head. Per head: $2 d_{\text{head}} S$ FLOPs. Total:
 
 $$
-F_{\text{value}} = 2 S H_{kv}
+F_{\text{value}} = 2 S H
 $$
 
 ### Total KV attention FLOPs
@@ -827,28 +795,38 @@ $$
 Combining the two:
 
 $$
-F_{\text{attn,KV}} = F_{\text{score}} + F_{\text{value}} = 4 S H_{kv}
+F_{\text{attn,KV}} = F_{\text{score}} + F_{\text{value}} = 4 S H
 $$
 
-This term captures the **sequence-length-dependent** attention cost during decoding.
-
+This term captures the **sequence-length-dependent** attention cost during decoding. For MHA ($n_{kv} = n_q$, $H_{kv} = H$), this is numerically identical to the older $4SH_{kv}$ formulation; the distinction matters for GQA/MQA models where $H_{kv} < H$.
 
 ## 3.3 FFN FLOPs (Unified Dense + MoE)
 
-To match the parameter definitions in Section , we express FFN FLOPs using a **unified formulation**
+To match the parameter definitions in Section 1.1, we express FFN FLOPs using a **unified formulation**
 that works for both dense FFN layers and MoE layers.
 
 ### Dense FFN FLOPs
 
-A dense FFN consists of:
-- an expansion GEMV: $H \rightarrow I$, and  
-- a contraction GEMV: $I \rightarrow H$.
+For a gated FFN (the convention assumed throughout; see §1.1), a dense FFN consists of three GEMVs:
+- a gate projection: $H \rightarrow I$,
+- an up projection: $H \rightarrow I$, and
+- a down (contraction) projection: $I \rightarrow H$.
 
 Each GEMV costs $2HD$ FLOPs, giving:
 
 $$
-F_{\text{ffn,dense}} = 4 H I_{dense}
+F_{\text{ffn,dense}} = 6 H I_{dense}
 $$
+
+> **Convention note — gated MLPs:** §1.1 counts **three** weight matrices for a gated FFN
+> (gate, up, and down projections), giving $P_{\text{FFN}} = 3HI$ parameters. Each GEMV
+> contributes $2HI$ FLOPs, so the exact total is $6HI$ — which this document uses throughout.
+> The training scaling-law literature ([KAPLAN-SCALING], [CHINCHILLA]) uses $4HI$, which
+> corresponds to a non-gated 2-matrix FFN with expansion ratio $4H$. Since this model targets
+> **inference** of modern gated-MLP architectures (LLaMA, Qwen, DeepSeek, Mistral), we use the
+> exact $6HI$ to ensure accurate compute-bound predictions (prefill TTFT, batched decode at
+> $B > B^*$). With $6HI$ FLOPs and $3HI$ parameters, the FLOP-to-parameter ratio is exactly $2$
+> for every weight matrix, yielding the clean OI result $\text{OI} = 2/b$ without approximation.
 
 Dense FFN layers always have $EP = 1$.
 
@@ -864,21 +842,19 @@ For MoE layers, each token is routed to $k$ active experts (top-$k$ gating) [DEE
 
 - for each of the $k$ selected experts for this token, the FFN computation is:
   $$
-  F_{\text{expert}} = 4 H I_{\text{moe}}
+  F_{\text{expert}} = 6 H I_{\text{moe}}
   $$
 
 Thus the MoE FFN FLOPs for one token in one layer are:
 
 $$
-F_{\text{ffn,moe}}
-=
+F_{\text{ffn,moe}} =
 F_{\text{router}}
 +
-k \cdot F_{\text{expert}}
-=
+k \cdot F_{\text{expert}} =
 2 H N_{\text{exp}}
 +
-k (4 H I_{\text{moe}})
+k (6 H I_{\text{moe}})
 $$
 
 ### Unified FFN FLOP Term
@@ -906,20 +882,20 @@ We now define **effective FFN FLOP parameters**:
 With these definitions, both dense and MoE FFN FLOPs can be written in a **single unified form**:
 
 $$
-F_{\text{ffn}} = 4H I_{\text{eff}} + 2H N_{\text{eff}}
+F_{\text{ffn}} = 6H I_{\text{eff}} + 2H N_{\text{eff}}
 $$
 
 This matches:
 
 - Dense layer:
-  $F_{\text{ffn}} = 4H I_{\text{dense}} + 2H \cdot 0 = 4H I_{\text{dense}}$
+  $F_{\text{ffn}} = 6H I_{\text{dense}} + 2H \cdot 0 = 6H I_{\text{dense}}$
 - MoE layer:
-  $F_{\text{ffn}} = 4H (k I_{\text{moe}}) + 2H N_{\text{exp}} = 4H I_{\text{moe}} k + 2H N_{\text{exp}}$
+  $F_{\text{ffn}} = 6H (k I_{\text{moe}}) + 2H N_{\text{exp}} = 6H I_{\text{moe}} k + 2H N_{\text{exp}}$
 ---
 
 ## 3.4 LayerNorm and Elementwise FLOPs
 
-LayerNorm, RMSNorm, residual additions, and elementwise ops scale linearly with $H$ and are ~4 orders of magnitude smaller than the dominant FFN FLOPs for large models. We drop $F_{\text{norm}}$ from all per-device expressions. Norm overhead is an empirical correction handled in `modeling.framework.md`.
+LayerNorm, RMSNorm, residual additions, and elementwise ops scale linearly with $H$ and are ~4 orders of magnitude smaller than the dominant FFN FLOPs for large models. We drop $F_{\text{norm}}$ from all per-device expressions. Norm overhead is an empirical correction handled in `framework.md`.
 
 ---
 
@@ -930,15 +906,13 @@ For a single decoding token, the FLOPs for one transformer layer are:
 $$
 F_{\text{layer}}
 \approx
-F_{\text{proj}}
-+ F_{\text{attn,KV}}
-+ F_{\text{ffn}},
+F_{\text{proj}} + F_{\text{attn,KV}} + F_{\text{ffn}},
 $$
 
 where:
 
-- $F_{\text{proj}} = 2H^2 + 6H H_{kv}$ (Section 3.1),
-- $F_{\text{attn,KV}} = 4 S H_{kv}$ (Section 3.2),
+- $F_{\text{proj}} = 4H^2 + 4H H_{kv}$ (Section 3.1),
+- $F_{\text{attn,KV}} = 4 S H$ (Section 3.2),
 - $F_{\text{ffn}}$ is dense or MoE (Section 3.3).
 
 $F_{\text{norm}}$ is dropped per Section 3.4.
@@ -969,16 +943,15 @@ SP shards the **sequence dimension** across $SP$ ranks [MEGATRON3].
 Thus **only** the sequence-dependent FLOPs:
 
 $$
-F_{\text{attn,KV}} = 4 S H_{kv}
+F_{\text{attn,KV}} = 4 S H
 $$
 
 are reduced:
 
 $$
-F_{\text{attn,KV}}^{\text{device}}
-=
+F_{\text{attn,KV}}^{\text{device}} =
 \frac{1}{TP \cdot SP}
-(4 S H_{kv})
+(4 S H)
 $$
 
 SP does **not** reduce:
@@ -997,9 +970,8 @@ EP applies only to MoE layers:
 - Expert FFN GEMMs are sharded across EP:
 
 $$
-F_{\text{expert}}^{\text{device}}
-=
-\frac{k}{EP} \,(4 H I_{\text{moe}})
+F_{\text{expert}}^{\text{device}} =
+\frac{k}{EP} \,(6 H I_{\text{moe}})
 $$
 
 and may also be TP-sharded if FFN GEMMs follow the same path:
@@ -1027,31 +999,26 @@ F_{\text{token, device}}
 \approx
 \frac{L}{PP}
 \left(
-F_{\text{proj}}^{\text{device}}
-+ F_{\text{attn,KV}}^{\text{device}}
-+ F_{\text{ffn}}^{\text{device}}
+F_{\text{proj}}^{\text{device}} + F_{\text{attn,KV}}^{\text{device}} + F_{\text{ffn}}^{\text{device}}
 \right)
 $$
-
 
 ### Total Per-device FLOPs:
 Dropping the negligible $F_{\text{norm}}$ and also substituting everything yields the **final fully expanded expression** per-device FLOPs for a single decoded token:
 
 $$
-\boxed{
 F_{\text{token,device}}
 \;\approx\;
 \frac{L}{PP}
 \left(
-\frac{2H^{2} + 6H H_{kv}}{TP}
+\frac{4H^{2} + 4H H_{kv}}{TP}
 \;+\;
-\frac{4H I_{\text{eff}}}{TP \cdot EP}
+\frac{6H I_{\text{eff}}}{TP \cdot EP}
 \;+\;
-\frac{4 S H_{kv}}{TP \cdot SP}
+\frac{4 S H}{TP \cdot SP}
 \;+\;
 2H N_{\text{eff}}
 \right)
-}
 $$
 
 For a **dense MLP model**: $I_{\text{eff}} = I_{\text{dense}},\quad N_{\text{eff}} = 0,\quad EP = 1$
@@ -1063,23 +1030,21 @@ For a **MoE model**: $I_{\text{eff}} = k I_{\text{moe}},\quad N_{\text{eff}} = N
 For mixed architectures, FLOPs are computed separately for dense and MoE layers:
 
 $$
-F_{\text{token,device}}
-=
+F_{\text{token,device}} =
 F_{\text{dense,device}} + F_{\text{moe,device}}
 $$
 
 **Dense layer FLOPs** (per device, for all dense layers on this PP stage):
 
 $$
-F_{\text{dense,device}}
-=
+F_{\text{dense,device}} =
 \frac{L_{\text{dense}}}{PP}
 \left(
-\frac{2H^{2} + 6H H_{kv}}{TP}
+\frac{4H^{2} + 4H H_{kv}}{TP}
 \;+\;
-\frac{4H I_{\text{dense}}}{TP}
+\frac{6H I_{\text{dense}}}{TP}
 \;+\;
-\frac{4 S H_{kv}}{TP \cdot SP}
+\frac{4 S H}{TP \cdot SP}
 \right)
 $$
 
@@ -1088,15 +1053,14 @@ Note: Dense layers have no router FLOPs and use $EP = 1$.
 **MoE layer FLOPs** (per device, for all MoE layers on this PP stage):
 
 $$
-F_{\text{moe,device}}
-=
+F_{\text{moe,device}} =
 \frac{L_{\text{moe}}}{PP}
 \left(
-\frac{2H^{2} + 6H H_{kv}}{TP}
+\frac{4H^{2} + 4H H_{kv}}{TP}
 \;+\;
-\frac{4H k I_{\text{moe}}}{TP \cdot EP}
+\frac{6H k I_{\text{moe}}}{TP \cdot EP}
 \;+\;
-\frac{4 S H_{kv}}{TP \cdot SP}
+\frac{4 S H}{TP \cdot SP}
 \;+\;
 2H N_{\text{exp}}
 \right)
@@ -1108,7 +1072,7 @@ Note: The router term $2H N_{\text{exp}}$ is unsharded (applied to the full hidd
 
 ## 3.6 Prefill FLOPs
 
-Prefill FLOPs are covered in [modeling.prefill.md](modeling.prefill.md).
+Prefill FLOPs are covered in [prefill.md](prefill.md).
 
 ---
 
@@ -1137,8 +1101,7 @@ Both reflect *sustained* performance, not peak specs.
 The **operational intensity** for decoding on this device is [ROOFLINE]:
 
 $$
-\text{OI}
-=
+\text{OI} =
 \frac{F_{\text{token,device}}}{T_{\text{token,device}}^{eff}}
 \quad \text{(FLOPs per byte)}
 $$
@@ -1174,7 +1137,7 @@ In practice, the OI is often approximated using only the largest FLOP and traffi
 
 - FLOPs dominated by:
   $$
-  \max\!\left( 2H^2,\; 4H I_{\text{eff}},\; 4 S H_{kv}/SP \right)
+  \max\left( 2H^2,\; 6H I_{\text{eff}},\; 4 S H/SP \right)
   $$
 
 - Memory traffic dominated by the KV term:
@@ -1182,16 +1145,15 @@ In practice, the OI is often approximated using only the largest FLOP and traffi
   \frac{2 S H_{kv}}{TP\cdot SP}\, b
   $$
 
-Thus for long-context decoding:
+Thus for long-context decoding (attention FLOPs dominate):
 
 $$
-\text{OI} \approx 
-\frac{4 S H_{kv}/(TP\cdot SP)}{2 S H_{kv}/(TP\cdot SP)\; b}
-= \frac{2}{b}
+\text{OI} \approx
+\frac{4 S H/(TP\cdot SP)}{2 S H_{kv}/(TP\cdot SP)\; b}
+= \frac{2H}{H_{kv}\, b}
 $$
 
-which explains why long-context dense models almost always appear **memory-bound**.
-
+For MHA ($H_{kv} = H$), this reduces to $2/b$. For GQA models, $H/H_{kv} = n_q/n_{kv}$ amplifies the OI — e.g., for $n_q/n_{kv} = 8$ (LLaMA-3 70B) the OI is $16/b$. Even so, this is far below typical ridge points (~300 FLOPs/byte on H100), so long-context decode remains **memory-bound** in practice.
 
 ---
 
@@ -1200,8 +1162,7 @@ which explains why long-context dense models almost always appear **memory-bound
 Given the per-token FLOPs on this device (Section 3.5):
 
 $$
-t_{\text{compute}}
-=
+t_{\text{compute}} =
 \frac{F_{\text{token,device}}}{R_{\text{GPU}}}
 $$
 
@@ -1214,8 +1175,7 @@ This is the time assuming unlimited memory bandwidth.
 Given the effective memory traffic per token (Section 2.4):
 
 $$
-t_{\text{mem}}
-=
+t_{\text{mem}} =
 \frac{T_{\text{token,device}}^{eff}}{B_{\text{eff,mem}}}
 $$
 
@@ -1230,8 +1190,7 @@ For long-context LLMs, this term is often dominant due to KV-cache reads.
 The per-token latency for this PP stage is:
 
 $$
-t_{\text{local}}
-=
+t_{\text{local}} =
 \max\left( t_{\text{compute}},\; t_{\text{mem}} \right)
 $$
 
@@ -1319,8 +1278,7 @@ $\approx H/TP$ per device.
 For a single token, the latency of this hop is modeled as:
 
 $$
-t_{PP}
-=
+t_{PP} =
 \alpha_{PP}
 +
 \frac{(H/TP)\, b}{B_{\text{eff,PP}}}
@@ -1353,8 +1311,7 @@ A ring all-to-all across $EP$ devices performs $(EP - 1)$ exchange rounds.
 Including the factor of 2 for the round-trip nature of MoE routing, the **per-token, per-layer** latency model is:
 
 $$
-t_{EP}^{\text{ring}}
-=
+t_{EP}^{\text{ring}} =
 2(EP - 1)\alpha_{EP}
 +
 2(EP - 1)
@@ -1402,8 +1359,7 @@ Unlike PP (which sends a shard), the TP All-Reduce operates on the **full hidden
 For a ring all-reduce, the **per-token, per-layer** latency is:
 
 $$
-t_{TP}^{\text{ring}}
-=
+t_{TP}^{\text{ring}} =
 2(TP - 1)\alpha_{TP}
 +
 2\frac{TP - 1}{TP}
@@ -1455,8 +1411,7 @@ A ring with $SP$ ranks performs $(SP - 1)$ uni-directional shifts. Unlike the tw
 The **per-token, per-layer** latency is:
 
 $$
-t_{SP}
-=
+t_{SP} =
 (SP - 1)\alpha_{SP}
 +
 (SP - 1)
@@ -1500,16 +1455,15 @@ These collectives must complete before the token can advance to the next layer. 
 Because TP, EP, and SP operations within each layer depend on one another (e.g., TP → SP in attention and EP → TP in MoE), they are **strictly sequential** and do not overlap. Thus, the **per-token communication time accumulated over the entire PP stage** is:
 
 $$
-t_{\text{comm,stage}}
-=
+t_{\text{comm,stage}} =
 \frac{L}{PP}
-\bigl(
+(
 n_{TP}\, t_{TP}
 +
 n_{EP}\, t_{EP}
 +
 n_{SP}\, t_{SP}
-\bigr)
+)
 $$
 
 Where:
@@ -1525,23 +1479,20 @@ The PP hop is different: it is a **per-token, per-hop** cost rather than a per-l
 Thus, the total per-token communication time for this stage is:
 
 $$
-\boxed{
-t_{\text{comm}}
-=
+t_{\text{comm}} =
 \frac{L}{PP}
-\bigl(
+(
 n_{TP}\, t_{TP}
 +
 n_{SP}\, t_{SP}
-\bigr)
+)
 +
 \frac{L_{\text{moe}}}{PP}
-\bigl(
+(
 n_{EP}\, t_{EP}
-\bigr)
+)
 +
 t_{PP}
-}
 $$
 
 ### Interpretation
@@ -1558,7 +1509,6 @@ For architectures where only some layers are MoE (e.g., $L_{\text{moe}} < L$), t
 For a **pure dense model**: $L_{\text{moe}} = 0$, so the EP term vanishes entirely.
 
 For a **pure MoE model**: $L_{\text{moe}} = L$, recovering the original formula.
-
 
 ### Summary of Collective Types and Message Sizes
 
@@ -1587,7 +1537,6 @@ The choice between ring-style and tree-style collective algorithms depends stron
 
 This guidance explains why Section 5 provides both **ring** and **tree** expressions for EP and TP,
 but uses **ring** exclusively for SP.
-
 
 ---
 
@@ -1620,8 +1569,7 @@ within the available HBM capacity $M_{\text{HBM}}$.
 We define the total per-device static footprint as
 
 $$
-M_{\text{device}}^{\text{total}}
-=
+M_{\text{device}}^{\text{total}} =
 M_{\theta,\text{device}}
 +
 M_{\text{act,device}}
@@ -1636,14 +1584,14 @@ Using the per-device memory expressions derived in Section 1, the **fully expand
 $$
 \frac{L}{PP}\;
 \left[
-\frac{H^2 + 3 H H_{kv}}{TP}
+\frac{2H^2 + 2 H H_{kv}}{TP}
 \;+\;
 \frac{3 H I N_{\text{exp}}}{TP \cdot EP}
-+\;
-(4H + 2H_{kv})
 +
 \frac{2 S H_{kv}}{TP \cdot SP}
 \right] b
++\;
+B(4H + 2H_{kv}) b
 +
 \frac{V H}{TP} b
 \le\;
@@ -1660,7 +1608,7 @@ For **mixed MoE/dense architectures**, the memory constraint uses the split form
 
 ### Calculating DP for a Fixed Total HBM Capacity
 
-The total Data Parallelism degree ($DP$) is constrained by both the total cluster size ($N_{\text{GPUs}}$) and the memory headroom available on each device. 
+The total Data Parallelism degree ($DP$) is constrained by both the total cluster size ($N_{\text{GPUs}}$) and the memory headroom available on each device.
 
 1. **Memory Headroom Requirement:** $DP$ scaling is only possible if $M_{\text{device}}^{\text{total}} \le M_{\text{HBM}}$ for the chosen inner sharding degrees ($PP, EP, TP, SP$).
 2. **Replication Logic:** Each model replica requires a dedicated group of $PP \cdot EP \cdot TP \cdot SP$ devices.
@@ -1668,9 +1616,7 @@ The total Data Parallelism degree ($DP$) is constrained by both the total cluste
 Let $N_{\text{GPUs}}$ be the total number of devices in the cluster. The maximum achievable $DP$ count is:
 
 $$
-\boxed{
 DP = \left\lfloor \frac{N_{\text{GPUs}}}{PP \cdot EP \cdot TP \cdot SP} \right\rfloor
-}
 $$
 
 **Physical Interpretation:**
@@ -1684,24 +1630,21 @@ $$
 ### Compute-bound latency
 
 $$
-t_{\text{compute}}
-=
+t_{\text{compute}} =
 \frac{F_{\text{token,device}}}{R_{\text{GPU}}}
 $$
 
 ### Memory-bandwidth-bound latency
 
 $$
-t_{\text{mem}}
-=
+t_{\text{mem}} =
 \frac{T_{\text{token,device}}^{\text{eff}}}{B_{\text{eff,mem}}}
 $$
 
 ### Roofline local latency
 
 $$
-t_{\text{local}}
-=
+t_{\text{local}} =
 \max(t_{\text{compute}},\; t_{\text{mem}})
 $$
 
@@ -1711,17 +1654,14 @@ $$
 t_{\text{comm}}
 \approx
 \frac{L}{PP}
-\bigl(
-n_{TP}\, t_{TP}
-+
+(
+n_{TP}\, t_{TP} +
 n_{SP}\, t_{SP}
-\bigr)
-+
+) +
 \frac{L_{\text{moe}}}{PP}
-\bigl(
+(
 n_{EP}\, t_{EP}
-\bigr)
-+
+) +
 t_{PP}
 $$
 
@@ -1734,11 +1674,10 @@ We introduce an overlap factor $\rho \in [0, 1]$ representing the fraction of lo
 The effective per-token latency is the local time plus any **unhidden** communication:
 
 $$
-t_{\text{token}}
-=
+t_{\text{token}} =
 t_{\text{local}}
 +
-\max\bigl(0,\; t_{\text{comm}} - \rho \cdot t_{\text{local}}\bigr)
+\max(0,\; t_{\text{comm}} - \rho \cdot t_{\text{local}})
 $$
 
 **Regimes:**
@@ -1761,21 +1700,19 @@ Recall from Section 6.2 that for a given PP stage we model the **per-token,
 per-stage** latency using the unified overlap model:
 
 $$
-t_{\text{token}}
-=
+t_{\text{token}} =
 t_{\text{local}}
 +
-\max\bigl(0,\; t_{\text{comm}} - \rho \cdot t_{\text{local}}\bigr)
+\max(0,\; t_{\text{comm}} - \rho \cdot t_{\text{local}})
 $$
 
 For pipeline stage $j$, we write this explicitly as
 
 $$
-t_{\text{stage},j}
-=
+t_{\text{stage},j} =
 t_{\text{local},j}
 +
-\max\bigl(0,\; t_{\text{comm},j} - \rho \cdot t_{\text{local},j}\bigr)
+\max(0,\; t_{\text{comm},j} - \rho \cdot t_{\text{local},j})
 $$
 
 During steady-state decoding, different PP stages process **different tokens**
@@ -1794,8 +1731,7 @@ cluster throughput scales linearly:
 $$
 TTPS
 \approx
-DP \cdot TPS_{\text{single}}
-=
+DP \cdot TPS_{\text{single}} =
 DP \cdot \frac{1}{\max_j t_{\text{stage},j}}
 $$
 
@@ -1810,7 +1746,7 @@ Here:
 
 ## 6.4 Batch-Size Scaling and Throughput–Latency Tradeoff
 
-TTFT and prefill analysis are covered in [modeling.prefill.md](modeling.prefill.md).
+TTFT and prefill analysis are covered in [prefill.md](prefill.md).
 This section analyzes how decoding performance changes as the **static batch size** $B$ grows —
 where $B$ sequences are decoded together and each contributes one token per step.
 The central question is: how does batching shift the operational regime from memory-bound
@@ -1832,8 +1768,7 @@ scale with $B$, while weight traffic remains independent of $B$:
 The **operational intensity** at batch size $B$ is therefore:
 
 $$
-\text{OI}(B)
-=
+\text{OI}(B) =
 \frac{B \times F_{\text{token,device}}}
      {T_{\theta,\text{device}} + B \times T_{\text{KV,device}}}
 $$
@@ -1843,22 +1778,21 @@ $$
 **Memory-bound limit** ($B \to 0$, or equivalently when weight traffic dominates KV traffic):
 
 $$
-\lim_{B \to 0} \text{OI}(B)
-=
+\lim_{B \to 0} \text{OI}(B) =
 \frac{B \times F_{\text{token,device}}}{T_{\theta,\text{device}}}
 \;\to\; 0
 $$
 
 At small $B$, weights dominate the denominator, and the model is **weight-traffic-limited**.
-The $B=1$ case recovers the single-token OI from §4.1: $\text{OI}(1) \approx 2/b$, which lies
+The $B=1$ case recovers the single-token OI from §4.1: $\text{OI}(1) = 2/b$ (exact, since
+every weight matrix contributes FLOPs $= 2 \times$ params with the $6HI$ convention), which lies
 far below the ridge point $R_{\text{GPU}} / B_{\text{eff,mem}}$ for all practical GPUs and
 precisions — confirming that single-request decode is always memory-bound.
 
 **Compute-bound limit** ($B \to \infty$, or when KV traffic dominates weight traffic):
 
 $$
-\lim_{B \to \infty} \text{OI}(B)
-=
+\lim_{B \to \infty} \text{OI}(B) =
 \frac{F_{\text{token,device}}}{T_{\text{KV,device}}}
 $$
 
@@ -1873,20 +1807,18 @@ memory-bound to compute-bound. Setting $\text{OI}(B^*) = R_{\text{GPU}} / B_{\te
 (the ridge point per [ROOFLINE]) and solving:
 
 $$
-\frac{B^* \times F_{\text{token,device}}}
-     {T_{\theta,\text{device}} + B^* \times T_{\text{KV,device}}}
-=
+\frac{B^*\times F_{\text{token,device}}}
+     {T_{\theta,\text{device}} + B^* \times T_{\text{KV,device}}} =
 \frac{R_{\text{GPU}}}{B_{\text{eff,mem}}}
 $$
 
 $$
-\boxed{
-B^*
-=
+B^* =
 \frac{T_{\theta,\text{device}} \times R_{\text{GPU}}}
      {F_{\text{token,device}} \times B_{\text{eff,mem}} - T_{\text{KV,device}} \times R_{\text{GPU}}}
-}
 $$
+
+**Validity domain:** The crossover $B^*$ exists only when the denominator is positive, i.e., $F_{\text{token,device}} \cdot B_{\text{eff,mem}} > T_{\text{KV,device}} \cdot R_{\text{GPU}}$. When this condition is violated (very long contexts where KV cache traffic dominates), the system remains memory-bound for all batch sizes — no amount of batching can push the operational intensity past the ridge point. In this regime, $B^*$ should be interpreted as $+\infty$.
 
 When $T_{\text{KV,device}}$ is small relative to $T_{\theta,\text{device}} / B^*$
 (i.e., short-context decode where weight traffic dominates), this simplifies to the
@@ -1913,9 +1845,8 @@ tips the balance from memory-bound to compute-bound.
 With $B$ sequences batched together, the per-step local execution time becomes:
 
 $$
-t_{\text{local}}(B)
-=
-\max\!\left(
+t_{\text{local}}(B) =
+\max\left(
 \frac{B \times F_{\text{token,device}}}{R_{\text{GPU}}},
 \;\;
 \frac{T_{\theta,\text{device}} + B \times T_{\text{KV,device}}}{B_{\text{eff,mem}}}
@@ -1926,11 +1857,8 @@ The **per-sequence** Time Per Output Token (TPOT) — the latency experienced by
 in the batch — is:
 
 $$
-\boxed{
-\text{TPOT}(B)
-=
+\text{TPOT}(B) =
 \frac{t_{\text{token}}(B)}{B}
-}
 $$
 
 where $t_{\text{token}}(B) = t_{\text{local}}(B) + \max(0,\; t_{\text{comm}} - \rho \cdot t_{\text{local}}(B))$
@@ -1984,15 +1912,13 @@ Define the two key metrics as a function of $B$:
 
 - **Throughput** (tokens per second, all sequences in the batch):
   $$
-  \text{Throughput}(B)
-  =
+  \text{Throughput}(B) =
   \frac{B}{t_{\text{token}}(B)}
   $$
 
 - **TPOT** (per-sequence latency, seconds per output token):
   $$
-  \text{TPOT}(B)
-  =
+  \text{TPOT}(B) =
   \frac{t_{\text{token}}(B)}{B}
   $$
 
@@ -2025,9 +1951,8 @@ starts to cost latency.
 Throughput plateaus toward a ceiling set by compute capacity:
 
 $$
-\text{Throughput}_{\max}
-=
-\frac{R_{\text{GPU}}}{F_{\text{token,device}}}
+\text{Throughput}*{\max} =
+\frac{R*{\text{GPU}}}{F_{\text{token,device}}}
 $$
 
 TPOT remains approximately **constant** in this regime: per-sequence latency is determined solely by the compute rate, independent of batch size. The total batch step time $t_{\text{local}}(B) \approx B \times F / R_{\text{GPU}}$ grows with $B$, but dividing by $B$ sequences cancels that growth.

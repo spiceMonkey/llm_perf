@@ -36,7 +36,7 @@ roofline model, LLM inference, AccelStack
 
 ## Introduction
 
-Conventional HBM attaches DRAM dies to a logic die via through-silicon vias (TSVs) or microbumps, with interconnect pitches on the order of 10–55 µm; at these pitches the number of interface pins is limited by package geometry rather than die area. 3D stacking with hybrid bonding achieves far higher pad density — pitches of 0.5–2 µm — unlocking bandwidth that scales with die area rather than package perimeter. This document derives the effective memory bandwidth $B_{\text{eff,mem}}$ from first principles, following the methodology of AccelStack §III-C2 [ACCELSTACK]; §III-C2 gives the qualitative framework but contains no dedicated equation, so the derivation here is an original first-principles extension. The resulting $B_{\text{eff,mem}}$ feeds directly into `SystemSpec.device.hbm_bandwidth_GBps`, and from there into the roofline model of `modeling.tpot.md` §4.
+Conventional HBM attaches DRAM dies to a logic die via through-silicon vias (TSVs) or microbumps, with interconnect pitches on the order of 10–55 µm; at these pitches the number of interface pins is limited by package geometry rather than die area. 3D stacking with hybrid bonding achieves far higher pad density — pitches of 0.5–2 µm — unlocking bandwidth that scales with die area rather than package perimeter. This document derives the effective memory bandwidth $B_{\text{eff,mem}}$ from first principles, following the methodology of AccelStack §III-C2 [ACCELSTACK]; §III-C2 gives the qualitative framework but contains no dedicated equation, so the derivation here is an original first-principles extension. The resulting $B_{\text{eff,mem}}$ feeds directly into `SystemSpec.device.hbm_bandwidth_GBps`, and from there into the roofline model of `tpot.md` §4.
 
 ---
 
@@ -89,12 +89,10 @@ $$
 The factor of 8 converts from bits to bytes. Substituting Steps 1 and 2:
 
 $$
-\boxed{
 BW_{\text{die}}
 = \left\lfloor \left\lfloor \frac{A_{\text{die}}}{p_{HB}^2} \right\rfloor \cdot \eta_{\text{data}} \right\rfloor
 \times \frac{f_{\text{data}}}{8}
 \quad [\text{GB/s}]
-}
 $$
 
 This is the bandwidth presented by a single DRAM die's interface to whatever it is bonded to — either the logic die (in Model A/B below) or the die below it in the stack.
@@ -108,7 +106,7 @@ Whether additional dies in the stack contribute independent bandwidth depends on
 In this model, $N_{\text{dies}}$ DRAM dies are stacked vertically, but only the **bottom die** bonds directly to the logic die. Upper dies route their data through the bottom die's TSVs, and are therefore bottlenecked by the single bottom-die-to-logic-die interface. The memory controller sees one logical port regardless of stack height:
 
 $$
-\boxed{BW_{\text{conservative}} = BW_{\text{die}}}
+BW_{\text{conservative}} = BW_{\text{die}}
 $$
 
 Stack height increases **capacity** ($N_{\text{dies}} \times$ capacity per die) but does not increase bandwidth in this model. This matches the HBM architecture, where each stack of 4 or 8 dies exposes a single 1024-bit wide interface to the package.
@@ -118,7 +116,7 @@ Stack height increases **capacity** ($N_{\text{dies}} \times$ capacity per die) 
 In this model, each DRAM die has its own direct hybrid-bonded interface to the logic die (true 3D integration, where each die is individually bonded to a redistribution layer on the logic die's surface). Each die contributes independently:
 
 $$
-\boxed{BW_{\text{optimistic}} = N_{\text{dies}} \times BW_{\text{die}}}
+BW_{\text{optimistic}} = N_{\text{dies}} \times BW_{\text{die}}
 $$
 
 This is the theoretical upper bound for fully independent die-to-die connections. It requires that the logic die's surface have sufficient area to accommodate $N_{\text{dies}}$ separate DRAM footprints simultaneously.
@@ -126,7 +124,7 @@ This is the theoretical upper bound for fully independent die-to-die connections
 ### Bandwidth Bounds
 
 $$
-\boxed{BW_{\text{conservative}} \;\le\; B_{\text{eff,mem}} \;\le\; BW_{\text{optimistic}}}
+BW_{\text{conservative}} \;\le\; B_{\text{eff,mem}} \;\le\; BW_{\text{optimistic}}
 $$
 
 **Which model to use.** The AccelStack paper (§III-C2) does not resolve this question definitively [ACCELSTACK]. Practical 3D DRAM designs, including the Samsung HBM4 roadmap and near-term HBM4E architectures, indicate that the conservative model is more realistic: the bottom die becomes the bandwidth bottleneck and upper dies primarily add capacity. The conservative model is therefore the **default for `SystemSpec`**; the optimistic model serves as a research upper bound for future fully-disaggregated 3D integration.
@@ -252,7 +250,7 @@ $$
 Shortening the vertical interconnect path in a 3D stack reduces access latency relative to HBM. Following AccelStack §III-C2 [ACCELSTACK]:
 
 $$
-\lat_{3D} \approx \frac{\lat_{\text{HBM}}}{k_{\text{interconnect}}}
+\ell_{3D} \approx \frac{\ell_{\text{HBM}}}{k_{\text{interconnect}}}
 $$
 
 where $k_{\text{interconnect}} > 1$ is the latency reduction factor attributable to the shorter signal path (no interposer, no package trace, direct vertical bond). Typical HBM read latency is approximately 100 ns at the row-activation level [HBM-SPEC]. With hybrid bonding reducing the vertical path from ~100–200 µm (HBM microbump + interposer) to ~1–5 µm (direct bond), an estimated:
@@ -260,10 +258,10 @@ where $k_{\text{interconnect}} > 1$ is the latency reduction factor attributable
 $$
 k_{\text{interconnect}} = 2 \text{–} 5
 \quad \Longrightarrow \quad
-\lat_{3D} \approx 20 \text{–} 50 \;\text{ns}
+\ell_{3D} \approx 20 \text{–} 50 \;\text{ns}
 $$
 
-**Impact on LLM decode.** For steady-state decode with large weight tensors and sequential KV cache access, the system is strongly memory-**bandwidth**-bound, not latency-bound. The improved latency $\lat_{3D}$ does not affect $t_{\text{token}}$ in the roofline regime (see `modeling.tpot.md` §4). Latency reduction does matter for workloads with high spatial locality and frequent cache-miss patterns (e.g., sparse retrieval, tree-attention with irregular access), but those are outside the scope of the steady-state decode model.
+**Impact on LLM decode.** For steady-state decode with large weight tensors and sequential KV cache access, the system is strongly memory-**bandwidth**-bound, not latency-bound. The improved latency $\ell_{3D}$ does not affect $t_{\text{token}}$ in the roofline regime (see `tpot.md` §4). Latency reduction does matter for workloads with high spatial locality and frequent cache-miss patterns (e.g., sparse retrieval, tree-attention with irregular access), but those are outside the scope of the steady-state decode model.
 
 ---
 
@@ -280,7 +278,7 @@ DeviceSpec(
 )
 ```
 
-The `hbm_bandwidth_GBps` value becomes $B_{\text{eff,mem}}$ in the roofline model (`modeling.tpot.md` §4). Specifically:
+The `hbm_bandwidth_GBps` value becomes $B_{\text{eff,mem}}$ in the roofline model (`tpot.md` §4). Specifically:
 
 $$
 t_{\text{mem}} = \frac{T_{\text{token,device}}^{\text{eff}}}{B_{\text{eff,mem}}}
@@ -294,9 +292,9 @@ $$
 I^* = \frac{R_{\text{GPU}}}{B_{\text{eff,mem}}}
 $$
 
-Increasing $B_{\text{eff,mem}}$ from 3.35 TB/s (H100 HBM3E, per [H100-SPEC]) toward 10 TB/s (Scenario 2 above) lowers $I^*$ by a factor of ~3×, meaning that workloads previously memory-bound may become compute-bound under 3D DRAM, and vice versa.
+Increasing $B_{\text{eff,mem}}$ from 3.35 TB/s (H100 HBM3, per [H100-SPEC]) toward 10 TB/s (Scenario 2 above) lowers $I^*$ by a factor of ~3×, meaning that workloads previously memory-bound may become compute-bound under 3D DRAM, and vice versa.
 
-**Note on `hbm4e.512dev.json`.** The system spec at `llm_perf/database/system/hbm4e.512dev.json` specifies `hbm_bandwidth_GBps = 6400` (6.4 TB/s per device). This value sits between the H100 HBM3E baseline (3.35 TB/s, [H100-SPEC]) and the near-term hybrid bonding projection (Scenario 2: ~10 TB/s at $p_{HB} = 2\;\mu\text{m}$), making it a reasonable interpolation point for near-future HBM4E devices.
+**Note on `hbm4e.512dev.json`.** The system spec at `llm_perf/database/system/hbm4e.512dev.json` specifies `hbm_bandwidth_GBps = 6400` (6.4 TB/s per device). This value sits between the H100 HBM3 baseline (3.35 TB/s, [H100-SPEC]) and the near-term hybrid bonding projection (Scenario 2: ~10 TB/s at $p_{HB} = 2\;\mu\text{m}$), making it a reasonable interpolation point for near-future HBM4E devices.
 
 Back-calculating the required interconnect pitch to yield 6,400 GB/s from the §2 model ($A_{\text{die}} = 100\;\text{mm}^2$, $\eta_{\text{data}} = 0.4$, $f_{\text{data}} = 8$ Gbps):
 
@@ -314,7 +312,7 @@ A pitch of ~79 µm is in the **microbump** range, not hybrid bonding. This means
 
 # Symbol Summary
 
-Symbols introduced in this document; consolidated into `modeling.notation.md` §15.
+Symbols introduced in this document; consolidated into `notation.md` §15.
 
 | Symbol | Description | Units |
 |--------|-------------|-------|
@@ -329,14 +327,14 @@ Symbols introduced in this document; consolidated into `modeling.notation.md` §
 | $BW_{\text{conservative}}$ | Lower bound: single logic-facing interface | GB/s |
 | $BW_{\text{optimistic}}$ | Upper bound: independent per-die interfaces | GB/s |
 | $k_{\text{interconnect}}$ | Latency reduction factor vs. HBM (§4) | dimensionless |
-| $\lat_{3D}$ | Estimated 3D DRAM read latency | ns |
+| $\ell_{3D}$ | Estimated 3D DRAM read latency | ns |
 
 ---
 
 # References
 
-- **[ACCELSTACK]** — Primary source for the 3D DRAM interface methodology (§III-C2: 3D DRAM bandwidth from hybrid bonding pitch and pin count). The bandwidth derivation in `modeling.dram3d.md` is a first-principles extension; §III-C2 provides the qualitative framework without a dedicated equation.
+- **[ACCELSTACK]** — Primary source for the 3D DRAM interface methodology (§III-C2: 3D DRAM bandwidth from hybrid bonding pitch and pin count). The bandwidth derivation in `dram3d.md` is a first-principles extension; §III-C2 provides the qualitative framework without a dedicated equation.
 - **[HBM-SPEC]** — JEDEC JESD235D: HBM2E / HBM3 / HBM3E pin bandwidth and capacity specs. Used for calibration in Scenario 1 (§3.1) and latency baseline in §4.
-- **[H100-SPEC]** — NVIDIA H100 whitepaper: 3.35 TB/s HBM3E bandwidth per GPU. Used as reference point for SystemSpec reconciliation in §5.
+- **[H100-SPEC]** — NVIDIA H100 whitepaper: 3.35 TB/s HBM3 bandwidth per GPU. Used as reference point for SystemSpec reconciliation in §5.
 
-_Full bibliographic entries for all tags are in `modeling.references.md`._
+_Full bibliographic entries for all tags are in `references.md`._

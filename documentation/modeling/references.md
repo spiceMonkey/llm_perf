@@ -115,7 +115,7 @@ OSDI 2024. arXiv:2401.09670.
 NVIDIA Corporation. (2022).  
 *NVIDIA H100 Tensor Core GPU Architecture.*  
 NVIDIA Whitepaper WP-10792-001.  
-→ H100 SXM5: 989 TF/s (bf16 TC), 3.35 TB/s HBM3E, 80 GB HBM per GPU; NVLink 4.0 900 GB/s bisection.
+→ H100 SXM5: 989 TF/s (bf16 TC), 3.35 TB/s HBM3, 80 GB HBM per GPU; NVLink 4.0 900 GB/s bisection. (HBM3E appears in H200/B200; H100 SXM5 ships with HBM3.)
 
 **[HBM-SPEC]**  
 JEDEC Solid State Technology Association. (2023).  
@@ -131,7 +131,7 @@ Bai, Y., et al. (2025).
 *AccelStack: A Co-Design Framework for 3D-Stacked Accelerators.*  
 HKUST FACT Lab. arXiv (preprint).  
 → §III-C2: 3D DRAM bandwidth from hybrid bonding pitch and pin count; Eq. 2: GEMM compute latency (two-level tiling).  
-_Note: Eq. 2 is GEMM latency, not BW. The 3D DRAM BW derivation in §III-C2 has no dedicated equation — `modeling.dram3d.md` extends it from first principles._
+_Note: Eq. 2 is GEMM latency, not BW. The 3D DRAM BW derivation in §III-C2 has no dedicated equation — `dram3d.md` extends it from first principles._
 
 ---
 
@@ -203,9 +203,9 @@ arXiv:2209.14970.
 
 The following constants and models are **original to this document suite** and are not derived from a published paper. They should be marked as such in inline citations:
 
-- **$\rho$ (overlap factor)** — The parameterization $t_{\text{token}} = t_{\text{local}} + \max(0, t_{\text{comm}} - \rho \cdot t_{\text{local}})$ is an original formulation introduced in `modeling.tpot.md`. The concept of compute–communication overlap is discussed in [MEGATRON3] and [DEEPSPEED-MOE] but without this exact model. Use "this work" as the citation.
+- **$\rho$ (overlap factor)** — The parameterization $t_{\text{token}} = t_{\text{local}} + \max(0, t_{\text{comm}} - \rho \cdot t_{\text{local}})$ is an original formulation introduced in `tpot.md`. The concept of compute–communication overlap is discussed in [MEGATRON3] and [DEEPSPEED-MOE] but without this exact model. Use "this work" as the citation.
 
-- **$c_{\text{act}}$ and $c_{\text{norm}}$** — Removed from `modeling.tpot.md` (negligible at large model scale: ~3–4 orders of magnitude below dominant weight and FFN terms). Defined as empirical calibration constants in `modeling.framework.md`. Sources: [TENSORRT-LLM] and [XFORMERS] for $c_{\text{act}}$; first-principles for $c_{\text{norm}}$ (RMSNorm ~5H ops, LayerNorm ~10H ops).
+- **$c_{\text{act}}$ and $c_{\text{norm}}$** — Removed from `tpot.md` (negligible at large model scale: ~3–4 orders of magnitude below dominant weight and FFN terms). Defined as empirical calibration constants in `framework.md`. Sources: [TENSORRT-LLM] and [XFORMERS] for $c_{\text{act}}$; first-principles for $c_{\text{norm}}$ (RMSNorm ~5H ops, LayerNorm ~10H ops).
 
 ---
 

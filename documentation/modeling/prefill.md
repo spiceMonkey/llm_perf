@@ -33,26 +33,26 @@ Prefill processes the entire input sequence in a **single forward pass**, produc
   - [2.2 Arithmetic Intensity of Decode](#22-arithmetic-intensity-of-decode)
   - [2.3 Ridge Point and Regime Crossover](#23-ridge-point-and-regime-crossover)
 
-- [3. Single-Request TTFT](#3-single-request-ttft)
+- [3. Single-Request Hardware Prefill Latency](#3-single-request-hardware-prefill-latency)
   - [3.1 Prefill Local Time (Roofline)](#31-prefill-local-time-roofline)
   - [3.2 Communication During Prefill](#32-communication-during-prefill)
   - [3.3 Pipeline Warmup Latency](#33-pipeline-warmup-latency)
-  - [3.4 End-to-End TTFT Formula](#34-end-to-end-ttft-formula)
+  - [3.4 Hardware Prefill Latency Formula](#34-hardware-prefill-latency-formula)
 
 - [4. Batched Prefill](#4-batched-prefill)
   - [4.1 FLOPs and Latency Under Batching](#41-flops-and-latency-under-batching)
-  - [4.2 TTFT Scaling with Batch Size](#42-ttft-scaling-with-batch-size)
+  - [4.2 Prefill Latency Scaling with Batch Size](#42-prefill-latency-scaling-with-batch-size)
   - [4.3 Optimal Batch Size for GPU Utilization](#43-optimal-batch-size-for-gpu-utilization)
 
 - [5. Chunked Prefill](#5-chunked-prefill)
   - [5.1 Per-Chunk Latency](#51-per-chunk-latency)
-  - [5.2 Total Prefill Time and TTFT Under Chunking](#52-total-prefill-time-and-ttft-under-chunking)
+  - [5.2 Total Prefill Time Under Chunking](#52-total-prefill-time-under-chunking)
   - [5.3 Throughput Benefit and Head-of-Line Blocking Reduction](#53-throughput-benefit-and-head-of-line-blocking-reduction)
 
 - [6. Disaggregated Prefill](#6-disaggregated-prefill)
   - [6.1 Architecture and Motivation](#61-architecture-and-motivation)
   - [6.2 KV Cache Transfer Latency](#62-kv-cache-transfer-latency)
-  - [6.3 TTFT for Disaggregated Systems](#63-ttft-for-disaggregated-systems)
+  - [6.3 Hardware Prefill Latency for Disaggregated Systems](#63-hardware-prefill-latency-for-disaggregated-systems)
 
 ---
 
@@ -62,7 +62,7 @@ Prefill processes the entire input sequence in a **single forward pass**, produc
 
 During decoding a single token is processed per step; all weight multiplications are **matrix–vector** (GEMV) operations. During prefill all $S_{\text{input}}$ tokens are processed in one forward pass; every linear layer becomes a **matrix–matrix** (GEMM) operation whose FLOP count scales with $S_{\text{input}}$.
 
-**Notation used in this section** (see `modeling.notation.md §§3–4, 8, 11` for the full table):
+**Notation used in this section** (see `notation.md §§3–4, 8, 11` for the full table):
 
 | Symbol | Meaning |
 |--------|---------|
@@ -89,14 +89,14 @@ The four projection matrices and their output dimensions:
 | $W_Q$ | $H \times H$ | $H$ | $2 H^2 S_{\text{input}}$ |
 | $W_K$ | $H \times H_{kv}$ | $H_{kv}$ | $2 H H_{kv} S_{\text{input}}$ |
 | $W_V$ | $H \times H_{kv}$ | $H_{kv}$ | $2 H H_{kv} S_{\text{input}}$ |
-| $W_O$ | $H_{kv} \times H$ | $H$ | $2 H_{kv} H S_{\text{input}}$ |
+| $W_O$ | $H \times H$ | $H$ | $2 H^2 S_{\text{input}}$ |
 
 Summing:
 
 $$
 F_{\text{proj,prefill}}
 =
-\bigl(2H^2 + 6 H H_{kv}\bigr) \cdot S_{\text{input}}
+(4H^2 + 4 H H_{kv}) \cdot S_{\text{input}}
 $$
 
 This matches the decode projection formula multiplied by $S_{\text{input}}$, reflecting the transition from GEMV to GEMM.
@@ -107,36 +107,33 @@ This matches the decode projection formula multiplied by $S_{\text{input}}$, ref
 
 ### Attention scores ($QK^\top$)
 
-During prefill, the full causal attention matrix is computed. The query matrix has shape $[S_{\text{input}} \times H_{kv}]$ (after reshaping heads), and the key matrix has shape $[S_{\text{input}} \times H_{kv}]$. The product yields a score matrix of shape $[S_{\text{input}} \times S_{\text{input}}]$.
-
-For the lower-triangular causal mask, each row $i$ attends to tokens $1 \ldots i$. The number of active cells averages $S_{\text{input}}/2$ per row, giving $S_{\text{input}}^2 / 2$ total cells. Using the full-matrix formula as an upper bound (standard in FLOPs accounting):
+During prefill, the full causal attention matrix is computed. Each of the $n_q$ query heads independently computes dot products with its corresponding (broadcast) KV head across all $S_{\text{input}}$ positions. Per query head: $2 d_{\text{head}} S_{\text{input}}^2$ FLOPs. Summed over all $n_q$ query heads:
 
 $$
-F_{\text{score,prefill}}
-=
-2 \cdot S_{\text{input}}^2 \cdot H_{kv}
+F_{\text{score,prefill}} =
+2 \cdot S_{\text{input}}^2 \cdot H
 $$
 
 > **Note:** The factor of 2 accounts for both the multiply and accumulate in each dot product. The causal mask halves the *average* work, but practical implementations (FlashAttention tile loops) often process the full upper-right with a mask, and published FLOPs budgets consistently use the full $S^2$ form [FA1, FA2]. We adopt the same convention.
 
+> **GQA note:** In GQA ($n_{kv} < n_q$), each KV head is shared by $n_q / n_{kv}$ query heads [GQA]. The KV cache **memory** scales with $H_{kv}$ (only $n_{kv}$ unique heads are stored), but the attention **FLOPs** scale with $H = n_q d_{\text{head}}$ because every query head independently computes attention.
+
 ### Value application (Attn · V)
 
-After softmax, the attention weights (shape $[S_{\text{input}} \times S_{\text{input}}]$) are multiplied against the value matrix (shape $[S_{\text{input}} \times H_{kv}]$):
+After softmax, each of the $n_q$ query heads computes a weighted sum over $S_{\text{input}}$ cached values of its corresponding value head. Per head: $2 d_{\text{head}} S_{\text{input}}^2$ FLOPs. Total:
 
 $$
 F_{\text{value,prefill}}
 =
-2 \cdot S_{\text{input}}^2 \cdot H_{kv}
+2 \cdot S_{\text{input}}^2 \cdot H
 $$
 
 ### Combined attention KV FLOPs
 
 $$
-F_{\text{attn,KV,prefill}}
-=
-F_{\text{score,prefill}} + F_{\text{value,prefill}}
-=
-4 \cdot S_{\text{input}}^2 \cdot H_{kv}
+F_{\text{attn,KV,prefill}} =
+F_{\text{score,prefill}} + F_{\text{value,prefill}} =
+4 \cdot S_{\text{input}}^2 \cdot H
 $$
 
 ---
@@ -146,12 +143,11 @@ $$
 For a gated MLP (SwiGLU/GeGLU style) with three weight matrices (gate, up, down) and effective intermediate dimension $I_{\text{eff}}$:
 
 $$
-F_{\text{ffn,prefill}}
-=
-4 \cdot H \cdot I_{\text{eff}} \cdot S_{\text{input}}
+F_{\text{ffn,prefill}} =
+6 \cdot H \cdot I_{\text{eff}} \cdot S_{\text{input}}
 $$
 
-> The factor of 4 arises from two GEMMs of shape $[S_{\text{input}} \times H] \times [H \times I_{\text{eff}}]$ (gate + up projections, each $2 H I_{\text{eff}} S_{\text{input}}$ FLOPs) and one GEMM of shape $[S_{\text{input}} \times I_{\text{eff}}] \times [I_{\text{eff}} \times H]$ (down projection, $2 H I_{\text{eff}} S_{\text{input}}$ FLOPs), giving $6 H I_{\text{eff}} S_{\text{input}}$ total. For brevity (and to match the widely-used approximation in scaling law literature), we keep $4 H I_{\text{eff}} S_{\text{input}}$ as the dominant term, noting the exact count is $6 H I_{\text{eff}} S_{\text{input}}$ for gated MLPs. In performance modeling it is standard to use $4 H I_{\text{eff}}$ per token because the gate elementwise multiply and activation have negligible FLOP cost relative to the GEMMs.
+> **Convention note:** A gated MLP has three full GEMMs — gate ($H \to I$), up ($H \to I$), and down ($I \to H$) — each contributing $2HIS_{\text{input}}$ FLOPs, for a total of $6HI_{\text{eff}}S_{\text{input}}$. The elementwise activation (SiLU/GeLU) and gate multiply are $O(I)$ and genuinely negligible. The training scaling-law literature ([KAPLAN-SCALING], [CHINCHILLA]) uses $4HI$, corresponding to a non-gated 2-matrix FFN. Since this model targets **inference** of modern gated-MLP architectures, we use the exact $6HI$ throughout. This ensures accurate hardware prefill latency predictions in the compute-bound regime and yields the exact OI result $\text{OI} = 2S_{\text{input}}/b$ without approximation (since FLOPs $= 2 \times$ params for every weight matrix). See also `tpot.md §3.3`.
 
 ---
 
@@ -160,21 +156,15 @@ $$
 Combining projections, attention KV, and FFN per transformer layer:
 
 $$
-F_{\text{layer,prefill}}
-=
-F_{\text{proj,prefill}}
-+ F_{\text{attn,KV,prefill}}
-+ F_{\text{ffn,prefill}}
+F_{\text{layer,prefill}} =
+F_{\text{proj,prefill}} + F_{\text{attn,KV,prefill}} + F_{\text{ffn,prefill}}
 $$
 
 $$
-\boxed{
-F_{\text{layer,prefill}}
-=
-\bigl(2H^2 + 6 H H_{kv} + 4 H I_{\text{eff}}\bigr) S_{\text{input}}
+F_{\text{layer,prefill}} =
+(4H^2 + 4 H H_{kv} + 6 H I_{\text{eff}}) S_{\text{input}}
 \;+\;
-4 S_{\text{input}}^2 H_{kv}
-}
+4 S_{\text{input}}^2 H
 $$
 
 The first term grows as $O(S_{\text{input}})$ and corresponds to GEMM operations on the weight matrices. The second term grows as $O(S_{\text{input}}^2)$ and comes from the full pairwise attention computation.
@@ -184,27 +174,23 @@ The first term grows as $O(S_{\text{input}})$ and corresponds to GEMM operations
 The $S_{\text{input}}^2$ term dominates when:
 
 $$
-4 S_{\text{input}}^2 H_{kv}
->
-\bigl(2H^2 + 6 H H_{kv} + 4 H I_{\text{eff}}\bigr) S_{\text{input}}
+4 S_{\text{input}}^2 H >
+(4H^2 + 4 H H_{kv} + 6 H I_{\text{eff}}) S_{\text{input}}
 $$
 
 Simplifying:
 
 $$
-S_{\text{input}}
->
-\frac{2H^2 + 6 H H_{kv} + 4 H I_{\text{eff}}}{4 H_{kv}}
-\approx
-\frac{H^2}{2 H_{kv}}
-\quad (\text{when } H \gg H_{kv}, I_{\text{eff}})
+S_{\text{input}} >
+\frac{4H^2 + 4 H H_{kv} + 6 H I_{\text{eff}}}{4 H} =
+H + H_{kv} + \tfrac{3}{2} I_{\text{eff}}
 $$
 
-For a model with $H = 8192$ and $H_{kv} = 1024$ (e.g., GQA with $n_{kv} = 8$, $d_{\text{head}} = 128$), the crossover is at $S_{\text{input}} \approx 32\text{k}$ tokens — only relevant for very long contexts. For smaller models (e.g., $H = 4096$, $H_{kv} = 512$), crossover occurs at $\sim 16\text{k}$ tokens. At common prefill lengths ($\le 8\text{k}$ tokens), the linear projection term typically dominates.
+For a model with $H = 8192$, $H_{kv} = 1024$, and $I_{\text{eff}} = 28672$ (e.g., LLaMA-3 70B with GQA $n_{kv} = 8$, $d_{\text{head}} = 128$), the crossover is at $S_{\text{input}} \approx 52\text{k}$ tokens. For smaller models (e.g., $H = 4096$, $H_{kv} = 512$, $I_{\text{eff}} = 14336$), crossover occurs at $\sim 26\text{k}$ tokens. At common prefill lengths ($\le 8\text{k}$ tokens), the linear projection term typically dominates.
 
 ### FlashAttention does NOT reduce prefill FLOPs
 
-FlashAttention [FA1, FA2] tiles the $S \times S$ attention matrix into SRAM-resident blocks, reducing the number of HBM round-trips and thus **memory traffic**. However, the number of floating-point operations remains identical — FlashAttention is an IO-aware reorganization of the same computation, not a FLOP reduction. The $4 S_{\text{input}}^2 H_{kv}$ term applies with or without FlashAttention; the difference appears only in the memory traffic model (Section 3).
+FlashAttention [FA1, FA2] tiles the $S \times S$ attention matrix into SRAM-resident blocks, reducing the number of HBM round-trips and thus **memory traffic**. However, the number of floating-point operations remains identical — FlashAttention is an IO-aware reorganization of the same computation, not a FLOP reduction. The $4 S_{\text{input}}^2 H$ term applies with or without FlashAttention; the difference appears only in the memory traffic model (Section 3).
 
 ---
 
@@ -224,15 +210,15 @@ $$
 
 Tensor parallelism splits weight matrices. Each device computes $1/TP$ of the projection and FFN GEMMs. The attention KV term is also split by TP (heads are distributed):
 
-- Projections: $\bigl(2H^2 + 6 H H_{kv} + 4 H I_{\text{eff}}\bigr) S_{\text{input}} / TP$
-- Attention KV (score + value): attention heads are split across TP ranks, so $4 S_{\text{input}}^2 H_{kv} / TP$
+- Projections: $(4H^2 + 4 H H_{kv} + 6 H I_{\text{eff}}) S_{\text{input}} / TP$
+- Attention KV (score + value): attention heads are split across TP ranks, so $4 S_{\text{input}}^2 H / TP$
 
 ### SP sharding
 
 Sequence parallelism partitions $S_{\text{input}}$ across SP devices for the attention computation. Each SP rank computes attention over $S_{\text{input}} / SP$ query positions attending to the full context (via ring KV passing), but executes $1/SP$ of the attention score FLOPs:
 
 $$
-F_{\text{attn,KV,prefill,device}} = \frac{4 S_{\text{input}}^2 H_{kv}}{TP \cdot SP}
+F_{\text{attn,KV,prefill,device}} = \frac{4 S_{\text{input}}^2 H}{TP \cdot SP}
 $$
 
 ### EP sharding (MoE)
@@ -240,7 +226,7 @@ $$
 For MoE layers, expert parallelism distributes expert weights so each device computes $1/EP$ of the FFN work:
 
 $$
-F_{\text{ffn,prefill,device}}^{\text{MoE}} = \frac{4 H I_{\text{eff}} S_{\text{input}}}{TP \cdot EP}
+F_{\text{ffn,prefill,device}}^{\text{MoE}} = \frac{6 H I_{\text{eff}} S_{\text{input}}}{TP \cdot EP}
 $$
 
 ### Full per-device expression
@@ -248,30 +234,23 @@ $$
 Collecting all terms:
 
 $$
-\boxed{
-F_{\text{prefill,device}}
-=
+F_{\text{prefill,device}} =
 \frac{L}{PP}
 \left[
-\frac{\bigl(2H^2 + 6 H H_{kv}\bigr) S_{\text{input}}}{TP}
-+
-\frac{4 H I_{\text{eff}} S_{\text{input}}}{TP \cdot EP}
-+
-\frac{4 S_{\text{input}}^2 H_{kv}}{TP \cdot SP}
+\frac{(4H^2 + 4 H H_{kv}) S_{\text{input}}}{TP} +
+\frac{6 H I_{\text{eff}} S_{\text{input}}}{TP \cdot EP} +
+\frac{4 S_{\text{input}}^2 H}{TP \cdot SP}
 \right]
-}
 $$
 
 For a **dense model** ($EP = 1$, $I_{\text{eff}} = I_{\text{dense}}$):
 
 $$
-F_{\text{prefill,device}}^{\text{dense}}
-=
+F_{\text{prefill,device}}^{\text{dense}} =
 \frac{L}{PP \cdot TP}
 \left[
-\bigl(2H^2 + 6 H H_{kv} + 4 H I_{\text{dense}}\bigr) S_{\text{input}}
-+
-\frac{4 S_{\text{input}}^2 H_{kv}}{SP}
+(4H^2 + 4 H H_{kv} + 6 H I_{\text{dense}}) S_{\text{input}} +
+\frac{4 S_{\text{input}}^2 H}{SP}
 \right]
 $$
 
@@ -286,8 +265,7 @@ A fundamental insight into LLM inference performance is that **prefill and decod
 The **ridge point** of a device is:
 
 $$
-R_{\text{ridge}}
-=
+R_{\text{ridge}} =
 \frac{R_{\text{GPU}}}{B_{\text{eff,mem}}}
 \quad (\text{FLOPs per byte})
 $$
@@ -302,24 +280,21 @@ Arithmetic intensity (OI) is the ratio of FLOPs to bytes moved from HBM during t
 
 ### Weight-dominated regime (linear projections)
 
-For the projection and FFN GEMMs, the weight matrices are read once per prefill pass. The weight traffic per layer is $T_{\theta,\text{layer}} = (P_{\text{attn}} + P_{\text{FFN}}/EP) \cdot b / TP$ bytes. The projection and FFN FLOPs are $\bigl(2H^2 + 6 H H_{kv} + 4 H I_{\text{eff}} / EP\bigr) \cdot S_{\text{input}} / TP$.
+For the projection and FFN GEMMs, the weight matrices are read once per prefill pass. The weight traffic per layer is $T_{\theta,\text{layer}} = (P_{\text{attn}} + P_{\text{FFN}}/EP) \cdot b / TP$ bytes. The projection and FFN FLOPs are $(4H^2 + 4 H H_{kv} + 6 H I_{\text{eff}} / EP) \cdot S_{\text{input}} / TP$.
 
-Using the dominant-term approximation $P_{\text{attn}} \approx H^2$ and ignoring KV:
+Since every weight matrix contributes FLOPs $= 2 \times$ params (the $6HI$ convention matches the $3HI$ parameter count exactly):
 
 $$
-\text{OI}_{\text{prefill,proj}}
-\approx
-\frac{\bigl(2H^2 + 4 H I_{\text{eff}}\bigr) S_{\text{input}}}{(H^2 + 3 H I_{\text{eff}} N_{\text{exp}}/EP)\, b}
-\approx
+\text{OI}_{\text{prefill,proj}} =
+\frac{(4H^2 + 4 H H_{kv} + 6 H I_{\text{eff}} / EP) S_{\text{input}}}{(2H^2 + 2 H H_{kv} + 3 H I_{\text{eff}} N_{\text{exp}}/EP)\, b} =
 \frac{2 S_{\text{input}}}{b}
-\quad (\text{for dense, }I_{\text{eff}} \approx H)
 $$
 
 The arithmetic intensity of the linear projection stage **scales linearly with $S_{\text{input}}$** — each weight byte is reused across all $S_{\text{input}}$ token vectors in the GEMM.
 
 ### Attention computation regime
 
-For the attention score and value computation, the "weights" are the $Q$, $K$, $V$ activations themselves (all loaded from HBM or kept in SRAM with FlashAttention). Without FlashAttention, the traffic is $O(S_{\text{input}}^2)$ (storing the full attention matrix); with FlashAttention [FA1, FA2], the $S \times S$ matrix is tiled and never fully materialized, reducing traffic to $O(S_{\text{input}})$. In both cases the FLOPs are $4 S_{\text{input}}^2 H_{kv} / (TP \cdot SP)$.
+For the attention score and value computation, the "weights" are the $Q$, $K$, $V$ activations themselves (all loaded from HBM or kept in SRAM with FlashAttention). Without FlashAttention, the traffic is $O(S_{\text{input}}^2)$ (storing the full attention matrix); with FlashAttention [FA1, FA2], the $S \times S$ matrix is tiled and never fully materialized, reducing traffic to $O(S_{\text{input}})$. In both cases the FLOPs are $4 S_{\text{input}}^2 H / (TP \cdot SP)$.
 
 For performance modeling, we treat FlashAttention as the default and note that the attention computation is generally compute-bound in the prefill regime (the tiled SRAM reuse pattern achieves high OI within each tile).
 
@@ -328,11 +303,9 @@ For performance modeling, we treat FlashAttention as the default and note that t
 For the projection- and FFN-dominated components of prefill (the $O(S_{\text{input}})$ FLOP terms):
 
 $$
-\boxed{
 \text{OI}_{\text{prefill}}
 \approx
 \frac{2 S_{\text{input}}}{b}
-}
 $$
 
 ---
@@ -344,8 +317,7 @@ During decode at batch size $B = 1$, each linear layer is a GEMV: one vector of 
 $$
 \text{OI}_{\text{decode,GEMV}}
 \approx
-\frac{2 H^2}{H^2\, b}
-=
+\frac{2 H^2}{H^2\, b} =
 \frac{2}{b}
 $$
 
@@ -360,11 +332,9 @@ $$
 For $B = 1$ and $b = 2$ (bf16), $\text{OI}_{\text{decode}} = 1$ FLOP/byte — far below any modern GPU's ridge point.
 
 $$
-\boxed{
 \text{OI}_{\text{decode}} \approx \frac{2B}{b}
 \quad\Longrightarrow\quad
 \textbf{always memory-bound at }B = 1
-}
 $$
 
 ---
@@ -374,7 +344,7 @@ $$
 For an H100 SXM5 [H100-SPEC]:
 
 - $R_{\text{GPU}} \approx 989$ TFlops/s (bf16 with Tensor Cores)
-- $B_{\text{eff,mem}} \approx 3.35$ TB/s (HBM3E)
+- $B_{\text{eff,mem}} \approx 3.35$ TB/s (HBM3)
 - $R_{\text{ridge}} = R_{\text{GPU}} / B_{\text{eff,mem}} \approx 295$ FLOPs/byte
 
 Comparing with OI expressions (bf16, $b = 2$):
@@ -390,33 +360,30 @@ Comparing with OI expressions (bf16, $b = 2$):
 This is the crossover condition:
 
 $$
-\boxed{
-S_{\text{input}}^{\star}
-=
-\frac{b}{2} \cdot R_{\text{ridge}}
-=
+S_{\text{input}}^{\star} =
+\frac{b}{2} \cdot R_{\text{ridge}} =
 \frac{b}{2} \cdot \frac{R_{\text{GPU}}}{B_{\text{eff,mem}}}
-}
 $$
 
-In practice, prefill sequences are almost always longer than $S_{\text{input}}^{\star}$, so the prefill pass is **virtually always compute-bound** at single-request inference on modern accelerators. The exact threshold varies with precision and HBM bandwidth; on A100 (HBM2E, $R_{\text{ridge}} \approx 312$ FLOPs/byte), $S_{\text{input}}^{\star} \approx 156$ tokens with bf16.
+In practice, prefill sequences are almost always longer than $S_{\text{input}}^{\star}$, so the prefill pass is **virtually always compute-bound** at single-request inference on modern accelerators. The exact threshold varies with precision and HBM bandwidth; on A100 (HBM2E, $R_{\text{ridge}} \approx 156$ FLOPs/byte), $S_{\text{input}}^{\star} \approx 156$ tokens with bf16.
 
 ---
 
 <div style="page-break-before: always;"></div>
 
-# 3. Single-Request TTFT
+# 3. Single-Request Hardware Prefill Latency
 
-We now derive TTFT for a single request on a co-located prefill+decode cluster (no disaggregation). The result will be extended in Sections 4–6.
+We now derive the hardware prefill latency $t_{\text{prefill}}$ for a single request on a co-located prefill+decode cluster (no disaggregation). The result will be extended in Sections 4–6.
 
-TTFT decomposes into three sequential phases:
+> **Scope note:** This section computes the hardware-only prefill latency $t_{\text{prefill}}$, which is one component of the full Time-To-First-Token (TTFT). The complete TTFT additionally includes scheduling overhead $t_{\text{sched}}$, tokenization $t_{\text{tok}}$, and the first decode step $t_{\text{token}}$. See `e2e.md` §2.1 for full TTFT assembly.
+
+$t_{\text{prefill}}$ decomposes into three sequential phases:
 
 $$
-TTFT
-=
-\underbrace{t_{\text{prefill,local}} + \max\!\left(0,\; t_{\text{prefill,comm}} - \rho\, t_{\text{prefill,local}}\right)}_{\text{prefill latency (all PP stages in sequence)}}
+t_{\text{prefill}} =
+t_{\text{prefill,local}} + \max\left(0,\; t_{\text{prefill,comm}} - \rho\, t_{\text{prefill,local}}\right)
 +
-\underbrace{t_{\text{pipeline,warmup}}}_{\text{PP fill}}
+t_{\text{pipeline,warmup}}
 $$
 
 Each term is derived below.
@@ -432,8 +399,7 @@ The local prefill time on a single PP stage is the roofline of compute and memor
 Given $F_{\text{prefill,device}}$ from Section 1.5:
 
 $$
-t_{\text{prefill,compute}}
-=
+t_{\text{prefill,compute}} =
 \frac{F_{\text{prefill,device}}}{R_{\text{GPU}}}
 $$
 
@@ -442,24 +408,21 @@ $$
 During prefill, weights are read from HBM (same as decode). However, the **KV cache is being written** (not read) for the input tokens — it is not yet present and therefore contributes **write traffic**, not read traffic. We model total prefill traffic as:
 
 $$
-T_{\text{prefill,device}}
-=
-T_{\theta,\text{device}}
-\;+\;
+T_{\text{prefill,device}} =
+T_{\theta,\text{device}} +
 T_{\text{KV,write,device}}
 $$
 
 where:
 
-- $T_{\theta,\text{device}}$ — weight read traffic per device (same as decode; see `modeling.tpot.md §2.1`):
+- $T_{\theta,\text{device}}$ — weight read traffic per device (same as decode; see `tpot.md §2.1`):
 
   $$
   T_{\theta,\text{device}}
   \approx
   \frac{L}{PP}
   \left(
-  \frac{(H^2 + 3 H H_{kv})b}{TP}
-  +
+  \frac{(2H^2 + 2 H H_{kv})b}{TP} +
   \frac{3 H I_{\text{eff}} N_{\text{exp}} b}{TP \cdot EP}
   \right)
   $$
@@ -467,8 +430,7 @@ where:
 - $T_{\text{KV,write,device}}$ — KV cache write traffic for the $S_{\text{input}}$ tokens being prefilled:
 
   $$
-  T_{\text{KV,write,device}}
-  =
+  T_{\text{KV,write,device}} =
   \frac{L}{PP}
   \cdot
   \frac{2 S_{\text{input}} H_{kv}\, b}{TP \cdot SP}
@@ -483,22 +445,18 @@ Without FlashAttention, the $S_{\text{input}} \times S_{\text{input}}$ attention
 The effective memory time is:
 
 $$
-t_{\text{prefill,mem}}
-=
+t_{\text{prefill,mem}} =
 \frac{T_{\text{prefill,device}}}{B_{\text{eff,mem}}}
 $$
 
 ### Roofline local time
 
 $$
-\boxed{
-t_{\text{prefill,local}}
-=
-\max\!\left(
+t_{\text{prefill,local}} =
+\max\left(
 t_{\text{prefill,compute}},\;
 t_{\text{prefill,mem}}
 \right)
-}
 $$
 
 At typical prefill lengths (compute-bound regime, Section 2.3): $t_{\text{prefill,compute}} \gg t_{\text{prefill,mem}}$, so $t_{\text{prefill,local}} \approx t_{\text{prefill,compute}}$.
@@ -522,8 +480,7 @@ The TP All-Reduce synchronizes the partial hidden-state outputs after Row-Parall
 Per-layer TP ring All-Reduce:
 
 $$
-t_{TP}^{\text{prefill,ring}}
-=
+t_{TP}^{\text{prefill,ring}} =
 2(TP-1)\alpha_{TP}
 +
 2\frac{TP-1}{TP}
@@ -543,13 +500,25 @@ $$
 
 The $S_{\text{input}}$ factor in the bandwidth term means TP communication during prefill is substantially larger than during decode. For $S_{\text{input}} = 4096$ this is a $4096\times$ larger payload per collective than single-token decode.
 
+> **Implementation note — tiled prefill and $\alpha_{TP}$ accumulation:** In practice,
+> large-$S_{\text{input}}$ prefill is often processed in $k$ sub-sequence tiles (e.g., to fit
+> within SRAM or network buffer limits). Each tile launches an independent all-reduce, accumulating
+> the $\alpha_{TP}$ startup latency $k$ times. The total un-hidden $\alpha$ overhead is
+> $k \times \max(0,\, \alpha_{TP} - \rho \cdot t_{\text{tile,compute}})$, where
+> $t_{\text{tile,compute}}$ is the compute time for a single tile. For fine-grained tiling with
+> small tiles, each tile's compute-to-communication ratio mirrors the full-sequence overlap
+> structure, so the $\rho$ factor still absorbs the hiding benefit. However, for very large
+> $S_{\text{input}}$ and small tile sizes, the accumulated $k \cdot \alpha_{TP}$ term can become
+> non-negligible even when each individual $\alpha_{TP}$ is fully hidden. The formulas above model
+> a single collective per layer; the tiling multiplier $k$ can be incorporated when tile size is a
+> known design parameter.
+
 ### EP All-to-All (prefill, MoE)
 
 For MoE layers, each device dispatches $k \cdot H \cdot S_{\text{input}} \cdot b$ bytes of token activations per direction (vs. $k \cdot H \cdot b$ during decode):
 
 $$
-t_{EP}^{\text{prefill,ring}}
-=
+t_{EP}^{\text{prefill,ring}} =
 2(EP-1)\alpha_{EP}
 +
 2(EP-1)
@@ -561,8 +530,7 @@ $$
 The PP hop forwards the hidden-state shard to the next stage. With TP rank alignment, each device forwards its local shard of shape $[S_{\text{input}} \times H/TP]$:
 
 $$
-t_{PP}^{\text{prefill}}
-=
+t_{PP}^{\text{prefill}} =
 \alpha_{PP}
 +
 \frac{(H/TP) \cdot S_{\text{input}} \cdot b}{B_{\text{eff,PP}}}
@@ -573,8 +541,7 @@ $$
 During prefill with SP, each SP rank holds $S_{\text{input}}/SP$ of the input sequence. Ring Attention must circulate KV shards so each device's query block can attend to the full input. The per-layer SP communication:
 
 $$
-t_{SP}^{\text{prefill}}
-=
+t_{SP}^{\text{prefill}} =
 (SP-1)\alpha_{SP}
 +
 (SP-1) \cdot \frac{(S_{\text{input}}/SP) \cdot (2 H_{kv}/TP) \cdot b}{B_{\text{eff,SP}}}
@@ -582,26 +549,20 @@ $$
 
 ### Total per-stage communication time (prefill)
 
-Following the same structure as `modeling.tpot.md §5.5`, collectives within each layer are sequential:
+Following the same structure as `tpot.md §5.5`, collectives within each layer are sequential:
 
 $$
-\boxed{
-t_{\text{prefill,comm}}
-=
+t_{\text{prefill,comm}} =
 \frac{L}{PP}
-\bigl(
-n_{TP}\, t_{TP}^{\text{prefill}}
-+
+(
+n_{TP}\, t_{TP}^{\text{prefill}} +
 n_{SP}\, t_{SP}^{\text{prefill}}
-\bigr)
-+
+) +
 \frac{L_{\text{moe}}}{PP}
-\bigl(
+(
 n_{EP}\, t_{EP}^{\text{prefill}}
-\bigr)
-+
+) +
 t_{PP}^{\text{prefill}}
-}
 $$
 
 where $n_{TP} = 2$ (attention + FFN), $n_{SP} = 1$ (attention), $n_{EP} = 1$ (MoE FFN dispatch/combine).
@@ -613,8 +574,7 @@ where $n_{TP} = 2$ (attention + FFN), $n_{SP} = 1$ (attention), $n_{EP} = 1$ (Mo
 With $PP$ pipeline stages, the first token's hidden state must traverse all stages **sequentially** before the first decoded token can be emitted. Since the pipeline is empty at the start of prefill, there is no parallel filling:
 
 $$
-t_{\text{pipeline,warmup}}
-=
+t_{\text{pipeline,warmup}} =
 (PP - 1) \cdot t_{\text{stage}}
 $$
 
@@ -624,27 +584,24 @@ $$
 t_{\text{pipeline,warmup}}
 \approx
 (PP - 1) \cdot
-\bigl(t_{\text{prefill,local}} + t_{PP}^{\text{prefill}}\bigr)
+(t_{\text{prefill,local}} + t_{PP}^{\text{prefill}})
 $$
 
 For $PP = 1$ (no pipeline parallelism), $t_{\text{pipeline,warmup}} = 0$.
 
 ---
 
-## 3.4 End-to-End TTFT Formula
+## 3.4 Hardware Prefill Latency Formula
 
 Combining all three phases, with overlap factor $\rho \in [0, 1]$ capturing the fraction of prefill communication that can be hidden behind compute:
 
 $$
-\boxed{
-TTFT
-=
+t_{\text{prefill}} =
 t_{\text{prefill,local}}
 +
-\max\!\left(0,\; t_{\text{prefill,comm}} - \rho\, t_{\text{prefill,local}}\right)
+\max\left(0,\; t_{\text{prefill,comm}} - \rho\, t_{\text{prefill,local}}\right)
 +
 t_{\text{pipeline,warmup}}
-}
 $$
 
 **Interpretation of each term:**
@@ -653,7 +610,7 @@ $$
 - $\max(0,\, t_{\text{prefill,comm}} - \rho\, t_{\text{prefill,local}})$: residual communication after compute–communication overlap. In the compute-bound prefill regime, $t_{\text{prefill,local}}$ is large, so significant communication hiding ($\rho \approx 0.8$–$1.0$) is achievable.
 - $t_{\text{pipeline,warmup}}$: pipeline fill penalty; grows with $PP$ and with $S_{\text{input}}$ (since $t_{PP}^{\text{prefill}}$ scales with $S_{\text{input}}$).
 
-> **Overlap note:** The overlap factor $\rho$ is an original parameterization (this work); see `modeling.references.md`. In the compute-bound prefill regime, compute and communication can be overlapped aggressively by pipelining GEMM tiles with collective operations (e.g., using NCCL + CUDA stream concurrency). Practical $\rho$ values are system-dependent but commonly 0.5–0.9.
+> **Overlap note:** The overlap factor $\rho$ is an original parameterization (this work); see `references.md`. In the compute-bound prefill regime, compute and communication can be overlapped aggressively by pipelining GEMM tiles with collective operations (e.g., using NCCL + CUDA stream concurrency). Practical $\rho$ values are system-dependent but commonly 0.5–0.9.
 
 ---
 
@@ -670,18 +627,16 @@ Multiple requests can be prefilled simultaneously by stacking their input tokens
 All projection and FFN GEMMs grow proportionally with $B_{\text{prefill}}$:
 
 $$
-F_{\text{prefill,device}}^{(B_{\text{prefill}})}
-=
+F_{\text{prefill,device}}^{(B_{\text{prefill}})} =
 B_{\text{prefill}} \cdot F_{\text{prefill,device}}
-\bigl|_{B_{\text{prefill}}=1}
+|_{B_{\text{prefill}}=1}
 $$
 
 For the attention score and value terms, the $S_{\text{input}}^2$ computation is **independent across requests** (each request's query attends only to its own key/value cache, not to other requests' tokens). Thus:
 
 $$
-F_{\text{attn,KV,prefill,device}}^{(B_{\text{prefill}})}
-=
-B_{\text{prefill}} \cdot \frac{4 S_{\text{input}}^2 H_{kv}}{TP \cdot SP}
+F_{\text{attn,KV,prefill,device}}^{(B_{\text{prefill}})} =
+B_{\text{prefill}} \cdot \frac{4 S_{\text{input}}^2 H}{TP \cdot SP}
 $$
 
 Unlike batched **decode** — where the weight matrices are shared and reused across all $B$ output tokens in the GEMV — batched prefill increases both FLOPs and compute time proportionally. In the compute-bound regime:
@@ -690,29 +645,29 @@ $$
 t_{\text{prefill,compute}}^{(B_{\text{prefill}})}
 \approx
 B_{\text{prefill}} \cdot t_{\text{prefill,compute}}
-\bigl|_{B_{\text{prefill}}=1}
+|_{B_{\text{prefill}}=1}
 $$
 
 ---
 
-## 4.2 TTFT Scaling with Batch Size
+## 4.2 Prefill Latency Scaling with Batch Size
 
 All $B_{\text{prefill}}$ requests must wait for the **entire batched prefill pass** to complete before any of them receives their first token. Therefore:
 
 $$
-TTFT(B_{\text{prefill}})
+t_{\text{prefill}}(B_{\text{prefill}})
 \approx
 t_{\text{prefill,local}}^{(B_{\text{prefill}})}
 +
-\max\!\left(0,\; t_{\text{prefill,comm}}^{(B_{\text{prefill}})} - \rho\, t_{\text{prefill,local}}^{(B_{\text{prefill}})}\right)
+\max\left(0,\; t_{\text{prefill,comm}}^{(B_{\text{prefill}})} - \rho\, t_{\text{prefill,local}}^{(B_{\text{prefill}})}\right)
 +
 t_{\text{pipeline,warmup}}
 $$
 
-In the compute-bound regime, $t_{\text{prefill,local}} \propto B_{\text{prefill}}$, so TTFT grows **roughly linearly** with $B_{\text{prefill}}$:
+In the compute-bound regime, $t_{\text{prefill,local}} \propto B_{\text{prefill}}$, so $t_{\text{prefill}}$ grows **roughly linearly** with $B_{\text{prefill}}$:
 
 $$
-TTFT(B_{\text{prefill}}) \approx B_{\text{prefill}} \cdot TTFT(1)
+t_{\text{prefill}}(B_{\text{prefill}}) \approx B_{\text{prefill}} \cdot t_{\text{prefill}}(1)
 \quad (\text{compute-bound approximation})
 $$
 
@@ -722,7 +677,7 @@ Note: communication time also scales with $B_{\text{prefill}}$ (all message size
 
 ## 4.3 Optimal Batch Size for GPU Utilization
 
-The goal of batched prefill is to maximize **GPU utilization** (keep the compute units fully loaded) while satisfying a TTFT service-level objective (SLO), $TTFT_{\text{SLO}}$.
+The goal of batched prefill is to maximize **GPU utilization** (keep the compute units fully loaded) while satisfying a prefill latency service-level objective (SLO), $t_{\text{prefill,SLO}}$.
 
 ### Minimum batch size for compute saturation
 
@@ -736,36 +691,30 @@ $$
 Using $\text{OI}_{\text{prefill}} \approx 2 S_{\text{input}} / b$ (Section 2.1), single-request prefill is already compute-bound for $S_{\text{input}} \gtrsim S_{\text{input}}^{\star}$ (Section 2.3). Batching primarily helps when $S_{\text{input}} < S_{\text{input}}^{\star}$, in which case the minimum batch size to enter the compute-bound regime is:
 
 $$
-B_{\text{prefill}}^{\min}
-=
-\left\lceil \frac{R_{\text{ridge}} \cdot b}{2 \cdot S_{\text{input}}} \right\rceil
-=
+B_{\text{prefill}}^{\min} =
+\left\lceil \frac{R_{\text{ridge}} \cdot b}{2 \cdot S_{\text{input}}} \right\rceil =
 \left\lceil \frac{R_{\text{GPU}}}{B_{\text{eff,mem}} \cdot S_{\text{input}}} \right\rceil
 $$
 
 For H100 and $S_{\text{input}} = 64$ tokens (a very short prompt): $B_{\text{prefill}}^{\min} \approx \lceil 295/64 \rceil \approx 5$ requests needed before compute-saturation.
 
-### Maximum batch size from TTFT SLO
+### Maximum batch size from prefill latency SLO
 
-The TTFT SLO constrains the maximum allowable batch size. In the compute-bound regime:
+The prefill latency SLO constrains the maximum allowable batch size. In the compute-bound regime:
 
 $$
-B_{\text{prefill}}^{\max}
-=
-\left\lfloor \frac{TTFT_{\text{SLO}}}{TTFT(1)} \right\rfloor
+B_{\text{prefill}}^{\max} =
+\left\lfloor \frac{t_{\text{prefill,SLO}}}{t_{\text{prefill}}(1)} \right\rfloor
 $$
 
 ### Optimal operating point
 
 $$
-\boxed{
-B_{\text{prefill}}^{\text{opt}}
-=
-\min\!\left(B_{\text{prefill}}^{\max},\; B_{\text{avail}}\right)
-}
+B_{\text{prefill}}^{\text{opt}} =
+\min\left(B_{\text{prefill}}^{\max},\; B_{\text{avail}}\right)
 $$
 
-where $B_{\text{avail}}$ is the number of requests available in the queue. Batching beyond $B_{\text{prefill}}^{\max}$ violates the TTFT SLO; batching below $B_{\text{prefill}}^{\min}$ leaves the GPU under-utilized.
+where $B_{\text{avail}}$ is the number of requests available in the queue. Batching beyond $B_{\text{prefill}}^{\max}$ violates the prefill latency SLO; batching below $B_{\text{prefill}}^{\min}$ leaves the GPU under-utilized.
 
 ---
 
@@ -779,94 +728,104 @@ For very long prompts ($S_{\text{input}} \gg 1$), prefilling the entire sequence
 
 ## 5.1 Per-Chunk Latency
 
-Each chunk processes $C$ tokens instead of $S_{\text{input}}$. The per-chunk prefill FLOPs are obtained directly from Section 1.5 by substituting $S_{\text{input}} \leftarrow C$:
+Each chunk processes $C$ tokens. The **linear terms** (projections + FFN) are independent of position and identical for every chunk. However, the **attention term** is chunk-index-dependent: chunk $k$ (processing tokens $[(k{-}1)C,\; kC)$) has its $C$ queries attend to the **full accumulated KV cache** of $kC$ positions [SARATHI], not just the $C$ tokens within the chunk itself. The per-chunk FLOPs for chunk $k = 1, 2, \ldots, N_{\text{chunks}}$:
 
 $$
-F_{\text{chunk,device}}
-=
+F_{\text{chunk,device}}^{(k)} =
 \frac{L}{PP}
 \left[
-\frac{(2H^2 + 6 H H_{kv}) C}{TP}
+\frac{(4H^2 + 4 H H_{kv}) C}{TP}
 +
-\frac{4 H I_{\text{eff}} C}{TP \cdot EP}
+\frac{6 H I_{\text{eff}} C}{TP \cdot EP}
 +
-\frac{4 C^2 H_{kv}}{TP \cdot SP}
+\frac{4 \cdot C \cdot kC \cdot H}{TP \cdot SP}
 \right]
 $$
+
+The first two terms inside the brackets are **linear** (projections + FFN, constant across chunks). The third term is the **attention** component, which grows with chunk index $k$ since chunk $k$ attends to $kC$ accumulated KV positions.
+
+The first chunk ($k = 1$) attends to $C$ positions; the last chunk ($k = N_{\text{chunks}}$) attends to approximately $S_{\text{input}}$ positions.
 
 The per-chunk local time (roofline):
 
 $$
-t_{\text{chunk,compute}}
-=
-\frac{F_{\text{chunk,device}}}{R_{\text{GPU}}}
+t_{\text{chunk,compute}}^{(k)} =
+\frac{F_{\text{chunk,device}}^{(k)}}{R_{\text{GPU}}}
 $$
 
 $$
-t_{\text{chunk,local}}
-=
-\max\!\left(
-t_{\text{chunk,compute}},\;
-t_{\text{chunk,mem}}
+t_{\text{chunk,local}}^{(k)} =
+\max\left(
+t_{\text{chunk,compute}}^{(k)},\;
+t_{\text{chunk,mem}}^{(k)}
 \right)
 $$
 
-where $t_{\text{chunk,mem}}$ uses chunk-sized weight reads and KV writes (same expressions as Section 3.1 with $S_{\text{input}} \leftarrow C$).
+where $t_{\text{chunk,mem}}^{(k)}$ accounts for weight reads (same per chunk), KV cache writes ($C$ new entries per chunk), and KV cache reads ($kC$ entries for the attention pass). In practice, weight reads dominate the memory time, so the $k$-dependence is a small correction.
 
-The per-chunk communication time:
+The per-chunk communication time is approximately constant (dominated by TP allreduce of activations, which scales with $C$ not $kC$):
 
 $$
 t_{\text{chunk,comm}}
-=
-t_{\text{prefill,comm}}\bigl|_{S_{\text{input}} = C}
+\approx
+t_{\text{prefill,comm}}|_{S_{\text{input}} = C}
 $$
 
 Per-chunk overlap-adjusted latency:
 
 $$
-t_{\text{chunk}}
-=
-t_{\text{chunk,local}}
+t_{\text{chunk}}^{(k)} =
+t_{\text{chunk,local}}^{(k)}
 +
-\max\!\left(0,\; t_{\text{chunk,comm}} - \rho\, t_{\text{chunk,local}}\right)
+\max\left(0,\; t_{\text{chunk,comm}} - \rho\, t_{\text{chunk,local}}^{(k)}\right)
 $$
 
 ---
 
-## 5.2 Total Prefill Time and TTFT Under Chunking
+## 5.2 Total Prefill Time Under Chunking
 
-The number of chunks is $N_{\text{chunks}} = \lceil S_{\text{input}} / C \rceil$. The total FLOPs are identical to unchunked prefill (same total computation, just redistributed into smaller batches), so:
-
-$$
-t_{\text{prefill,chunked}}
-=
-N_{\text{chunks}} \cdot t_{\text{chunk}}
-\approx
-\left\lceil \frac{S_{\text{input}}}{C} \right\rceil \cdot t_{\text{chunk}}
-$$
-
-Since $t_{\text{chunk}} \approx t_{\text{prefill}} / N_{\text{chunks}}$ for the compute-dominated terms (FLOPs split equally), the total prefill time is approximately the same as unchunked in the compute-bound regime:
+The number of chunks is $N_{\text{chunks}} = \lceil S_{\text{input}} / C \rceil$. Because per-chunk FLOPs vary with $k$, the total time is a sum over chunks:
 
 $$
-t_{\text{prefill,chunked}} \approx t_{\text{prefill,unchunked}}
-\quad (\text{compute-bound, neglecting startup overheads})
+t_{\text{prefill,chunked}} =
+\sum_{k=1}^{N_{\text{chunks}}} t_{\text{chunk}}^{(k)}
 $$
 
-> **Note on $C^2$ term:** The attention score term scales as $C^2$ per chunk, summing to $N_{\text{chunks}} \cdot C^2 = S_{\text{input}} \cdot C$, which is **smaller** than the unchunked $S_{\text{input}}^2$. When the $S^2$ term is significant (long contexts without FlashAttention), chunking **reduces total FLOPs**. With FlashAttention, the $S^2$ traffic reduction already applies, so the advantage is smaller.
+### Total FLOPs decomposition
 
-TTFT for a chunked-prefill request:
+The total FLOPs across all chunks separate into constant (linear) and growing (attention) contributions:
+
+- **Linear terms:** $N_{\text{chunks}} \times C = S_{\text{input}}$ tokens processed in total — identical to the unchunked FLOPs from §1.5.
+- **Attention terms:**
 
 $$
-\boxed{
-TTFT_{\text{chunked}}
+\sum_{k=1}^{N} \frac{4 k C^2 H}{TP \cdot SP} =
+\frac{4 C^2 H}{TP \cdot SP} \cdot \frac{N(N{+}1)}{2}
+\;\approx\;
+\frac{2 S_{\text{input}}^2 H}{TP \cdot SP}
+$$
+
+The chunked attention total ($\approx 2S^2H$) is half the unchunked convention ($4S^2H$ from §1.2). This is **not** a FLOP reduction from chunking — it reflects the **causal structure**: each chunk naturally computes attention only to its accumulated context (positions $0$ through $kC$), faithfully capturing the lower-triangular causal mask. The unchunked formula uses the full-matrix $4S^2H$ convention (see §1.2 note: practical FlashAttention implementations process the full tile and mask, so published FLOPs budgets use $S^2$ rather than $S^2/2$). The actual compute work is the same regardless of chunking.
+
+> **Practical equivalence:** At typical prefill lengths where linear terms ($O(S)$) dominate the $S^2$ attention terms, the total compute time under chunking is approximately the same as unchunked:
+>
+> $$
+> t_{\text{prefill,chunked}} \approx t_{\text{prefill,unchunked}} \quad (\text{compute-bound, linear terms dominant})
+> $$
+>
+> The per-chunk variation in $t_{\text{chunk}}^{(k)}$ is small when attention is a minor fraction of total FLOPs (i.e., $S_{\text{input}} \ll H + H_{kv} + \frac{3}{2}I_{\text{eff}}$, the regime crossover from §1.4).
+
+Hardware prefill latency for a chunked-prefill request:
+
+$$
+t_{\text{prefill,chunked}}^{\text{total}}
 \approx
 t_{\text{prefill,chunked}}
 +
 t_{\text{pipeline,warmup}}
-}
 $$
 
-Because the prefill is spread over $N_{\text{chunks}}$ scheduler iterations, the observed TTFT from the requesting client is the time until all chunks complete and the first token is generated — longer than unchunked TTFT for the same request in isolation.
+Because the prefill is spread over $N_{\text{chunks}}$ scheduler iterations, the observed prefill latency from the requesting client is the time until all chunks complete and the first token is generated — longer than unchunked prefill for the same request in isolation (due to inter-chunk scheduling overhead and interleaved decode iterations).
 
 ---
 
@@ -886,12 +845,12 @@ Each chunk of $C$ tokens occupies approximately $t_{\text{chunk}} = (C / S_{\tex
 
 | Metric | Unchunked prefill | Chunked prefill ($C$ tokens) |
 |--------|-------------------|------------------------------|
-| Per-request TTFT | Low (one pass) | Higher (spread over iterations) |
+| Per-request prefill latency | Low (one pass) | Higher (spread over iterations) |
 | Concurrent decode TPOT | High spikes during long prefill | Bounded by $t_{\text{chunk}}$ |
 | System throughput | Lower (head-of-line blocking) | Higher (decode and prefill interleaved) |
-| Chunk size selection | N/A | Tune $C$ to balance TTFT and TPOT SLOs |
+| Chunk size selection | N/A | Tune $C$ to balance prefill latency and TPOT SLOs |
 
-See [SARATHI] for empirical validation of chunked prefill scheduling and its effect on P99 TTFT and decode latency under mixed workloads.
+See [SARATHI] for empirical validation of chunked prefill scheduling and its effect on P99 prefill latency and decode latency under mixed workloads.
 
 ---
 
@@ -931,19 +890,17 @@ After the prefill pass completes on the prefill cluster, the resulting KV cache 
 The total KV cache produced by a complete prefill pass (all $L$ layers, both keys and values, all $S_{\text{input}}$ tokens):
 
 $$
-M_{\text{KV,total}}
-=
+M_{\text{KV,total}}=
 2 \cdot L \cdot S_{\text{input}} \cdot H_{kv} \cdot b
 \quad \text{(bytes)}
 $$
 
-This follows directly from the per-layer KV cache expression in `modeling.tpot.md §1.3`, summed over all $L$ layers. With GQA [GQA], $H_{kv} = n_{kv} \cdot d_{\text{head}} \ll H$, substantially reducing the transfer volume compared to MHA ($H_{kv} = H$).
+This follows directly from the per-layer KV cache expression in `tpot.md §1.3`, summed over all $L$ layers. With GQA [GQA], $H_{kv} = n_{kv} \cdot d_{\text{head}} \ll H$, substantially reducing the transfer volume compared to MHA ($H_{kv} = H$).
 
 **Example (LLaMA-3 70B):** $L = 80$, $n_{kv} = 8$, $d_{\text{head}} = 128$, $H_{kv} = 1024$, $S_{\text{input}} = 4096$, $b = 2$ (bf16):
 
 $$
-M_{\text{KV,total}}
-=
+M_{\text{KV,total}}=
 2 \times 80 \times 4096 \times 1024 \times 2
 \approx 1.34 \text{ GB}
 $$
@@ -953,8 +910,7 @@ $$
 If the prefill cluster uses TP/SP partitioning, each device holds only a shard of the KV cache. The transfer can be coordinated so that each prefill device sends directly to the corresponding decode device (same TP/SP rank), transferring only the local shard:
 
 $$
-M_{\text{KV,shard}}
-=
+M_{\text{KV,shard}} =
 \frac{M_{\text{KV,total}}}{TP \cdot SP}
 $$
 
@@ -967,16 +923,14 @@ This reduces per-link transfer volume proportionally to the parallelism degree, 
 Using the $\alpha$–$\beta$ model [ALPHA-BETA] for the inter-cluster interconnect:
 
 $$
-\boxed{
-t_{\text{KV,transfer}}
-=
+t_{\text{KV,transfer}} =
 \alpha_{\text{inter}}
 +
 \frac{M_{\text{KV,total}}}{B_{\text{eff,inter}}}
-}
 $$
 
 where:
+
 - $\alpha_{\text{inter}}$ — inter-cluster link startup latency (typically $\mu$s-scale for InfiniBand HDR/NDR or NVLink-C2C; negligible vs. transfer time for large KV caches).
 - $B_{\text{eff,inter}}$ — effective inter-cluster bandwidth per transfer stream. For InfiniBand HDR (200 Gb/s per port), $B_{\text{eff,inter}} \approx 20$ GB/s unidirectional. NVLink-C2C (e.g., Grace-Hopper NVLink-C2C) offers $\sim 900$ GB/s.
 
@@ -990,18 +944,17 @@ This transfer latency is comparable to or can exceed the prefill compute time fo
 
 ---
 
-## 6.3 TTFT for Disaggregated Systems
+## 6.3 Hardware Prefill Latency for Disaggregated Systems
 
-Let the prefill cluster have hardware parameters $R_{\text{GPU,pre}}$ and $B_{\text{eff,mem,pre}}$, and the decode cluster have $R_{\text{GPU,dec}}$ and $B_{\text{eff,mem,dec}}$. The three phases of TTFT are:
+Let the prefill cluster have hardware parameters $R_{\text{GPU,pre}}$ and $B_{\text{eff,mem,pre}}$, and the decode cluster have $R_{\text{GPU,dec}}$ and $B_{\text{eff,mem,dec}}$. The three phases of hardware prefill latency are:
 
 ### Phase 1: Prefill on the prefill cluster
 
 $$
-t_{\text{prefill}}
-=
+t_{\text{prefill}} =
 t_{\text{prefill,local,pre}}
 +
-\max\!\left(0,\; t_{\text{prefill,comm,pre}} - \rho_{\text{pre}}\, t_{\text{prefill,local,pre}}\right)
+\max\left(0,\; t_{\text{prefill,comm,pre}} - \rho_{\text{pre}}\, t_{\text{prefill,local,pre}}\right)
 +
 t_{\text{pipeline,warmup,pre}}
 $$
@@ -1011,8 +964,7 @@ where all subscripts "pre" refer to the prefill cluster's hardware and paralleli
 ### Phase 2: KV cache transfer
 
 $$
-t_{\text{KV,transfer}}
-=
+t_{\text{KV,transfer}} =
 \alpha_{\text{inter}}
 +
 \frac{M_{\text{KV,total}}}{B_{\text{eff,inter}}}
@@ -1023,23 +975,19 @@ $$
 When the first decoded token must traverse the decode cluster's pipeline from stage 1 to stage $PP_{\text{dec}}$:
 
 $$
-t_{\text{pipeline,warmup,dec}}
-=
+t_{\text{pipeline,warmup,dec}} =
 (PP_{\text{dec}} - 1) \cdot t_{\text{stage,dec}}
 $$
 
-### Full TTFT (disaggregated)
+### Hardware prefill latency (disaggregated)
 
 $$
-\boxed{
-TTFT_{\text{disagg}}
-=
+t_{\text{prefill,disagg}} =
 t_{\text{prefill}}
 +
 t_{\text{KV,transfer}}
 +
 t_{\text{pipeline,warmup,dec}}
-}
 $$
 
 The three terms have different system knobs:
@@ -1050,14 +998,14 @@ The three terms have different system knobs:
 | $t_{\text{KV,transfer}}$ | Higher inter-cluster bandwidth (NVLink-C2C, InfiniBand NDR); KV quantization; GQA [GQA] |
 | $t_{\text{pipeline,warmup,dec}}$ | Smaller $PP_{\text{dec}}$; prefetching KV before decode cluster pipeline clears |
 
-### Comparison: Co-located vs. Disaggregated TTFT
+### Comparison: Co-located vs. Disaggregated Prefill Latency
 
 | Architecture | Prefill location | KV transfer | Decode cluster startup |
 |-------------|-----------------|-------------|----------------------|
 | **Co-located** | Same cluster as decode | None ($t_{\text{KV,transfer}} = 0$) | $t_{\text{pipeline,warmup}}$ |
 | **Disaggregated** | Dedicated prefill cluster | $\alpha_{\text{inter}} + M_{\text{KV}} / B_{\text{eff,inter}}$ | $t_{\text{pipeline,warmup,dec}}$ |
 
-Co-located TTFT is lower for individual requests (no KV transfer), but disaggregated systems achieve better **system goodput** under mixed workloads because prefill no longer interferes with ongoing decode iterations [DISAGG-PREFILL].
+Co-located prefill latency is lower for individual requests (no KV transfer), but disaggregated systems achieve better **system goodput** under mixed workloads because prefill no longer interferes with ongoing decode iterations [DISAGG-PREFILL].
 
 ---
 
@@ -1065,7 +1013,7 @@ Co-located TTFT is lower for individual requests (no KV transfer), but disaggreg
 
 # Symbol Index (new in this document)
 
-The following symbols are introduced in this document and extend `modeling.notation.md §11`.
+The following symbols are introduced in this document and extend `notation.md §11`.
 
 | Symbol | Definition |
 |--------|-----------|
@@ -1075,19 +1023,20 @@ The following symbols are introduced in this document and extend `modeling.notat
 | $N_{\text{chunks}}$ | Number of chunks: $\lceil S_{\text{input}} / C \rceil$ |
 | $F_{\text{prefill,device}}$ | Total prefill FLOPs per device (all layers on this PP stage) |
 | $F_{\text{layer,prefill}}$ | Per-layer prefill FLOPs (full-sequence GEMM + $S^2$ attention) |
-| $F_{\text{proj,prefill}}$ | Q/K/V/O projection FLOPs for prefill: $(2H^2 + 6HH_{kv}) S_{\text{input}}$ |
-| $F_{\text{score,prefill}}$ | Attention score FLOPs for prefill: $2 S_{\text{input}}^2 H_{kv}$ |
-| $F_{\text{value,prefill}}$ | Value application FLOPs for prefill: $2 S_{\text{input}}^2 H_{kv}$ |
-| $F_{\text{ffn,prefill}}$ | FFN FLOPs for prefill: $4 H I_{\text{eff}} S_{\text{input}}$ |
+| $F_{\text{proj,prefill}}$ | Q/K/V/O projection FLOPs for prefill: $(4H^2 + 4HH_{kv}) S_{\text{input}}$ |
+| $F_{\text{score,prefill}}$ | Attention score FLOPs for prefill: $2 S_{\text{input}}^2 H$ |
+| $F_{\text{value,prefill}}$ | Value application FLOPs for prefill: $2 S_{\text{input}}^2 H$ |
+| $F_{\text{ffn,prefill}}$ | FFN FLOPs for prefill: $6 H I_{\text{eff}} S_{\text{input}}$ |
 | $T_{\text{KV,write,device}}$ | HBM write traffic for KV cache during prefill |
 | $t_{\text{prefill,compute}}$ | Prefill compute time: $F_{\text{prefill,device}} / R_{\text{GPU}}$ |
 | $t_{\text{prefill,mem}}$ | Prefill memory time: $T_{\text{prefill,device}} / B_{\text{eff,mem}}$ |
 | $t_{\text{prefill,local}}$ | Prefill roofline local time: $\max(t_{\text{prefill,compute}}, t_{\text{prefill,mem}})$ |
 | $t_{\text{prefill,comm}}$ | Total prefill communication time (TP/EP/SP/PP collectives) |
-| $t_{\text{chunk}}$ | Latency of a single chunked-prefill iteration (overlap-adjusted) |
+| $F_{\text{chunk,device}}^{(k)}$ | Per-device FLOPs for chunk $k$; attention term is $k$-dependent (§5.1) |
+| $t_{\text{chunk}}^{(k)}$ | Overlap-adjusted latency of chunk $k$ (varies with $k$ due to attention) |
 | $t_{\text{pipeline,warmup}}$ | Pipeline fill time: $(PP-1) \times t_{\text{stage}}$ |
-| $TTFT$ | Time To First Token (single-request, co-located) |
-| $TTFT_{\text{disagg}}$ | Time To First Token for disaggregated prefill architecture |
+| $t_{\text{prefill}}$ | Hardware prefill latency (single-request, co-located) |
+| $t_{\text{prefill,disagg}}$ | Hardware prefill latency for disaggregated prefill architecture |
 | $M_{\text{KV,total}}$ | Total KV cache bytes produced by one prefill pass: $2 L S_{\text{input}} H_{kv} b$ |
 | $t_{\text{KV,transfer}}$ | KV cache transfer latency from prefill to decode cluster |
 | $B_{\text{eff,inter}}$ | Effective inter-cluster interconnect bandwidth (bytes/s) |
@@ -1099,7 +1048,7 @@ The following symbols are introduced in this document and extend `modeling.notat
 
 # References
 
-This document cites the following references from `modeling.references.md`:
+This document cites the following references from `references.md`:
 
 - **[FA1]** Dao et al. (2022) — FlashAttention: tiled attention for HBM traffic reduction during prefill.
 - **[FA2]** Dao (2023) — FlashAttention-2: improved parallelism across heads and sequence dimensions.

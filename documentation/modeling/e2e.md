@@ -60,7 +60,7 @@ roofline model, InferenceX, throughput–latency tradeoff
 
 This section defines all six end-to-end metrics precisely. They are the outputs users and system operators care about; all prior modeling documents (memory, FLOPs, traffic, communication, latency) contribute to computing them. The InferenceX benchmark [INFERENCEX] organizes production LLM inference evaluation around two of these six: **Throughput/GPU** (system efficiency) and **Interactivity** (user-perceived quality). The others provide essential context and diagnostic signal.
 
-Symbols used throughout this document are defined in `modeling.notation.md`; see especially §§4, 9, 11, and 14. New symbols introduced here are summarized in the [Symbol Summary](#symbol-summary) at the end.
+Symbols used throughout this document are defined in `notation.md`; see especially §§4, 9, 11, and 14. New symbols introduced here are summarized in the [Symbol Summary](#symbol-summary) at the end.
 
 ---
 
@@ -69,10 +69,10 @@ Symbols used throughout this document are defined in `modeling.notation.md`; see
 **Definition.** $TTFT$ is the wall-clock elapsed time from the moment a request is received by the serving system to the moment the **first output token** is returned to the caller. It encompasses all latency incurred before the first token can be streamed: request scheduling, tokenization, the prefill forward pass, optional KV cache transfer (disaggregated architectures), and the first decode step that produces token 1.
 
 $$
-\boxed{TTFT = t_{\text{sched}} + t_{\text{tok}} + t_{\text{prefill}} + t_{\text{KV\_transfer}} + t_{\text{token}}}
+TTFT = t_{\text{sched}} + t_{\text{tok}} + t_{\text{prefill}} + t_{\text{KV-transfer}} + t_{\text{token}}
 $$
 
-where $t_{\text{KV\_transfer}} = 0$ for co-located prefill+decode. The prefill latency $t_{\text{prefill}}$ is derived in full in `modeling.prefill.md §3`; framework overhead terms $t_{\text{sched}}$ and $t_{\text{tok}}$ are defined in `modeling.framework.md §2`.
+where $t_{\text{KV-transfer}} = 0$ for co-located prefill+decode. The prefill latency $t_{\text{prefill}}$ is derived in full in `prefill.md §3`; framework overhead terms $t_{\text{sched}}$ and $t_{\text{tok}}$ are defined in `framework.md §2`.
 
 **Key property.** TTFT is a *latency-to-first-byte* (TTFB) metric. For interactive applications, a high TTFT produces a blank screen during prefill — the most perceptible user experience degradation for long prompts.
 
@@ -80,13 +80,13 @@ where $t_{\text{KV\_transfer}} = 0$ for co-located prefill+decode. The prefill l
 
 ## 1.2 Time Per Output Token (TPOT)
 
-**Definition.** $\text{TPOT}$ is the **average inter-token latency** for tokens 2 through $N_{\text{out}}$ of a single response (the decode phase). It equals the per-step decode time $t_{\text{token}}$ from `modeling.tpot.md §6.2`, measured per sequence:
+**Definition.** $\text{TPOT}$ is the **average inter-token latency** for tokens 2 through $N_{\text{out}}$ of a single response (the decode phase). It equals the per-step decode time $t_{\text{token}}$ from `tpot.md §6.2`, measured per sequence:
 
 $$
-\boxed{\text{TPOT} = \frac{t_{\text{token}}(B)}{B}}
+\text{TPOT} = \frac{t_{\text{token}}(B)}{B}
 $$
 
-where $B$ is the number of sequences decoded concurrently in the same step and $t_{\text{token}}(B)$ is the overlap-aware per-step wall-clock time (see `modeling.tpot.md §6.4.2`).
+where $B$ is the number of sequences decoded concurrently in the same step and $t_{\text{token}}(B)$ is the overlap-aware per-step wall-clock time (see `tpot.md §6.4.2`).
 
 **Key property.** TPOT is the *streaming rate* perceived by the user. A TPOT of 50 ms means one new token appears every 50 ms — a rate of 20 tokens/s. Human reading comprehension speed is approximately 5–15 tokens/s; TPOT below 100 ms (>10 tokens/s) is a common production SLA threshold.
 
@@ -97,7 +97,7 @@ where $B$ is the number of sequences decoded concurrently in the same step and $
 **Definition.** The full wall-clock latency from request receipt to the **last output token** of a response of $N_{\text{out}}$ tokens:
 
 $$
-\boxed{\text{E2E}(N_{\text{out}}) = TTFT + (N_{\text{out}} - 1) \times \text{TPOT}}
+\text{E2E}(N_{\text{out}}) = TTFT + (N_{\text{out}} - 1) \times \text{TPOT}
 $$
 
 The factor $(N_{\text{out}} - 1)$ arises because the first output token is already produced by the end of TTFT; the decode phase produces tokens $2, 3, \ldots, N_{\text{out}}$, requiring $N_{\text{out}} - 1$ additional steps.
@@ -109,10 +109,10 @@ The factor $(N_{\text{out}} - 1)$ arises because the first output token is alrea
 **Definition.** The rate of output token generation per physical GPU, expressed in output tokens/second/GPU:
 
 $$
-\boxed{\text{Tput/GPU} = \frac{TTPS}{N_{\text{GPUs}}}}
+\text{Tput/GPU} = \frac{TTPS}{N_{\text{GPUs}}}
 $$
 
-where $TTPS$ is the global cluster token throughput (tokens/s, all sequences) defined in `modeling.tpot.md §6.3`, and $N_{\text{GPUs}}$ is the total number of GPUs in the cluster. This is the X-axis of the InferenceX benchmark [INFERENCEX].
+where $TTPS$ is the global cluster token throughput (tokens/s, all sequences) defined in `tpot.md §6.3`, and $N_{\text{GPUs}}$ is the total number of GPUs in the cluster. This is the X-axis of the InferenceX benchmark [INFERENCEX].
 
 ---
 
@@ -121,7 +121,7 @@ where $TTPS$ is the global cluster token throughput (tokens/s, all sequences) de
 **Definition.** The rate at which a single user receives output tokens, expressed in output tokens/second per request:
 
 $$
-\boxed{\text{Interactivity} = \frac{1}{\text{TPOT}}}
+\text{Interactivity} = \frac{1}{\text{TPOT}}
 $$
 
 This is the Y-axis of the InferenceX benchmark [INFERENCEX]. Higher interactivity means faster streaming to the individual user. The reciprocal relationship makes clear that Interactivity and TPOT encode identical information in different units.
@@ -146,7 +146,7 @@ Goodput is the primary metric used in [DISAGG-PREFILL] to compare disaggregated 
 
 # 2. TTFT Assembly
 
-TTFT varies substantially depending on the serving architecture (co-located vs. disaggregated), the prefill batching policy (single request vs. batched vs. chunked), and whether the system is under load. This section assembles the full TTFT formula for each scenario, building on the per-phase models derived in `modeling.prefill.md` and `modeling.framework.md`.
+TTFT varies substantially depending on the serving architecture (co-located vs. disaggregated), the prefill batching policy (single request vs. batched vs. chunked), and whether the system is under load. This section assembles the full TTFT formula for each scenario, building on the per-phase models derived in `prefill.md` and `framework.md`.
 
 ---
 
@@ -156,22 +156,22 @@ TTFT varies substantially depending on the serving architecture (co-located vs. 
 
 For a single request on a **co-located** prefill+decode cluster (no disaggregation), TTFT decomposes into four sequential phases:
 
-1. **$t_{\text{sched}}$** — Request scheduling and batch assembly latency: the serving scheduler assigns KV memory pages, builds the batch metadata tensor, and triggers the first CUDA kernel (or graph replay). From `modeling.framework.md §2.4`, $t_{\text{sched}}$ is empirical and typically 10–200 µs depending on batch size and scheduler implementation.
+1. **$t_{\text{sched}}$** — Request scheduling and batch assembly latency: the serving scheduler assigns KV memory pages, builds the batch metadata tensor, and triggers the first CUDA kernel (or graph replay). From `framework.md §2.4`, $t_{\text{sched}}$ is empirical and typically 10–200 µs depending on batch size and scheduler implementation.
 
-2. **$t_{\text{tok}}$** — Tokenization latency: raw text is converted to token IDs on CPU. From `modeling.framework.md §2.1`, $t_{\text{tok}} \sim 0.1\text{–}2$ ms and is often pipelined with the previous request's decode tail, making it negligible in steady-state batch serving. We retain it for single-request analysis.
+2. **$t_{\text{tok}}$** — Tokenization latency: raw text is converted to token IDs on CPU. From `framework.md §2.1`, $t_{\text{tok}} \sim 0.1\text{–}2$ ms and is often pipelined with the previous request's decode tail, making it negligible in steady-state batch serving. We retain it for single-request analysis.
 
-3. **$t_{\text{prefill}}$** — Prefill forward pass latency: the model processes all $S_{\text{input}}$ tokens in a single GEMM-dominated pass. The full derivation is in `modeling.prefill.md §3`; the boxed result is:
-
-   $$
-   t_{\text{prefill}} = \underbrace{t_{\text{prefill,local}}}_{\text{roofline}} + \max\!\left(0,\; t_{\text{prefill,comm}} - \rho\, t_{\text{prefill,local}}\right) + t_{\text{pipeline,warmup}}
-   $$
-
-   where $t_{\text{prefill,local}} = \max(t_{\text{prefill,compute}},\; t_{\text{prefill,mem}})$ is the per-stage roofline time, $t_{\text{prefill,comm}}$ is the collective communication time during prefill (same TP/EP/SP structure as decode, scaled by $S_{\text{input}}$), $\rho$ is the overlap factor (same as in decode, `modeling.tpot.md §6.2`), and $t_{\text{pipeline,warmup}} = (PP - 1) \times t_{\text{stage,max}}$ is the time for the prefill pass to fill the pipeline (`modeling.prefill.md §3.3`).
-
-4. **$t_{\text{token}}$** — First decode step: one forward pass of the decode kernel, generating token 1. From `modeling.tpot.md §6.2`:
+3. **$t_{\text{prefill}}$** — Prefill forward pass latency: the model processes all $S_{\text{input}}$ tokens in a single GEMM-dominated pass. The full derivation is in `prefill.md §3`; the boxed result is:
 
    $$
-   t_{\text{token}} = t_{\text{local}} + \max\!\left(0,\; t_{\text{comm}} - \rho\, t_{\text{local}}\right)
+   t_{\text{prefill}} = t_{\text{prefill,local}} + \max\left(0,\; t_{\text{prefill,comm}} - \rho\, t_{\text{prefill,local}}\right) + t_{\text{pipeline,warmup}}
+   $$
+
+   where $t_{\text{prefill,local}} = \max(t_{\text{prefill,compute}},\; t_{\text{prefill,mem}})$ is the per-stage roofline time, $t_{\text{prefill,comm}}$ is the collective communication time during prefill (same TP/EP/SP structure as decode, scaled by $S_{\text{input}}$), $\rho$ is the overlap factor (same as in decode, `tpot.md §6.2`), and $t_{\text{pipeline,warmup}} = (PP - 1) \times t_{\text{stage,max}}$ is the time for the prefill pass to fill the pipeline (`prefill.md §3.3`).
+
+4. **$t_{\text{token}}$** — First decode step: one forward pass of the decode kernel, generating token 1. From `tpot.md §6.2`:
+
+   $$
+   t_{\text{token}} = t_{\text{local}} + \max\left(0,\; t_{\text{comm}} - \rho\, t_{\text{local}}\right)
    $$
 
 ### Boxed result (co-located)
@@ -179,28 +179,26 @@ For a single request on a **co-located** prefill+decode cluster (no disaggregati
 Combining all four phases, and absorbing $t_{\text{tok}}$ into $t_{\text{sched}}$ as a lumped scheduling overhead:
 
 $$
-\boxed{
 TTFT_{\text{single}} = t_{\text{sched}} + t_{\text{prefill}} + t_{\text{token}}
-}
 $$
+
+> **Simplification note:** $t_{\text{tok}}$ (tokenization) from the general TTFT definition in §1.1 is absorbed into $t_{\text{sched}}$ here as a lumped scheduling overhead — both are CPU-side pre-compute latencies in the 0.1–2 ms range. The general form $TTFT = t_{\text{sched}} + t_{\text{tok}} + t_{\text{prefill}} + t_{\text{KV-transfer}} + t_{\text{token}}$ (§1.1) is exact; the boxed formula above is a simplified co-located single-request variant.
 
 ### With disaggregated prefill
 
-When prefill and decode run on **separate** GPU clusters [DISAGG-PREFILL], the KV cache generated by the prefill cluster must be transferred over the inter-cluster interconnect before decode can begin. Using the α–β latency model (`modeling.framework.md §3`):
+When prefill and decode run on **separate** GPU clusters [DISAGG-PREFILL], the KV cache generated by the prefill cluster must be transferred over the inter-cluster interconnect before decode can begin. Using the α–β latency model (`framework.md §3`):
 
 $$
-t_{\text{KV\_transfer}} = \alpha_{\text{inter}} + \frac{M_{\text{KV\_transfer}}}{B_{\text{eff,inter}}}
+t_{\text{KV-transfer}} = \alpha_{\text{inter}} + \frac{M_{\text{KV-transfer}}}{B_{\text{eff,inter}}}
 $$
 
-where $M_{\text{KV\_transfer}} = \frac{2 \cdot S_{\text{input}} \cdot H_{kv} \cdot b}{TP \cdot SP} \cdot \frac{L}{PP}$ is the per-device KV transfer volume. TTFT becomes:
+where $M_{\text{KV-transfer}} = \frac{2 \cdot S_{\text{input}} \cdot H_{kv} \cdot b}{TP \cdot SP} \cdot \frac{L}{PP}$ is the per-device KV transfer volume. TTFT becomes:
 
 $$
-\boxed{
-TTFT_{\text{disagg}} = t_{\text{sched}} + t_{\text{prefill}} + t_{\text{KV\_transfer}} + t_{\text{token}}
-}
+TTFT_{\text{disagg}} = t_{\text{sched}} + t_{\text{prefill}} + t_{\text{KV-transfer}} + t_{\text{token}}
 $$
 
-The motivation for disaggregation is that the prefill and decode phases have fundamentally different computational characteristics (compute-bound vs. memory-bound) and therefore benefit from different hardware configurations. The cost is the added $t_{\text{KV\_transfer}}$ latency. For large KV caches and slow inter-cluster links, this can be the dominant TTFT term.
+The motivation for disaggregation is that the prefill and decode phases have fundamentally different computational characteristics (compute-bound vs. memory-bound) and therefore benefit from different hardware configurations. The cost is the added $t_{\text{KV-transfer}}$ latency. For large KV caches and slow inter-cluster links, this can be the dominant TTFT term.
 
 ---
 
@@ -216,7 +214,7 @@ $$
 F_{\text{prefill,batch}} = B_{\text{prefill}} \times F_{\text{prefill,single}}
 $$
 
-where $F_{\text{prefill,single}}$ is the per-request FLOPs from `modeling.prefill.md §1`.
+where $F_{\text{prefill,single}}$ is the per-request FLOPs from `prefill.md §1`.
 
 ### Weight traffic under batched prefill
 
@@ -230,30 +228,27 @@ This is precisely the batching benefit: more FLOPs are executed per byte of weig
 
 ### Batched prefill local time
 
-Generalizing `modeling.prefill.md §3.1` to batch size $B_{\text{prefill}}$:
+Generalizing `prefill.md §3.1` to batch size $B_{\text{prefill}}$:
 
 $$
-t_{\text{prefill,local}}(B_{\text{prefill}})
-=
-\max\!\left(
+t_{\text{prefill,local}}(B_{\text{prefill}}) =
+\max\left(
 \frac{B_{\text{prefill}} \times F_{\text{prefill,device}}}{R_{\text{GPU}}},\;
 \frac{T_{\theta,\text{device}} + B_{\text{prefill}} \times T_{\text{KV,write,device}}}{B_{\text{eff,mem}}}
 \right)
 $$
 
-The KV write traffic $T_{\text{KV,write,device}}$ scales with $B_{\text{prefill}}$ because each request in the batch writes its own KV entries. For large $B_{\text{prefill}}$, the compute term dominates and the latency grows linearly with $B_{\text{prefill}}$; at small $B_{\text{prefill}}$ in the compute-bound prefill regime ($S_{\text{input}} \gg S_{\text{input}}^{\star}$, see `modeling.prefill.md §2.3`), compute is already the bottleneck even at $B_{\text{prefill}} = 1$, so the latency likewise scales linearly.
+The KV write traffic $T_{\text{KV,write,device}}$ scales with $B_{\text{prefill}}$ because each request in the batch writes its own KV entries. For large $B_{\text{prefill}}$, the compute term dominates and the latency grows linearly with $B_{\text{prefill}}$; at small $B_{\text{prefill}}$ in the compute-bound prefill regime ($S_{\text{input}} \gg S_{\text{input}}^{\star}$, see `prefill.md §2.3`), compute is already the bottleneck even at $B_{\text{prefill}} = 1$, so the latency likewise scales linearly.
 
 ### TTFT for the last request in the batch
 
 From a user's perspective, the worst-case TTFT applies to the **last request** admitted to the prefill batch — that request waits for the entire joint prefill to complete before its first token is produced:
 
 $$
-\boxed{
-TTFT_{\text{batched}} = t_{\text{sched}} + t_{\text{prefill,local}}(B_{\text{prefill}}) + \max\!\left(0,\; t_{\text{prefill,comm}} - \rho\, t_{\text{prefill,local}}\right) + t_{\text{pipeline,warmup}} + t_{\text{token}}
-}
+TTFT_{\text{batched}} = t_{\text{sched}} + t_{\text{prefill,local}}(B_{\text{prefill}}) + \max\left(0,\; t_{\text{prefill,comm}} - \rho\, t_{\text{prefill,local}}\right) + t_{\text{pipeline,warmup}} + t_{\text{token}}
 $$
 
-Batching prefill requests improves GPU utilization (higher arithmetic intensity → better hardware efficiency) at the cost of increased TTFT for late arrivals in the batch. The optimal $B_{\text{prefill}}$ balances throughput and tail TTFT latency; see `modeling.prefill.md §4.3` for the batch-size optimization.
+Batching prefill requests improves GPU utilization (higher arithmetic intensity → better hardware efficiency) at the cost of increased TTFT for late arrivals in the batch. The optimal $B_{\text{prefill}}$ balances throughput and tail TTFT latency; see `prefill.md §4.3` for the batch-size optimization.
 
 ---
 
@@ -271,10 +266,10 @@ $$
 
 ### Per-chunk latency
 
-Each chunk is a mini-prefill of $C$ tokens. The per-chunk local time follows the same roofline formula as a full prefill (`modeling.prefill.md §3.1`) with $S_{\text{input}}$ replaced by $C$:
+Each chunk is a mini-prefill of $C$ tokens. The per-chunk local time follows the same roofline formula as a full prefill (`prefill.md §3.1`) with $S_{\text{input}}$ replaced by $C$:
 
 $$
-t_{\text{chunk}} = \max\!\left(\frac{F_{\text{prefill,device}}(C)}{R_{\text{GPU}}},\; \frac{T_{\theta,\text{device}} + T_{\text{KV,write,device}}(C)}{B_{\text{eff,mem}}}\right)
+t_{\text{chunk}} = \max\left(\frac{F_{\text{prefill,device}}(C)}{R_{\text{GPU}}},\; \frac{T_{\theta,\text{device}} + T_{\text{KV,write,device}}(C)}{B_{\text{eff,mem}}}\right)
 $$
 
 For small $C$ (e.g., $C = 256$), the chunk is likely memory-bound (weight traffic dominates KV write traffic), meaning $t_{\text{chunk}} \approx T_{\theta,\text{device}} / B_{\text{eff,mem}}$ — identical to one decode step latency. This is the **chunked-prefill design point**: each chunk costs approximately the same as one decode step, which is the minimum possible disruption to the decode pipeline.
@@ -284,10 +279,8 @@ For small $C$ (e.g., $C = 256$), the chunk is likely memory-bound (weight traffi
 The new request's TTFT is the time to process all $N_{\text{chunks}}$ chunks sequentially (each occupying one decode slot), plus scheduling overhead:
 
 $$
-\boxed{
 TTFT_{\text{chunked}} = t_{\text{sched}} + N_{\text{chunks}} \times t_{\text{chunk}} + t_{\text{token}}
 \approx t_{\text{sched}} + \left\lceil \frac{S_{\text{input}}}{C} \right\rceil \times t_{\text{chunk}} + t_{\text{token}}
-}
 $$
 
 The pipeline warmup $t_{\text{pipeline,warmup}}$ applies once across the entire prefill sequence rather than per chunk (the pipeline is kept warm by the ongoing decode traffic), so it does not multiply by $N_{\text{chunks}}$.
@@ -308,7 +301,7 @@ The optimal $C$ depends on the SLA balance between new-request TTFT and existing
 
 # 3. TPOT Assembly
 
-TPOT is the per-sequence inter-token latency during the decode phase. Its derivation from the roofline model was developed in detail in `modeling.tpot.md §6.4.2`; this section assembles the result for both static and continuous batching, and explains the steady-state behavior under each scheduling policy.
+TPOT is the per-sequence inter-token latency during the decode phase. Its derivation from the roofline model was developed in detail in `tpot.md §6.4.2`; this section assembles the result for both static and continuous batching, and explains the steady-state behavior under each scheduling policy.
 
 ---
 
@@ -318,18 +311,17 @@ In **static batching**, all $B$ requests in the batch start together, are padded
 
 ### Per-step wall-clock time
 
-At each decode step, the model processes $B$ tokens simultaneously (one per sequence). The overlap-aware per-step time from `modeling.tpot.md §6.2` is:
+At each decode step, the model processes $B$ tokens simultaneously (one per sequence). The overlap-aware per-step time from `tpot.md §6.2` is:
 
 $$
-t_{\text{token}}(B) = t_{\text{local}}(B) + \max\!\left(0,\; t_{\text{comm}} - \rho \cdot t_{\text{local}}(B)\right)
+t_{\text{token}}(B) = t_{\text{local}}(B) + \max\left(0,\; t_{\text{comm}} - \rho \cdot t_{\text{local}}(B)\right)
 $$
 
-where the batched local time is (`modeling.tpot.md §6.4.2`):
+where the batched local time is (`tpot.md §6.4.2`):
 
 $$
-t_{\text{local}}(B)
-=
-\max\!\left(
+t_{\text{local}}(B) =
+\max\left(
 \frac{B \times F_{\text{token,device}}}{R_{\text{GPU}}},\;
 \frac{T_{\theta,\text{device}} + B \times T_{\text{KV,device}}}{B_{\text{eff,mem}}}
 \right)
@@ -337,19 +329,17 @@ $$
 
 ### TPOT definition
 
-Each decode step emits exactly **one token per active sequence** and takes $t_{\text{token}}(B)$ wall-clock seconds. The system produces $B$ output tokens in that step — one per sequence — so the amortized cost per output token is $t_{\text{token}}(B) / B$. This is the per-sequence TPOT: how long the system "spends" per token of each sequence's output (`modeling.tpot.md §6.4.2`):
+Each decode step emits exactly **one token per active sequence** and takes $t_{\text{token}}(B)$ wall-clock seconds. The system produces $B$ output tokens in that step — one per sequence — so the amortized cost per output token is $t_{\text{token}}(B) / B$. This is the per-sequence TPOT: how long the system "spends" per token of each sequence's output (`tpot.md §6.4.2`):
 
 $$
-\boxed{
 \text{TPOT}_{\text{static}}(B) = \frac{t_{\text{token}}(B)}{B}
-}
 $$
 
-This definition is consistent with §1.2 and with `modeling.tpot.md §6.4.2`. Note the distinction from the raw step time: $t_{\text{token}}(B)$ is the wall-clock duration of one decode step (all $B$ tokens processed in parallel), while $\text{TPOT}(B) = t_{\text{token}}(B)/B$ is the effective per-output-token latency that determines streaming Interactivity.
+This definition is consistent with §1.2 and with `tpot.md §6.4.2`. Note the distinction from the raw step time: $t_{\text{token}}(B)$ is the wall-clock duration of one decode step (all $B$ tokens processed in parallel), while $\text{TPOT}(B) = t_{\text{token}}(B)/B$ is the effective per-output-token latency that determines streaming Interactivity.
 
 ### Regime behavior
 
-From the batch-size analysis in `modeling.tpot.md §6.4.2`:
+From the batch-size analysis in `tpot.md §6.4.2`:
 
 **Memory-bound regime** ($B \ll B^*$, weight traffic dominates):
 $$
@@ -381,18 +371,16 @@ In **continuous batching** [VLLM], requests arrive and depart asynchronously. At
 
 ### Per-request average TPOT
 
-A request that requires $N_{\text{out}}$ decode steps experiences a different $B_{\text{eff},i}$ at each step $i$. Using $\text{TPOT}(B) = t_{\text{token}}(B)/B$ (§1.2, `modeling.tpot.md §6.4.2`), the average TPOT over the full response is:
+A request that requires $N_{\text{out}}$ decode steps experiences a different $B_{\text{eff},i}$ at each step $i$. Using $\text{TPOT}(B) = t_{\text{token}}(B)/B$ (§1.2, `tpot.md §6.4.2`), the average TPOT over the full response is:
 
 $$
-\boxed{
 \overline{\text{TPOT}} = \frac{1}{N_{\text{out}}} \sum_{i=1}^{N_{\text{out}}} \frac{t_{\text{token}}(B_{\text{eff},i})}{B_{\text{eff},i}}
-}
 $$
 
 The function $g(B) = t_{\text{token}}(B)/B$ is convex in $B$ (it is decreasing in Zone 1 and flat in Zone 3; its second derivative is non-negative throughout). By Jensen's inequality:
 
 $$
-\overline{\text{TPOT}} \geq \frac{t_{\text{token}}\!\left(\overline{B_{\text{eff}}}\right)}{\overline{B_{\text{eff}}}}
+\overline{\text{TPOT}} \geq \frac{t_{\text{token}}\left(\overline{B_{\text{eff}}}\right)}{\overline{B_{\text{eff}}}}
 $$
 
 In practice the inequality is loose when $B_{\text{eff}}$ is approximately stationary during the lifetime of a request.
@@ -433,9 +421,7 @@ The key insight is: with TPOT defined as the amortized per-output-token cost ($t
 Combining the TTFT and TPOT definitions from §§1.1–1.2, the full wall-clock latency from request receipt to the final output token is:
 
 $$
-\boxed{
 \text{E2E}(N_{\text{out}}) = TTFT + (N_{\text{out}} - 1) \times \text{TPOT}
-}
 $$
 
 **Derivation.** Token 1 arrives at time $TTFT$ (the first-token latency). Tokens $2, 3, \ldots, N_{\text{out}}$ are produced in $N_{\text{out}} - 1$ subsequent decode steps, each taking $\text{TPOT}$ seconds. The wall-clock time of the last token is therefore $TTFT + (N_{\text{out}} - 1) \times \text{TPOT}$.
@@ -466,7 +452,7 @@ For $N_{\text{out}} \ll N_{\text{out}}^{\star}$, the response is "prefill-domina
 
 We use representative H100 SXM5 parameters [H100-SPEC] for a 70B-class dense model with $S_{\text{input}} = 2048$ and batch size $B = 1$:
 
-- $t_{\text{prefill}} \approx 100$ ms (compute-bound prefill at $S_{\text{input}} = 2048$; typical from `modeling.prefill.md §3`)
+- $t_{\text{prefill}} \approx 100$ ms (compute-bound prefill at $S_{\text{input}} = 2048$; typical from `prefill.md §3`)
 - $\text{TPOT} \approx 20$ ms (memory-bound decode at $B = 1$; from $T_{\theta} / B_{\text{eff,mem}}$ with 70B weights at bf16 and 3.35 TB/s HBM)
 - $t_{\text{sched}} \approx 0.1$ ms (negligible in single-request scenario)
 - $t_{\text{token}} \approx 20$ ms (first decode step ≈ TPOT at $B = 1$)
@@ -490,7 +476,7 @@ For responses in the range typical of conversational use ($N_{\text{out}} = 50$�
 
 ## 5.1 Throughput/GPU Derivation
 
-From `modeling.tpot.md §6.3`, the global decode throughput across all DP replicas is:
+From `tpot.md §6.3`, the global decode throughput across all DP replicas is:
 
 $$
 TTPS = DP \cdot TPS_{\text{single}} = DP \cdot \frac{1}{\max_j t_{\text{stage},j}}
@@ -511,9 +497,7 @@ $$
 $$
 
 $$
-\boxed{
 \text{Tput/GPU} = \frac{TPS_{\text{single}}}{PP \cdot TP \cdot EP \cdot SP}
-}
 $$
 
 ### Insight: DP is the only "free" dimension
@@ -559,6 +543,8 @@ Interactivity **plateaus** in the compute-bound regime: the step time grows prop
 
 The Pareto frontier is the set of (Tput/GPU, Interactivity) pairs that are achievable without waste: no point on the frontier can improve both metrics simultaneously. This section assembles the frontier from the roofline model, identifies the three operating zones, derives the roofline efficiency ceiling, and maps the result to the InferenceX benchmark axes [INFERENCEX].
 
+> **Terminology note:** In this model, Tput/GPU and Interactivity both improve monotonically as $B$ increases through the memory-bound regime, because their product is the constant $1/N_{\text{GPUs,per-replica}}$ (§6.3). The curve therefore traces one arm of a hyperbola rather than exhibiting a classical multi-objective Pareto tradeoff. We use "Pareto frontier" in the ML systems sense — the set of efficient operating points — following [INFERENCEX] convention.
+
 ---
 
 ## 6.1 Levers Shaping the Pareto Curve
@@ -567,7 +553,7 @@ Three principal levers shift the operating point along the Pareto frontier, or m
 
 1. **Batch size $B$ (or $B_{\text{eff}}$ under continuous batching).** Moving along the frontier. Increasing $B$ increases Tput/GPU (more tokens processed per step) but also increases TPOT (each step takes longer), reducing Interactivity. Decreasing $B$ improves Interactivity at the cost of lower Tput/GPU.
 
-2. **Parallelism configuration (TP, PP, EP, SP; fixed DP).** Shifting the frontier. TP/PP/EP/SP change $t_{\text{token}}(B)$ by altering per-device FLOPs, traffic, and communication overhead. They also change $B^*$ (the crossover batch size from `modeling.tpot.md §6.4.1`). Better parallelism configurations can push the frontier outward (higher Tput/GPU for the same Interactivity).
+2. **Parallelism configuration (TP, PP, EP, SP; fixed DP).** Shifting the frontier. TP/PP/EP/SP change $t_{\text{token}}(B)$ by altering per-device FLOPs, traffic, and communication overhead. They also change $B^*$ (the crossover batch size from `tpot.md §6.4.1`). Better parallelism configurations can push the frontier outward (higher Tput/GPU for the same Interactivity).
 
 3. **Context length $S$.** Shifting the frontier inward. Longer decode contexts $S$ increase KV cache traffic $T_{\text{KV,device}}$, which lowers $B^*$ (the system becomes compute-bound at smaller batches) and increases $t_{\text{token}}$ for all $B$, shrinking both Tput/GPU and Interactivity simultaneously.
 
@@ -575,7 +561,7 @@ Three principal levers shift the operating point along the Pareto frontier, or m
 
 ## 6.2 Three Zones of the Pareto Frontier
 
-The Pareto curve sweeps $B$ from $1$ to $\infty$. Its shape is inherited directly from `modeling.tpot.md §6.4.3`; we express it here in the (Tput/GPU, Interactivity) coordinate system of InferenceX [INFERENCEX].
+The Pareto curve sweeps $B$ from $1$ to $\infty$. Its shape is inherited directly from `tpot.md §6.4.3`; we express it here in the (Tput/GPU, Interactivity) coordinate system of InferenceX [INFERENCEX].
 
 Define Tput/GPU and Interactivity as explicit functions of $B$:
 
@@ -591,7 +577,7 @@ where $N_{\text{GPUs,per-replica}} = PP \cdot TP \cdot EP \cdot SP$ is the numbe
 
 ### Zone 1 — Memory-bound ($B < B^*$)
 
-Weight traffic dominates. From `modeling.tpot.md §6.4.3`:
+Weight traffic dominates. From `tpot.md §6.4.3`:
 
 $$
 t_{\text{token}}(B) \approx \frac{T_{\theta,\text{device}}}{B_{\text{eff,mem}}}
@@ -616,7 +602,7 @@ The system operates near the ridge point. Both throughput and TPOT transition. T
 
 ### Zone 3 — Compute-bound ($B > B^*$)
 
-KV cache traffic (or equivalently, compute) dominates. From `modeling.tpot.md §6.4.3`:
+KV cache traffic (or equivalently, compute) dominates. From `tpot.md §6.4.3`:
 
 $$
 t_{\text{token}}(B) \approx \frac{B \times F_{\text{token,device}}}{R_{\text{GPU}}}
@@ -658,9 +644,7 @@ $$
 This identity holds for **any $B$** and any regime — the $B$ and $t_{\text{token}}$ terms cancel exactly:
 
 $$
-\boxed{
 \text{Tput/GPU} \times \text{TPOT} = \frac{1}{N_{\text{GPUs,per-replica}}}
-}
 $$
 
 This is the **roofline ceiling** on Pareto efficiency: it is a constant determined entirely by the number of GPUs per DP replica ($N_{\text{GPUs,per-replica}} = PP \cdot TP \cdot EP \cdot SP$). It does not depend on batch size, hardware speed, model size, or serving policy.
@@ -702,7 +686,7 @@ The roofline ceiling from §6.3 — $\text{Tput/GPU} \times \text{TPOT} = 1 / N_
 
 # Symbol Summary
 
-The following symbols are introduced in this document and are **not** defined in `modeling.notation.md §14` (which refers to this document for their definitions). All other symbols used here are defined in `modeling.notation.md` and cross-referenced to their home sections.
+The following symbols are introduced in this document and are **not** defined in `notation.md §14` (which refers to this document for their definitions). All other symbols used here are defined in `notation.md` and cross-referenced to their home sections.
 
 | Symbol | Definition | First used |
 |--------|-----------|-----------|
@@ -719,7 +703,7 @@ The following symbols are introduced in this document and are **not** defined in
 | $\text{Interactivity}$ | Per-user output rate: $1/\text{TPOT}$ (tokens/s/request) | §1.5 |
 | $\text{Goodput}$ | Fraction of GPU time spent on useful token generation | §1.6 |
 
-The following existing symbols from `modeling.notation.md` are used extensively; they are listed here for reading convenience:
+The following existing symbols from `notation.md` are used extensively; they are listed here for reading convenience:
 
 | Symbol | Defined in | Meaning |
 |--------|-----------|---------|
@@ -731,7 +715,7 @@ The following existing symbols from `modeling.notation.md` are used extensively;
 | $TPS_{\text{single}}$ | `notation.md §9` | Single-replica decode throughput (tokens/s) |
 | $TTPS$ | `notation.md §9` | Global decode throughput (tokens/s) |
 | $t_{\text{sched}}$ | `notation.md §13` | Request scheduling / batch assembly latency |
-| $t_{\text{KV\_transfer}}$ | `notation.md §13` | Disaggregated KV cache transfer latency |
+| $t_{\text{KV-transfer}}$ | `notation.md §13` | Disaggregated KV cache transfer latency |
 | $B_{\text{eff}}$ | `notation.md §4` | Effective batch size under continuous batching |
 | $B^*$ | `tpot.md §6.4.1` | Crossover batch size (memory-bound → compute-bound) |
 | $\rho$ | `notation.md §9` | Compute–communication overlap factor |
@@ -740,11 +724,11 @@ The following existing symbols from `modeling.notation.md` are used extensively;
 
 ## References
 
-- [INFERENCEX] SemiAnalysis (2024–2025). *InferenceX: LLM Inference Benchmark.* https://inferencex.semianalysis.com/inference — Throughput/GPU vs. Interactivity axes; TPOT and E2E latency definitions.
+- [INFERENCEX] SemiAnalysis (2024–2025). *InferenceX: LLM Inference Benchmark.* <https://inferencex.semianalysis.com/inference> — Throughput/GPU vs. Interactivity axes; TPOT and E2E latency definitions.
 - [VLLM] Kwon et al. (2023). *Efficient Memory Management for Large Language Model Serving with PagedAttention.* SOSP 2023. arXiv:2309.06180 — Continuous batching; PagedAttention.
 - [SARATHI] Agrawal et al. (2023). *SARATHI: Efficient LLM Inference by Piggybacking Decodes with Chunked Prefills.* arXiv:2308.16369 — Chunked prefill scheduling; head-of-line blocking reduction.
 - [DISAGG-PREFILL] Zhong et al. (2024). *DistServe: Disaggregating Prefill and Decoding for Goodput-Optimized Large Language Model Serving.* OSDI 2024. arXiv:2401.09670 — Disaggregated prefill; KV transfer latency; goodput framework.
 - [ROOFLINE] Williams, Waterman & Patterson (2009). *Roofline: An Insightful Visual Performance Model for Multicore Architectures.* CACM 52(4) — Operational intensity; ridge point.
 - [H100-SPEC] NVIDIA Corporation (2022). *NVIDIA H100 Tensor Core GPU Architecture.* WP-10792-001 — H100 SXM5 specs used in numerical examples.
 - [ACCELSTACK] Bai et al. (2025). *AccelStack: A Co-Design Framework for 3D-Stacked Accelerators.* HKUST FACT Lab — 3D DRAM bandwidth modeling.
-- Sibling documents: [modeling.tpot.md](modeling.tpot.md), [modeling.prefill.md](modeling.prefill.md), [modeling.kv.md](modeling.kv.md), [modeling.framework.md](modeling.framework.md), [modeling.notation.md](modeling.notation.md), [modeling.references.md](modeling.references.md).
+- Sibling documents: [tpot.md](tpot.md), [prefill.md](prefill.md), [kv.md](kv.md), [framework.md](framework.md), [notation.md](notation.md), [references.md](references.md).
