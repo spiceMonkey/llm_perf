@@ -8,8 +8,7 @@
 **Date:** April 2026
 
 **Keywords:**  
-LLM inference, prefill, TTFT, time-to-first-token, GEMM, compute-bound, memory-bound, roofline,  
-chunked prefill, batched prefill, disaggregated prefill, KV transfer, FlashAttention, pipeline warmup
+LLM inference, prefill, TTFT, time-to-first-token, GEMM, compute-bound, memory-bound, roofline,  chunked prefill, batched prefill, disaggregated prefill, KV transfer, FlashAttention, pipeline warmup
 
 ---
 
@@ -94,8 +93,7 @@ The four projection matrices and their output dimensions:
 Summing:
 
 $$
-F_{\text{proj,prefill}}
-=
+F_{\text{proj,prefill}} =
 (4H^2 + 4 H H_{kv}) \cdot S_{\text{input}}
 $$
 
@@ -123,8 +121,7 @@ $$
 After softmax, each of the $n_q$ query heads computes a weighted sum over $S_{\text{input}}$ cached values of its corresponding value head. Per head: $2 d_{\text{head}} S_{\text{input}}^2$ FLOPs. Total:
 
 $$
-F_{\text{value,prefill}}
-=
+F_{\text{value,prefill}} =
 2 \cdot S_{\text{input}}^2 \cdot H
 $$
 
@@ -266,7 +263,7 @@ The **ridge point** of a device is:
 
 $$
 R_{\text{ridge}} =
-\frac{R_{\text{GPU}}}{B_{\text{eff,mem}}}
+\frac{R_{\text{GPU}}}{BW_{\text{mem}}}
 \quad (\text{FLOPs per byte})
 $$
 
@@ -344,8 +341,8 @@ $$
 For an H100 SXM5 [H100-SPEC]:
 
 - $R_{\text{GPU}} \approx 989$ TFlops/s (bf16 with Tensor Cores)
-- $B_{\text{eff,mem}} \approx 3.35$ TB/s (HBM3)
-- $R_{\text{ridge}} = R_{\text{GPU}} / B_{\text{eff,mem}} \approx 295$ FLOPs/byte
+- $BW_{\text{mem}} \approx 3.35$ TB/s (HBM3)
+- $R_{\text{ridge}} = R_{\text{GPU}} / BW_{\text{mem}} \approx 295$ FLOPs/byte
 
 Comparing with OI expressions (bf16, $b = 2$):
 
@@ -362,7 +359,7 @@ This is the crossover condition:
 $$
 S_{\text{input}}^{\star} =
 \frac{b}{2} \cdot R_{\text{ridge}} =
-\frac{b}{2} \cdot \frac{R_{\text{GPU}}}{B_{\text{eff,mem}}}
+\frac{b}{2} \cdot \frac{R_{\text{GPU}}}{BW_{\text{mem}}}
 $$
 
 In practice, prefill sequences are almost always longer than $S_{\text{input}}^{\star}$, so the prefill pass is **virtually always compute-bound** at single-request inference on modern accelerators. The exact threshold varies with precision and HBM bandwidth; on A100 (HBM2E, $R_{\text{ridge}} \approx 156$ FLOPs/byte), $S_{\text{input}}^{\star} \approx 156$ tokens with bf16.
@@ -375,7 +372,7 @@ In practice, prefill sequences are almost always longer than $S_{\text{input}}^{
 
 We now derive the hardware prefill latency $t_{\text{prefill}}$ for a single request on a co-located prefill+decode cluster (no disaggregation). The result will be extended in Sections 4–6.
 
-> **Scope note:** This section computes the hardware-only prefill latency $t_{\text{prefill}}$, which is one component of the full Time-To-First-Token (TTFT). The complete TTFT additionally includes scheduling overhead $t_{\text{sched}}$, tokenization $t_{\text{tok}}$, and the first decode step $t_{\text{token}}$. See `e2e.md` §2.1 for full TTFT assembly.
+> **Scope note:** This section computes the hardware-only prefill latency $t_{\text{prefill}}$, which is one component of the full Time-To-First-Token (TTFT). The complete TTFT additionally includes scheduling overhead $t_{\text{sched}}$, tokenization $t_{\text{tok}}$, and the first decode step $t_{\text{step,user}}$. See `e2e.md` §2.1 for full TTFT assembly.
 
 $t_{\text{prefill}}$ decomposes into three sequential phases:
 
@@ -436,7 +433,7 @@ where:
   \frac{2 S_{\text{input}} H_{kv}\, b}{TP \cdot SP}
   $$
 
-  This is the cost of writing the keys and values for all $S_{\text{input}}$ tokens to HBM. Because HBM write bandwidth equals read bandwidth, we use $B_{\text{eff,mem}}$ for both.
+  This is the cost of writing the keys and values for all $S_{\text{input}}$ tokens to HBM. Because HBM write bandwidth equals read bandwidth, we use $BW_{\text{mem}}$ for both.
 
 ### FlashAttention reduces attention read traffic
 
@@ -446,7 +443,7 @@ The effective memory time is:
 
 $$
 t_{\text{prefill,mem}} =
-\frac{T_{\text{prefill,device}}}{B_{\text{eff,mem}}}
+\frac{T_{\text{prefill,device}}}{BW_{\text{mem}}}
 $$
 
 ### Roofline local time
@@ -485,7 +482,7 @@ t_{TP}^{\text{prefill,ring}} =
 +
 2\frac{TP-1}{TP}
 \cdot
-\frac{H \cdot S_{\text{input}} \cdot b}{B_{\text{eff,TP}}}
+\frac{H \cdot S_{\text{input}} \cdot b}{BW_{\text{TP}}}
 $$
 
 For a tree All-Reduce:
@@ -495,23 +492,12 @@ t_{TP}^{\text{prefill,tree}}
 \approx
 2\lceil\log_2(TP)\rceil\,\alpha_{TP}
 +
-2\frac{H \cdot S_{\text{input}} \cdot b}{B_{\text{eff,TP}}}
+2\frac{H \cdot S_{\text{input}} \cdot b}{BW_{\text{TP}}}
 $$
 
 The $S_{\text{input}}$ factor in the bandwidth term means TP communication during prefill is substantially larger than during decode. For $S_{\text{input}} = 4096$ this is a $4096\times$ larger payload per collective than single-token decode.
 
-> **Implementation note — tiled prefill and $\alpha_{TP}$ accumulation:** In practice,
-> large-$S_{\text{input}}$ prefill is often processed in $k$ sub-sequence tiles (e.g., to fit
-> within SRAM or network buffer limits). Each tile launches an independent all-reduce, accumulating
-> the $\alpha_{TP}$ startup latency $k$ times. The total un-hidden $\alpha$ overhead is
-> $k \times \max(0,\, \alpha_{TP} - \rho \cdot t_{\text{tile,compute}})$, where
-> $t_{\text{tile,compute}}$ is the compute time for a single tile. For fine-grained tiling with
-> small tiles, each tile's compute-to-communication ratio mirrors the full-sequence overlap
-> structure, so the $\rho$ factor still absorbs the hiding benefit. However, for very large
-> $S_{\text{input}}$ and small tile sizes, the accumulated $k \cdot \alpha_{TP}$ term can become
-> non-negligible even when each individual $\alpha_{TP}$ is fully hidden. The formulas above model
-> a single collective per layer; the tiling multiplier $k$ can be incorporated when tile size is a
-> known design parameter.
+> **Implementation note — tiled prefill and $\alpha_{TP}$ accumulation:** In practice, large-$S_{\text{input}}$ prefill is often processed in $k$ sub-sequence tiles (e.g., to fit within SRAM or network buffer limits). Each tile launches an independent all-reduce, accumulating the $\alpha_{TP}$ startup latency $k$ times. The total un-hidden $\alpha$ overhead is $k \times \max(0,\, \alpha_{TP} - \rho \cdot t_{\text{tile,compute}})$, where $t_{\text{tile,compute}}$ is the compute time for a single tile. For fine-grained tiling with small tiles, each tile's compute-to-communication ratio mirrors the full-sequence overlap structure, so the $\rho$ factor still absorbs the hiding benefit. However, for very large $S_{\text{input}}$ and small tile sizes, the accumulated $k \cdot \alpha_{TP}$ term can become non-negligible even when each individual $\alpha_{TP}$ is fully hidden. The formulas above model a single collective per layer; the tiling multiplier $k$ can be incorporated when tile size is a known design parameter.
 
 ### EP All-to-All (prefill, MoE)
 
@@ -522,7 +508,7 @@ t_{EP}^{\text{prefill,ring}} =
 2(EP-1)\alpha_{EP}
 +
 2(EP-1)
-\frac{k H \cdot S_{\text{input}} \cdot b}{EP \cdot B_{\text{eff,EP}}}
+\frac{k H \cdot S_{\text{input}} \cdot b}{EP \cdot BW_{\text{EP}}}
 $$
 
 ### PP Hop (prefill)
@@ -533,7 +519,7 @@ $$
 t_{PP}^{\text{prefill}} =
 \alpha_{PP}
 +
-\frac{(H/TP) \cdot S_{\text{input}} \cdot b}{B_{\text{eff,PP}}}
+\frac{(H/TP) \cdot S_{\text{input}} \cdot b}{BW_{\text{PP}}}
 $$
 
 ### SP All-Gather (prefill)
@@ -544,7 +530,7 @@ $$
 t_{SP}^{\text{prefill}} =
 (SP-1)\alpha_{SP}
 +
-(SP-1) \cdot \frac{(S_{\text{input}}/SP) \cdot (2 H_{kv}/TP) \cdot b}{B_{\text{eff,SP}}}
+(SP-1) \cdot \frac{(S_{\text{input}}/SP) \cdot (2 H_{kv}/TP) \cdot b}{BW_{\text{SP}}}
 $$
 
 ### Total per-stage communication time (prefill)
@@ -693,7 +679,7 @@ Using $\text{OI}_{\text{prefill}} \approx 2 S_{\text{input}} / b$ (Section 2.1),
 $$
 B_{\text{prefill}}^{\min} =
 \left\lceil \frac{R_{\text{ridge}} \cdot b}{2 \cdot S_{\text{input}}} \right\rceil =
-\left\lceil \frac{R_{\text{GPU}}}{B_{\text{eff,mem}} \cdot S_{\text{input}}} \right\rceil
+\left\lceil \frac{R_{\text{GPU}}}{BW_{\text{mem}} \cdot S_{\text{input}}} \right\rceil
 $$
 
 For H100 and $S_{\text{input}} = 64$ tokens (a very short prompt): $B_{\text{prefill}}^{\min} \approx \lceil 295/64 \rceil \approx 5$ requests needed before compute-saturation.
@@ -856,38 +842,37 @@ See [SARATHI] for empirical validation of chunked prefill scheduling and its eff
 
 <div style="page-break-before: always;"></div>
 
-# 6. Disaggregated Prefill
+# 6. Prefill→Decode KV Handoff
 
-In a **disaggregated prefill** architecture [DISAGG-PREFILL], prefill and decode run on **separate physical clusters**, each optimized for its dominant workload:
+After prefill produces the full KV cache for $S_{\text{input}}$ tokens, that cache must be **handed off** to the decode pipeline before the first decode step can run. The handoff is rarely free, even when prefill and decode share the same cluster: any difference between the prefill-side partition $(TP_p, PP_p, SP_p)$ and the decode-side partition $(TP_d, PP_d, EP_d, SP_d)$ forces the KV state to be reshaped, and any inter-cluster boundary forces it to traverse a slower fabric than the on-device HBM that wrote it.
 
-- **Prefill cluster**: high peak FLOPs, compute-optimal configuration (can tolerate lower HBM bandwidth per FLOP since prefill is GEMM-bound).
-- **Decode cluster**: high HBM bandwidth, memory-bandwidth-optimal configuration (large HBM capacity for KV cache, fast HBM for GEMV throughput).
+This section models the handoff cost in two architectures:
 
-After prefill completes on the prefill cluster, the KV cache must be transferred to the decode cluster before decoding can begin.
+- **Co-located** (§6.3) — prefill and decode share the same cluster but typically differ in partition; handoff cost is an internal scale-up collective.
+- **Disaggregated** (§6.4) — prefill and decode run on separate clusters connected by a slower inter-cluster fabric [DISAGG-PREFILL]; handoff cost includes inter-cluster bytes plus several device-level overheads commonly hidden inside an effective $BW_{\text{inter}}$.
 
----
-
-## 6.1 Architecture and Motivation
-
-In a **co-located** system (prefill and decode on the same cluster), a single GPU must balance two competing requirements: high HBM bandwidth for decode and high compute throughput for prefill. These requirements can conflict — e.g., a chip with wide HBM but lower FLOPs/byte favors decode, while a chip with narrow HBM but high FLOPs/byte favors prefill.
-
-Disaggregation allows independent hardware optimization:
-
-- Prefill nodes may run at higher utilization and higher batch size (less constrained by KV cache HBM capacity).
-- Decode nodes can hold larger KV caches in HBM (more memory available since prefill KV is not stored here during the prefill phase).
-- The two clusters can scale independently: a workload with long prompts and short outputs benefits from more prefill nodes; a chatbot with short prompts and long outputs benefits from more decode nodes.
-
-See [DISAGG-PREFILL] (DistServe) for a full system design and goodput analysis.
+§6.5 then assembles the unified hardware prefill latency for both cases.
 
 ---
 
-## 6.2 KV Cache Transfer Latency
+## 6.1 Architecture Variants
 
-After the prefill pass completes on the prefill cluster, the resulting KV cache entries for all $S_{\text{input}}$ tokens must be transferred to the decode cluster.
+In a **co-located** system, a single GPU class must satisfy two competing requirements: high HBM bandwidth for decode and high compute throughput for prefill. These can conflict — a chip with wide HBM but lower FLOPs/byte favors decode; a chip with narrow HBM but high FLOPs/byte favors prefill.
 
-### KV cache volume
+A **disaggregated** architecture [DISAGG-PREFILL] runs prefill and decode on separate clusters, each optimized for its dominant workload:
 
-The total KV cache produced by a complete prefill pass (all $L$ layers, both keys and values, all $S_{\text{input}}$ tokens):
+- **Prefill cluster** — high peak FLOPs, compute-optimal partition (lower HBM bandwidth per FLOP is acceptable since prefill is GEMM-bound).
+- **Decode cluster** — high HBM bandwidth, memory-optimal partition (large HBM capacity for KV cache, fast HBM for GEMV throughput).
+
+Disaggregation also lets the two clusters scale independently: long-prompt / short-output workloads benefit from more prefill nodes; chatbot-style short-prompt / long-output workloads benefit from more decode nodes. See [DISAGG-PREFILL] (DistServe) for a full system design and goodput analysis.
+
+In **both** architectures the prefill-side partition is rarely identical to the decode-side partition, so the KV handoff is non-trivial in both cases — it is just that the bottleneck differs (scale-up NVLink for co-located vs. scale-out inter-cluster fabric for disaggregated).
+
+---
+
+## 6.2 KV Cache Volume (shared)
+
+The total KV cache produced by a complete prefill pass (all $L$ layers, both keys and values, all $S_{\text{input}}$ tokens) is identical in both architectures:
 
 $$
 M_{\text{KV,total}}=
@@ -905,48 +890,138 @@ M_{\text{KV,total}}=
 \approx 1.34 \text{ GB}
 $$
 
-### Shard-aware transfer
-
-If the prefill cluster uses TP/SP partitioning, each device holds only a shard of the KV cache. The transfer can be coordinated so that each prefill device sends directly to the corresponding decode device (same TP/SP rank), transferring only the local shard:
+If the prefill cluster shards the KV cache across $TP_p \cdot SP_p$ ranks, each prefill device holds
 
 $$
-M_{\text{KV,shard}} =
-\frac{M_{\text{KV,total}}}{TP \cdot SP}
+M_{\text{KV,shard,p}} = \frac{M_{\text{KV,total}}}{TP_p \cdot SP_p}
 $$
 
-This reduces per-link transfer volume proportionally to the parallelism degree, though the aggregate cluster-level bandwidth requirement remains $M_{\text{KV,total}}$.
+bytes locally. The handoff models below operate on this per-device shard volume, then account for any reshaping required to land the cache in the decode-side layout.
 
-> **Scope caveat:** The shard-aware point-to-point formula above assumes the prefill and decode clusters share the **same $(TP, SP)$ partition**. In practice, prefill clusters often run at lower TP (compute-optimal, large-GEMM regime) while decode clusters run at higher TP/SP (memory-optimal, KV-sharded regime). When the two clusters have mismatched parallelism topologies, a direct rank-to-rank transfer is not possible; the transfer layer must instead perform an **all-to-all resharding** across the network to re-shard the KV state from the prefill layout to the decode layout [DISAGG-PREFILL]. The bandwidth model in this case is better approximated by a collective scatter cost rather than $M_{\text{KV,total}} / (TP \cdot SP)$ per link.
+---
 
-### Transfer latency ($\alpha$–$\beta$ model)
+## 6.3 Co-located Handoff: KV Layout Transition
 
-Using the $\alpha$–$\beta$ model [ALPHA-BETA] for the inter-cluster interconnect:
+When prefill and decode run on the same cluster but on different partitions, the KV cache produced by prefill in layout $(TP_p, PP_p, SP_p)$ must be re-sharded into the decode layout $(TP_d, PP_d, EP_d, SP_d)$ before the first decode step. This transition is an internal scale-up collective over the cluster's NVLink-class fabric — **not** zero, even though no inter-cluster transfer is involved.
+
+### When the handoff is non-trivial
+
+| Partition difference | Required reshaping |
+|----------------------|--------------------|
+| $TP_p = TP_d$, $PP_p = PP_d$, $SP_p = SP_d$ | None (KV is already in place) |
+| $TP_p \neq TP_d$ | All-gather over the head-dimension across the new TP group |
+| $SP_p \neq SP_d$ | All-gather over the sequence-dimension across the new SP group |
+| $PP_p \neq PP_d$ | Layer-shard relocation across PP ranks (point-to-point transfers along the new pipeline) |
+
+In practice all three differ simultaneously: prefill clusters favor low TP and low SP to keep GEMMs large, while decode clusters favor high TP and high SP to keep HBM traffic per device low.
+
+### Handoff latency model
+
+Treat the layout transition as a single **all-gather-equivalent** collective over the decode-cluster scale-up fabric, with effective per-device bandwidth $BW_{\text{intra}}$ (NVLink, ≈900 GB/s on H100/B200; ≈1.8 TB/s on GB200 NVL72):
 
 $$
-t_{\text{KV,transfer}} =
-\alpha_{\text{inter}}
+t_{\text{handoff,colo}} =
+\alpha_{\text{intra}}
 +
-\frac{M_{\text{KV,total}}}{B_{\text{eff,inter}}}
+\frac{M_{\text{KV,total}}}{BW_{\text{intra}}}
+\cdot
+\eta_{\text{repack}}
 $$
 
 where:
 
-- $\alpha_{\text{inter}}$ — inter-cluster link startup latency (typically $\mu$s-scale for InfiniBand HDR/NDR or NVLink-C2C; negligible vs. transfer time for large KV caches).
-- $B_{\text{eff,inter}}$ — effective inter-cluster bandwidth per transfer stream. For InfiniBand HDR (200 Gb/s per port), $B_{\text{eff,inter}} \approx 20$ GB/s unidirectional. NVLink-C2C (e.g., Grace-Hopper NVLink-C2C) offers $\sim 900$ GB/s.
+- $\alpha_{\text{intra}}$ — scale-up collective startup latency (≈1–5 µs over NVLink/NVSwitch).
+- $\eta_{\text{repack}} \in [1, 2]$ — repack inefficiency factor capturing non-contiguous gather patterns and the HBM write back into PagedAttention blocks (see §6.4 item 3).
+- The total bytes moved across the fabric is $M_{\text{KV,total}}$ (each rank's local shard is sent to wherever the new decode partition needs it).
 
-**Example (continued):** With InfiniBand ($B_{\text{eff,inter}} = 20$ GB/s):
-
-$$
-t_{\text{KV,transfer}} \approx \frac{1.34 \text{ GB}}{20 \text{ GB/s}} \approx 67\text{ ms}
-$$
-
-This transfer latency is comparable to or can exceed the prefill compute time for moderate input lengths, making inter-cluster bandwidth a critical design constraint for disaggregated serving.
+When the partitions match exactly, $t_{\text{handoff,colo}} = 0$.
 
 ---
 
-## 6.3 Hardware Prefill Latency for Disaggregated Systems
+## 6.4 Disaggregated Handoff: Inter-Cluster KV Transfer
 
-Let the prefill cluster have hardware parameters $R_{\text{GPU,pre}}$ and $B_{\text{eff,mem,pre}}$, and the decode cluster have $R_{\text{GPU,dec}}$ and $B_{\text{eff,mem,dec}}$. The three phases of hardware prefill latency are:
+In a disaggregated architecture, the prefill cluster's KV cache must be moved across an **inter-cluster fabric** (RoCEv2, InfiniBand HDR/NDR, or NVLink-C2C in special cases) to the decode cluster. This subsection refines the standard $\alpha$–$\beta$ bound to expose four device-level overheads that must be absorbed into the **effective delivered bandwidth** $BW_{\text{inter}}$ (not the NIC catalog line rate), and adds the layer-wise streaming optimization used by production systems.
+
+> **Convention.** Throughout this document, $BW_{\text{inter}}$ denotes the *effective, delivered, end-to-end* per-GPU inter-cluster bandwidth after PCIe egress, NIC sharing, and HBM-write inefficiencies (overheads 1, 3 below). It is a calibration knob, not a catalog spec.
+
+### α–β baseline
+
+The textbook bound [ALPHA-BETA] for one bulk transfer of the full KV cache:
+
+$$
+t_{\text{KV-transfer}}^{\text{bulk}} =
+\alpha_{\text{inter}}
++
+\frac{M_{\text{KV,total}}}{BW_{\text{inter}}}
+$$
+
+Reference NIC line rates: InfiniBand HDR (200 Gb/s per port) → ≈20 GB/s unidirectional; ConnectX-7 (400 Gb/s) → ≈50 GB/s; NVLink-C2C (Grace–Hopper) → ≈900 GB/s. The *delivered* $BW_{\text{inter}}$ is typically a fraction of these (see below).
+
+For the LLaMA-3 70B example assuming $BW_{\text{inter}} \approx 20$ GB/s: $1.34\text{ GB} / 20\text{ GB/s} \approx 67$ ms — comparable to or larger than the prefill compute itself.
+
+This $\alpha$–$\beta$ form is the worst case: serial bulk transfer with no compute overlap. The next two subsections refine both the bandwidth (absorbing device-level overheads) and the latency (accounting for layer-wise streaming).
+
+### Device-level overheads absorbed into $BW_{\text{inter}}$
+
+Four effects degrade the *delivered* end-to-end bandwidth $BW_{\text{inter}}$ below the NIC line rate:
+
+1. **PCIe egress on the prefill side.** PCIe Gen5 ×16 = 64 GB/s per NIC, often shared across 2–4 GPUs, giving 16–32 GB/s of effective egress per GPU. For modern NICs (ConnectX-7 at 50 GB/s line rate) this PCIe ceiling — not the NIC — is the real bottleneck. $BW_{\text{inter}}$ must be parameterized as the *delivered, end-to-end* per-GPU bandwidth after NIC and PCIe sharing, not as the catalog NIC rate.
+
+2. **Layout repack on the decode side.** As in §6.3, mismatched $(TP, SP)$ between prefill and decode forces an all-gather-equivalent over the **decode-cluster** scale-up fabric. This consumes scale-up bandwidth ($BW_{\text{intra,d}}$) on the destination, not $BW_{\text{inter}}$, and runs after the bytes arrive. Add it as an additive term:
+
+   $$
+   t_{\text{repack}} = \frac{M_{\text{KV,total}}}{BW_{\text{intra,d}}} \cdot \eta_{\text{repack}}
+   $$
+
+3. **HBM write into PagedAttention blocks.** The decode side writes the arriving KV cache into PagedAttention blocks (`kv.md §2`), each of size $\text{BLK}_{KV}$. The block-stride write pattern hits 50–80% of peak HBM bandwidth, not 100%. For a typical 1–2 GB cache this adds 10–50 µs and can be folded into $\eta_{\text{repack}}$ above.
+
+4. **RDMA work-request posting.** Each (layer, shard) tuple is typically a separate RDMA work request; total $N_{\text{WR}} \approx L \cdot TP_p \cdot SP_p$ requests, at ≈1 µs each (mostly async, but the head-of-queue latency is not). This inflates the effective startup beyond a single $\alpha_{\text{inter}}$:
+
+   $$
+   \alpha_{\text{inter}}^{\text{eff}} = \alpha_{\text{inter}} + N_{\text{WR}} \cdot \tau_{\text{WR}}
+   $$
+
+   For $L = 80$, $TP_p = 8$, $SP_p = 1$, $\tau_{\text{WR}} = 1$ µs → $N_{\text{WR}} \cdot \tau_{\text{WR}} = 640$ µs, often larger than $\alpha_{\text{inter}}$ itself.
+
+### Layer-wise streaming overlap ($\rho_{KV}$)
+
+Production disaggregated systems (MoonCake [MOONCAKE], NVIDIA Dynamo [DYNAMO], DistServe [DISAGG-PREFILL]) start streaming the KV for layer $k$ the **moment** prefill of layer $k$ completes, rather than waiting for the full prefill to finish. With $L$ layers, the first $(L-1)/L$ of the KV transfer can pipeline behind the remaining $(L-1)/L$ of prefill, hiding the bulk of $t_{\text{KV-transfer}}$ when prefill itself is long.
+
+Define a layer-wise streaming overlap factor $\rho_{KV} \in [0, 1]$:
+
+- $\rho_{KV} = 0$ — serial bulk transfer (the §6.4 baseline).
+- $\rho_{KV} = 1$ — fully hidden behind prefill (only feasible when $t_{\text{prefill}} \ge M_{\text{KV,total}} / BW_{\text{inter}}$).
+
+Calibration: real systems report $\rho_{KV} \in [0.8, 0.95]$ for long-$S_{\text{input}}$ workloads on well-tuned MoonCake/Dynamo deployments [MOONCAKE]; $\rho_{KV} \approx 0$ for short-prompt workloads where prefill finishes before the first KV chunk lands.
+
+### Refined transfer latency
+
+Combining the four overheads with the streaming overlap:
+
+$$
+t_{\text{KV-transfer}}^{\text{eff}}=
+\max\!\left(0,\;
+\alpha_{\text{inter}}^{\text{eff}} +
+\frac{M_{\text{KV,total}}}{BW_{\text{inter}}} +
+t_{\text{repack}} -
+\rho_{KV}\cdot t_{\text{prefill}}
+\right)
+$$
+
+The three correction terms relative to the textbook $\alpha$–$\beta$ form:
+
+- $\alpha_{\text{inter}}^{\text{eff}}$ replaces $\alpha_{\text{inter}}$, absorbing RDMA WR posting (overhead 4).
+- $BW_{\text{inter}}$ is interpreted as the *effective, delivered* per-GPU bandwidth, absorbing PCIe-egress and HBM-write inefficiencies (overheads 1, 3) rather than the NIC line rate.
+- $t_{\text{repack}}$ is added explicitly to expose the scale-up cost on the decode side (overhead 2), since it consumes a different fabric than the inter-cluster transfer.
+- $-\rho_{KV} \cdot t_{\text{prefill}}$ subtracts the portion hidden behind layer-wise streaming.
+
+For modeling purposes, $BW_{\text{inter}}$ and $\rho_{KV}$ are calibration knobs: measure them on the target system rather than computing them from line-rate specs.
+
+---
+
+## 6.5 Hardware Prefill Latency (unified)
+
+Let the prefill cluster have hardware parameters $R_{\text{GPU,pre}}$ and $BW_{\text{mem,pre}}$, and the decode cluster have $R_{\text{GPU,dec}}$ and $BW_{\text{mem,dec}}$. The three phases of hardware prefill latency are:
 
 ### Phase 1: Prefill on the prefill cluster
 
@@ -954,21 +1029,24 @@ $$
 t_{\text{prefill}} =
 t_{\text{prefill,local,pre}}
 +
-\max\left(0,\; t_{\text{prefill,comm,pre}} - \rho_{\text{pre}}\, t_{\text{prefill,local,pre}}\right)
+\max\!\left(0,\; t_{\text{prefill,comm,pre}} - \rho_{\text{pre}}\, t_{\text{prefill,local,pre}}\right)
 +
 t_{\text{pipeline,warmup,pre}}
 $$
 
-where all subscripts "pre" refer to the prefill cluster's hardware and parallelism configuration (which may differ from the decode cluster).
+All "pre" subscripts refer to the prefill cluster's hardware and partition. In a co-located deployment, the prefill cluster *is* the same physical cluster as the decode cluster, but typically running on a different worker pool with its own partition.
 
-### Phase 2: KV cache transfer
+### Phase 2: KV handoff
 
 $$
-t_{\text{KV,transfer}} =
-\alpha_{\text{inter}}
-+
-\frac{M_{\text{KV,total}}}{B_{\text{eff,inter}}}
+t_{\text{handoff}} =
+\begin{cases}
+t_{\text{handoff,colo}} & \text{(co-located, §6.3)}\\[4pt]
+t_{\text{KV-transfer}}^{\text{eff}} & \text{(disaggregated, §6.4)}
+\end{cases}
 $$
+
+For co-located deployments with identical prefill/decode partitions, $t_{\text{handoff}} = 0$.
 
 ### Phase 3: Pipeline warmup on the decode cluster
 
@@ -979,33 +1057,34 @@ t_{\text{pipeline,warmup,dec}} =
 (PP_{\text{dec}} - 1) \cdot t_{\text{stage,dec}}
 $$
 
-### Hardware prefill latency (disaggregated)
+### Total hardware prefill latency
 
 $$
-t_{\text{prefill,disagg}} =
+t_{\text{prefill,total}} =
 t_{\text{prefill}}
 +
-t_{\text{KV,transfer}}
+t_{\text{handoff}}
 +
 t_{\text{pipeline,warmup,dec}}
 $$
 
-The three terms have different system knobs:
+System knobs for each term:
 
 | Term | Reduced by |
 |------|-----------|
-| $t_{\text{prefill}}$ | More/faster prefill nodes; higher TP for larger batch GEMM; FP8 quantization |
-| $t_{\text{KV,transfer}}$ | Higher inter-cluster bandwidth (NVLink-C2C, InfiniBand NDR); KV quantization; GQA [GQA] |
-| $t_{\text{pipeline,warmup,dec}}$ | Smaller $PP_{\text{dec}}$; prefetching KV before decode cluster pipeline clears |
+| $t_{\text{prefill}}$ | More/faster prefill nodes; higher TP for larger-batch GEMM; FP8 quantization |
+| $t_{\text{handoff,colo}}$ | Match prefill/decode partitions where possible; faster scale-up fabric ($BW_{\text{intra}}$) |
+| $t_{\text{KV-transfer}}^{\text{eff}}$ | Higher *delivered* $BW_{\text{inter}}^{\text{eff}}$ (NVLink-C2C, NDR); KV quantization; GQA [GQA]; layer-wise streaming ($\rho_{KV} \to 1$) |
+| $t_{\text{pipeline,warmup,dec}}$ | Smaller $PP_{\text{dec}}$; prefetch KV before decode pipeline clears |
 
-### Comparison: Co-located vs. Disaggregated Prefill Latency
+### Comparison: co-located vs. disaggregated
 
-| Architecture | Prefill location | KV transfer | Decode cluster startup |
-|-------------|-----------------|-------------|----------------------|
-| **Co-located** | Same cluster as decode | None ($t_{\text{KV,transfer}} = 0$) | $t_{\text{pipeline,warmup}}$ |
-| **Disaggregated** | Dedicated prefill cluster | $\alpha_{\text{inter}} + M_{\text{KV}} / B_{\text{eff,inter}}$ | $t_{\text{pipeline,warmup,dec}}$ |
+| Architecture | $t_{\text{handoff}}$ when partitions match | $t_{\text{handoff}}$ when partitions differ |
+|--------------|---------------------------------------------|---------------------------------------------|
+| **Co-located** | $0$ | $\alpha_{\text{intra}} + M_{\text{KV,total}} / BW_{\text{intra}} \cdot \eta_{\text{repack}}$ |
+| **Disaggregated** | (rare in practice) | $\max(0,\; \alpha_{\text{inter}}^{\text{eff}} + M_{\text{KV,total}} / BW_{\text{inter}}^{\text{eff}} + t_{\text{repack}} - \rho_{KV} \cdot t_{\text{prefill}})$ |
 
-Co-located prefill latency is lower for individual requests (no KV transfer), but disaggregated systems achieve better **system goodput** under mixed workloads because prefill no longer interferes with ongoing decode iterations [DISAGG-PREFILL].
+Co-located prefill latency is lower for individual requests when the partitions match. Disaggregated systems achieve better **system goodput** under mixed workloads because prefill no longer interferes with ongoing decode iterations [DISAGG-PREFILL], and modern layer-wise streaming ($\rho_{KV} \to 1$) erases most of the apparent transfer-latency penalty.
 
 ---
 
@@ -1029,20 +1108,33 @@ The following symbols are introduced in this document and extend `notation.md §
 | $F_{\text{ffn,prefill}}$ | FFN FLOPs for prefill: $6 H I_{\text{eff}} S_{\text{input}}$ |
 | $T_{\text{KV,write,device}}$ | HBM write traffic for KV cache during prefill |
 | $t_{\text{prefill,compute}}$ | Prefill compute time: $F_{\text{prefill,device}} / R_{\text{GPU}}$ |
-| $t_{\text{prefill,mem}}$ | Prefill memory time: $T_{\text{prefill,device}} / B_{\text{eff,mem}}$ |
+| $t_{\text{prefill,mem}}$ | Prefill memory time: $T_{\text{prefill,device}} / BW_{\text{mem}}$ |
 | $t_{\text{prefill,local}}$ | Prefill roofline local time: $\max(t_{\text{prefill,compute}}, t_{\text{prefill,mem}})$ |
 | $t_{\text{prefill,comm}}$ | Total prefill communication time (TP/EP/SP/PP collectives) |
 | $F_{\text{chunk,device}}^{(k)}$ | Per-device FLOPs for chunk $k$; attention term is $k$-dependent (§5.1) |
 | $t_{\text{chunk}}^{(k)}$ | Overlap-adjusted latency of chunk $k$ (varies with $k$ due to attention) |
 | $t_{\text{pipeline,warmup}}$ | Pipeline fill time: $(PP-1) \times t_{\text{stage}}$ |
-| $t_{\text{prefill}}$ | Hardware prefill latency (single-request, co-located) |
-| $t_{\text{prefill,disagg}}$ | Hardware prefill latency for disaggregated prefill architecture |
+| $t_{\text{prefill}}$ | Hardware prefill latency on the prefill cluster (Phase 1) |
+| $t_{\text{prefill,total}}$ | Total hardware prefill latency including handoff and decode warmup |
 | $M_{\text{KV,total}}$ | Total KV cache bytes produced by one prefill pass: $2 L S_{\text{input}} H_{kv} b$ |
-| $t_{\text{KV,transfer}}$ | KV cache transfer latency from prefill to decode cluster |
-| $B_{\text{eff,inter}}$ | Effective inter-cluster interconnect bandwidth (bytes/s) |
+| $M_{\text{KV,shard,p}}$ | Per-prefill-device KV shard: $M_{\text{KV,total}} / (TP_p \cdot SP_p)$ |
+| $t_{\text{handoff}}$ | KV handoff time from prefill to decode (co-located or disaggregated) |
+| $t_{\text{handoff,colo}}$ | Co-located KV layout-transition latency (scale-up collective) |
+| $t_{\text{KV-transfer}}^{\text{bulk}}$ | Textbook $\alpha$–$\beta$ disaggregated transfer (no overlap, no overheads) |
+| $t_{\text{KV-transfer}}^{\text{eff}}$ | Disaggregated transfer including device overheads and $\rho_{KV}$ overlap |
+| $t_{\text{repack}}$ | Layout repack time on decode side: $M_{\text{KV,total}} / BW_{\text{intra,d}} \cdot \eta_{\text{repack}}$ |
+| $BW_{\text{inter}}$ | Inter-cluster interconnect line-rate bandwidth (bytes/s) |
+| $BW_{\text{inter}}^{\text{eff}}$ | *Delivered* end-to-end inter-cluster bandwidth (after PCIe/HBM/NIC sharing) |
+| $BW_{\text{intra}}$, $BW_{\text{intra,d}}$ | Scale-up fabric bandwidth (NVLink); decode-side variant |
 | $\alpha_{\text{inter}}$ | Inter-cluster link startup latency |
+| $\alpha_{\text{inter}}^{\text{eff}}$ | Effective startup including RDMA WR posting: $\alpha_{\text{inter}} + N_{\text{WR}} \tau_{\text{WR}}$ |
+| $\alpha_{\text{intra}}$ | Scale-up collective startup (≈1–5 µs over NVLink/NVSwitch) |
+| $\eta_{\text{repack}}$ | Layout-repack inefficiency factor ($\in [1, 2]$); covers non-contiguous gather + paged-block writes |
+| $\rho_{KV}$ | Layer-wise streaming overlap factor for disagg KV transfer ($\in [0, 1]$) |
+| $N_{\text{WR}}$ | Number of RDMA work requests posted ($\approx L \cdot TP_p \cdot SP_p$) |
+| $\tau_{\text{WR}}$ | Per-RDMA-WR posting latency (≈1 µs) |
 | $S_{\text{input}}^{\star}$ | Compute-bound crossover: prefill is compute-bound for $S_{\text{input}} > S_{\text{input}}^{\star}$ |
-| $R_{\text{ridge}}$ | Device ridge point: $R_{\text{GPU}} / B_{\text{eff,mem}}$ (FLOPs/byte) [ROOFLINE] |
+| $R_{\text{ridge}}$ | Device ridge point: $R_{\text{GPU}} / BW_{\text{mem}}$ (FLOPs/byte) [ROOFLINE] |
 
 ---
 
@@ -1057,6 +1149,8 @@ This document cites the following references from `references.md`:
 - **[MEGATRON3]** Narayanan et al. (2021) — PP schedules; SP; pipeline warmup and 1F1B.
 - **[SARATHI]** Agrawal et al. (2023) — Chunked prefill scheduling; head-of-line blocking reduction.
 - **[DISAGG-PREFILL]** Zhong et al. (2024) — DistServe: disaggregated prefill–decode; KV transfer latency.
+- **[MOONCAKE]** Qin et al. / Moonshot AI (2024) — MoonCake: KV-centric disaggregated serving; layer-wise KV streaming.
+- **[DYNAMO]** NVIDIA (2024–2025) — Dynamo: production disaggregated inference with layer-wise KV transfer.
 - **[ROOFLINE]** Williams et al. (2009) — Roofline model; OI; ridge point; compute vs. memory bound.
 - **[ALPHA-BETA]** Hockney (1994) — $\alpha$–$\beta$ collective latency model.
-- **[H100-SPEC]** NVIDIA (2022) — H100 SXM5 hardware specs: $R_{\text{GPU}}$, $B_{\text{eff,mem}}$, ridge point values.
+- **[H100-SPEC]** NVIDIA (2022) — H100 SXM5 hardware specs: $R_{\text{GPU}}$, $BW_{\text{mem}}$, ridge point values.

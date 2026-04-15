@@ -107,6 +107,18 @@ Zhong, Y., Liu, S., Chen, J., Hu, J., Zhu, Y., Liu, X., Jin, X., & Zhang, H. (20
 OSDI 2024. arXiv:2401.09670.  
 → Prefill–decode disaggregation; KV transfer latency between clusters.
 
+**[MOONCAKE]**  
+Qin, R., Li, Z., He, W., Zhang, M., Wu, Y., Zheng, W., & Xu, X. / Moonshot AI. (2024).  
+*Mooncake: A KVCache-centric Disaggregated Architecture for LLM Serving.*  
+arXiv:2407.00079.  
+→ KV-centric disaggregated serving; layer-wise KV streaming over RDMA; production deployment.
+
+**[DYNAMO]**  
+NVIDIA Corporation. (2024–2025).  
+*NVIDIA Dynamo: Distributed Inference Serving Framework.*  
+NVIDIA technical documentation, https://github.com/ai-dynamo/dynamo.  
+→ Production disaggregated inference; layer-wise KV transfer; multi-cluster orchestration.
+
 ---
 
 ## Hardware Specifications
@@ -130,8 +142,26 @@ JEDEC Solid State Technology Association. (2023).
 Bai, Y., et al. (2025).  
 *AccelStack: A Co-Design Framework for 3D-Stacked Accelerators.*  
 HKUST FACT Lab. arXiv (preprint).  
-→ §III-C2: 3D DRAM bandwidth from hybrid bonding pitch and pin count; Eq. 2: GEMM compute latency (two-level tiling).  
-_Note: Eq. 2 is GEMM latency, not BW. The 3D DRAM BW derivation in §III-C2 has no dedicated equation — `dram3d.md` extends it from first principles._
+→ §III-C2: 3D DRAM bandwidth from hybrid bonding pitch and pin count. Eq. 2: two-level tiled-GEMM compute latency — tile size $(t_m, t_n, t_k)$ sets operand reuse and therefore BW demand per compute cycle. §III-C (Fig. 6, p. 4) places "distributed controllers and PHYs, aligned with PEs" on the logic die, and reports 3D hybrid-bonded DRAM access latency "over 2×" better than HBM's ~300 ns. Introduction (p. 2) gives the qualitative ratio: hybrid bonding pitch is "5–30× smaller than that of microbumps" (citing TSMC SoIC [Chen 2019 ECTC]).  
+_Note: §III-C2 contains no dedicated BW equation — `dram3d.md` §2 extends it from first principles. `dram3d.md` §2.5 uses Eq. 2 and the PE-aligned-PHY structure of §III-C to argue that 3D stacking brings effective BW closer to the peak ceiling (another 3D DRAM advantage beyond the raw pin × data-rate lift), without introducing a separate formal symbol._
+
+**[LAU-PKG]**  
+Lau, J.H. (2021).  
+*State-of-the-Art and Outlooks of Chiplets Heterogeneous Integration and Hybrid Bonding.*  
+Journal of Microelectronics and Electronic Packaging, 18(4):145–160.  
+→ Comprehensive industry review of advanced packaging pitch regimes. Primary datapoint for Intel Foveros Direct (2020): "bumpless pad pitch reduces from **50 µm (for microbumps) to 10 µm**, density increases from 400 bumps/mm² to 10,000 pads/mm²" (p. 149). Covers AMD 3D V-Cache (2021), Xilinx CoWoS, Ponte Vecchio.
+
+**[SOIC-UHD]**  
+Chen, M.F., Yang, C.L., et al. (2020).  
+*Ultra High Density SoIC with Sub-micron Bond Pitch.*  
+IEEE ECTC 2020, pp. 576–581.  
+→ Sub-micron pitch hybrid bonding demonstrated at ≥1.2 M bonds/mm². Follows the 2019 foundational SoIC paper (Chen et al., ECTC 2019, pp. 594–599). Used as the near-term-ceiling datapoint for §3 Scenario 3 (aggressive hybrid bonding).
+
+**[SEMIANALYSIS-HB]**  
+Patel, D., Nishball, D. (2024).  
+*Hybrid Bonding Process Flow — Advanced Packaging Part 5.*  
+SemiAnalysis. https://newsletter.semianalysis.com/p/hybrid-bonding-process-flow-advanced  
+→ Cross-section analysis of Nvidia A100: **~130 µm C4 flip-chip**, **~50 µm copper pillars (microbumps)**. Characterizes the Sony CIS production regime (~1 µm hybrid bonding). Industry-press reference for the commercial pitch landscape.
 
 ---
 
@@ -148,16 +178,6 @@ Hoffmann, J., Borgeaud, S., Mensch, A., Buchatskaya, E., Cai, T., Rutherford, E.
 *Training Compute-Optimal Large Language Models.*  
 NeurIPS 2022. arXiv:2203.15556.  
 → Compute-optimal token/parameter ratio; inference FLOPs context.
-
----
-
-## Benchmarks and Evaluation
-
-**[INFERENCEX]**  
-SemiAnalysis. (2024–2025).  
-*InferenceX: LLM Inference Benchmark.*  
-https://inferencex.semianalysis.com/inference  
-→ Industry benchmark axes: Throughput/GPU vs Interactivity (output tokens/s per request); TPOT; E2E latency definitions.
 
 ---
 
@@ -189,13 +209,7 @@ arXiv:2309.14509.
 NVIDIA Corporation. (2023–2025).  
 *TensorRT-LLM: Open-Source Library for Optimized LLM Inference.*  
 https://github.com/NVIDIA/TensorRT-LLM  
-→ Fused kernel implementations for attention, LayerNorm/RMSNorm, FFN. Source for empirical activation I/O constant $c_{\text{act}}$: kernel traces on H100 show ~8–12 unavoidable hidden-state reads/writes per layer even with FlashAttention fusion.
-
-**[XFORMERS]**  
-Lefaudeux, B., Massa, F., Liskovich, D., Xiong, W., Castrejon, F., Chen, S., Du, S., Eubank, N., Han, S., Hu, J., Huang, P., Khabsa, M., Tan, A., Wang, H., Wehrsteiner, S., Xu, S., Zhang, Z., Girshick, R., Rabin, S., Stoica, I., & Li, Y. (2022).  
-*xFormers: A Modular and Hackable Transformer Modelling Library.*  
-arXiv:2209.14970.  
-→ Modular attention and FFN kernel library; kernel profiling data for activation I/O and norm costs.
+→ Fused kernel implementations for attention, LayerNorm/RMSNorm, FFN; optimized sampling kernels; CUDA graph integration.
 
 ---
 
@@ -203,10 +217,8 @@ arXiv:2209.14970.
 
 The following constants and models are **original to this document suite** and are not derived from a published paper. They should be marked as such in inline citations:
 
-- **$\rho$ (overlap factor)** — The parameterization $t_{\text{token}} = t_{\text{local}} + \max(0, t_{\text{comm}} - \rho \cdot t_{\text{local}})$ is an original formulation introduced in `tpot.md`. The concept of compute–communication overlap is discussed in [MEGATRON3] and [DEEPSPEED-MOE] but without this exact model. Use "this work" as the citation.
-
-- **$c_{\text{act}}$ and $c_{\text{norm}}$** — Removed from `tpot.md` (negligible at large model scale: ~3–4 orders of magnitude below dominant weight and FFN terms). Defined as empirical calibration constants in `framework.md`. Sources: [TENSORRT-LLM] and [XFORMERS] for $c_{\text{act}}$; first-principles for $c_{\text{norm}}$ (RMSNorm ~5H ops, LayerNorm ~10H ops).
+- **$\rho$ (overlap factor)** — The parameterization $t_{\text{step,user}} = t_{\text{local}} + \max(0, t_{\text{comm}} - \rho \cdot t_{\text{local}})$ is an original formulation introduced in `tpot.md`. The concept of compute–communication overlap is discussed in [MEGATRON3] and [DEEPSPEED-MOE] but without this exact model. Use "this work" as the citation.
 
 ---
 
-_To cite in a doc: use the tag in brackets, e.g. "per [ROOFLINE], the ridge point is $R_{\text{GPU}} / B_{\text{eff,mem}}$". Original-to-this-work items use "this work". New references should be added here and tagged consistently._
+_To cite in a doc: use the tag in brackets, e.g. "per [ROOFLINE], the ridge point is $R_{\text{GPU}} / BW_{\text{mem}}$". Original-to-this-work items use "this work". New references should be added here and tagged consistently._

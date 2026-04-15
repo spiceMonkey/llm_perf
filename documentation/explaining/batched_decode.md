@@ -31,7 +31,7 @@ compute-bound, KV cache, weight amortization, operational intensity
   - [5.3 Regime Summary Table](#53-regime-summary-table)
 - [6. Throughput-Latency Pareto Curve](#6-throughput-latency-pareto-curve)
   - [6.1 Three Zones](#61-three-zones)
-  - [6.2 Connection to InferenceX Benchmark Axes](#62-connection-to-inferencex-benchmark-axes)
+  - [6.2 Throughput–Interactivity Pareto Axes](#62-throughputinteractivity-pareto-axes)
 - [7. Worked Example: LLaMA-3 70B on 8 H100 GPUs](#7-worked-example-llama-3-70b-on-8-h100-gpus)
 - [8. FAQ: Common Questions About Batched Decode](#8-faq-common-questions-about-batched-decode)
 
@@ -125,20 +125,16 @@ where F_token is the per-device per-token FLOPs defined in
 
 ## 3.2 Memory Traffic Per Step
 
-> **T_step = T_theta + T_act + B x T_KV**
+> **T_step = T_theta + B x T_KV**
 
-The three terms are: weight traffic (loaded once, shared), activation traffic (small),
-and KV cache traffic (per-user, loaded B times). The critical point: T_theta does
-**not** multiply by B, while T_KV does.
+The two terms are: weight traffic (loaded once, shared) and KV cache traffic (per-user,
+loaded B times). The critical point: T_theta does **not** multiply by B, while T_KV does.
 
 ## 3.3 Operational Intensity OI(B)
 
 $$
 OI(B) = \frac{B \times F_{token}}{T_{\theta} + B \times T_{KV}}
 $$
-
-(Activation traffic is omitted for clarity as it is typically small relative to weight and
-KV traffic.)
 
 **Two limiting cases:**
 
@@ -153,11 +149,11 @@ KV traffic.)
 
 ## 4.1 Derivation from the Roofline Ridge Point
 
-The roofline ridge point is R_GPU / B_eff_mem (peak FLOPs / effective
+The roofline ridge point is R_GPU / BW_mem (peak FLOPs / effective
 memory bandwidth). Setting OI(B*) equal to the ridge point and solving for B*:
 
 $$
-B^{*} = \frac{T_{\theta} \times R_{GPU}}{F_{token} \times B_{eff,mem} - T_{KV} \times R_{GPU}}
+B^{*} = \frac{T_{\theta} \times R_{GPU}}{F_{token} \times BW_{mem} - T_{KV} \times R_{GPU}}
 $$
 
 This is the batch size at which the system transitions from memory-bound to compute-bound.
@@ -169,18 +165,18 @@ When the context length S is short and KV traffic is small relative to weight tr
 the formula simplifies:
 
 $$
-B^{*} \approx \frac{T_{\theta}}{F_{token}} \times \frac{R_{GPU}}{B_{eff,mem}}
+B^{*} \approx \frac{T_{\theta}}{F_{token}} \times \frac{R_{GPU}}{BW_{mem}}
 $$
 
 The first factor (T_theta / F_token) is the inverse single-token OI (bytes per FLOP).
-The second factor (R_GPU / B_eff_mem) is the ridge point. Their product is the
+The second factor (R_GPU / BW_mem) is the ridge point. Their product is the
 batch size needed to bridge the gap between single-token OI and the ridge point.
 
 ## 4.3 Validity Domain
 
 B\* exists (is finite and positive) only when:
 
-> **F_token x B_eff_mem > T_KV x R_GPU**
+> **F_token x BW_mem > T_KV x R_GPU**
 
 When this condition is violated — typically at very long context lengths where each token's
 KV read is so large that per-token traffic alone exceeds the roofline threshold — the system
@@ -194,19 +190,19 @@ infinity: no amount of batching can push the OI past the ridge point.
 The per-step local execution time under the roofline model is:
 
 $$
-t_{local}(B) = \max\left(\frac{B \times F_{token}}{R_{GPU}}, \frac{T_{\theta} + B \times T_{KV}}{B_{eff,mem}}\right)
+t_{local}(B) = \max\left(\frac{B \times F_{token}}{R_{GPU}}, \frac{T_{\theta} + B \times T_{KV}}{BW_{mem}}\right)
 $$
 
 Including communication overlap:
 
 $$
-t_{token}(B) = t_{local}(B) + \max(0, t_{comm} - \rho \cdot t_{local}(B))
+t_{\text{step,user}}(B) = t_{local}(B) + \max(0, t_{comm} - \rho \cdot t_{local}(B))
 $$
 
 The **Time Per Output Token** experienced by each individual sequence:
 
 $$
-TPOT(B) = \frac{t_{token}(B)}{B}
+TPOT(B) = \frac{t_{\text{step,user}}(B)}{B}
 $$
 
 ## 5.1 Memory-Bound Regime (B << B*)
@@ -215,7 +211,7 @@ Weight traffic dominates the denominator. Step time is approximately constant
 (bounded by weight reads):
 
 $$
-t_{local}(B) \approx \frac{T_{\theta}}{B_{eff,mem}} \quad \Rightarrow \quad TPOT(B) \approx \frac{T_{\theta}}{B \times B_{eff,mem}}
+t_{local}(B) \approx \frac{T_{\theta}}{BW_{mem}} \quad \Rightarrow \quad TPOT(B) \approx \frac{T_{\theta}}{B \times BW_{mem}}
 $$
 
 **TPOT drops as ~1/B** — each additional user in the batch is essentially free from a
@@ -247,8 +243,8 @@ longer improves per-sequence latency — the GPU is already fully utilized.
 
 As B sweeps from 1 to infinity, the pair (Throughput, TPOT) traces a Pareto frontier:
 
-- **Throughput** (total tokens per second, all users): Throughput(B) = B / t_token(B)
-- **TPOT** (per-user latency, seconds per output token): TPOT(B) = t_token(B) / B
+- **Throughput** (total tokens per second, all users): Throughput(B) = B / t_step_user(B)
+- **TPOT** (per-user latency, seconds per output token): TPOT(B) = t_step_user(B) / B
 
 ## 6.1 Three Zones
 
@@ -256,8 +252,8 @@ As B sweeps from 1 to infinity, the pair (Throughput, TPOT) traces a Pareto fron
 Both throughput and TPOT improve as B increases. Weight traffic is amortized across more
 tokens. Each additional sequence is essentially "free" from a bandwidth perspective.
 
-> Throughput(B) ~ B x B_eff_mem / T_theta  
-> TPOT(B) ~ T_theta / (B x B_eff_mem)
+> Throughput(B) ~ B x BW_mem / T_theta  
+> TPOT(B) ~ T_theta / (B x BW_mem)
 
 **Zone 2 — Crossover (B ~ B*):**
 The system hits the ridge point. This is the "knee" of the Pareto curve — the operating
@@ -269,9 +265,9 @@ Throughput plateaus. TPOT remains approximately constant.
 > Throughput(B) -> R_GPU / F_token  
 > TPOT(B) ~ F_token / R_GPU
 
-## 6.2 Connection to InferenceX Benchmark Axes
+## 6.2 Throughput–Interactivity Pareto Axes
 
-The InferenceX benchmark [INFERENCEX] plots **Throughput/GPU** against **Interactivity**
+Production LLM inference benchmarks plot **Throughput/GPU** against **Interactivity**
 (= 1/TPOT). The three zones map directly:
 
 - Moving left-to-right corresponds to increasing B from memory-bound through crossover
@@ -309,7 +305,7 @@ Consider LLaMA-3 70B deployed with TP=8 on 8 H100 GPUs (bf16, b=2).
 | Parameter | Value |
 |-----------|-------|
 | R_GPU | 989 TFLOPS (bf16 tensor core) |
-| B_eff_mem | ~2.5 TB/s (effective HBM3 BW) |
+| BW_mem | ~2.5 TB/s (effective HBM3 BW) |
 | Ridge point | 989 / 2.5 = ~396 FLOPs/byte |
 
 **Single-token OI (B=1):**
@@ -318,7 +314,7 @@ The GPU is < 0.3% compute-utilized at B=1.
 
 **Crossover B*:**
 Using the weight-dominated approximation (valid because T_theta >> T_KV at
-S=2048), B\* ~ (T_theta / F_token) x (R_GPU / B_eff_mem) ~ 396 / 2 ~ 198.
+S=2048), B\* ~ (T_theta / F_token) x (R_GPU / BW_mem) ~ 396 / 2 ~ 198.
 
 This means the system transitions to compute-bound at around B ~ 200 sequences.
 

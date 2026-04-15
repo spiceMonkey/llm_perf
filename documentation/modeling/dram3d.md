@@ -8,8 +8,7 @@
 **Date:** April 2026
 
 **Keywords:**  
-3D-stacked DRAM, hybrid bonding, HBM4E, memory bandwidth, pin density, die area, SystemSpec,
-roofline model, LLM inference, AccelStack
+3D-stacked DRAM, hybrid bonding, HBM4E, memory bandwidth, pin density, die area, roofline model, LLM inference, AccelStack
 
 ---
 
@@ -23,12 +22,12 @@ roofline model, LLM inference, AccelStack
   - [2.2 Step 2 — Data Pins After Overhead Allocation](#22-step-2--data-pins-after-overhead-allocation)
   - [2.3 Step 3 — Bandwidth per Die](#23-step-3--bandwidth-per-die)
   - [2.4 Step 4 — Two Stacking Models](#24-step-4--two-stacking-models)
+  - [2.5 Effective Bandwidth Is Always Discounted from Peak](#25-effective-bandwidth-is-always-discounted-from-peak)
 - [3. Numerical Examples](#3-numerical-examples)
   - [3.1 Scenario 1 — HBM3E Baseline (Calibration)](#31-scenario-1--hbm3e-baseline-calibration)
   - [3.2 Scenario 2 — Near-Term Hybrid Bonding ($p_{HB}$ = 2 µm)](#32-scenario-2--near-term-hybrid-bonding-p_hb--2-µm)
   - [3.3 Scenario 3 — Aggressive Hybrid Bonding ($p_{HB}$ = 0.9 µm)](#33-scenario-3--aggressive-hybrid-bonding-p_hb--09-µm)
 - [4. Latency Model](#4-latency-model)
-- [5. Feeding into SystemSpec](#5-feeding-into-systemspec)
 
 ---
 
@@ -36,7 +35,7 @@ roofline model, LLM inference, AccelStack
 
 ## Introduction
 
-Conventional HBM attaches DRAM dies to a logic die via through-silicon vias (TSVs) or microbumps, with interconnect pitches on the order of 10–55 µm; at these pitches the number of interface pins is limited by package geometry rather than die area. 3D stacking with hybrid bonding achieves far higher pad density — pitches of 0.5–2 µm — unlocking bandwidth that scales with die area rather than package perimeter. This document derives the effective memory bandwidth $B_{\text{eff,mem}}$ from first principles, following the methodology of AccelStack §III-C2 [ACCELSTACK]; §III-C2 gives the qualitative framework but contains no dedicated equation, so the derivation here is an original first-principles extension. The resulting $B_{\text{eff,mem}}$ feeds directly into `SystemSpec.device.hbm_bandwidth_GBps`, and from there into the roofline model of `tpot.md` §4.
+Conventional HBM attaches DRAM dies to a logic die via through-silicon vias (TSVs) and solder-bump interconnects (copper pillars / microbumps), with pitches on the order of **~50 µm** [LAU-PKG][SEMIANALYSIS-HB]; at these pitches the number of interface pins is limited by package-level I/O layout rather than die area. 3D stacking with **hybrid bonding** collapses this interconnect to direct copper-to-copper bonds through a dielectric interlayer, reaching **~10 µm near-term and sub-micron in next-generation designs** [LAU-PKG][SOIC-UHD] — unlocking bandwidth that scales with die area rather than package perimeter. AccelStack captures this qualitatively as "hybrid bonding techniques could potentially offer 5–30× smaller than that of microbumps" [ACCELSTACK, §I]. This document derives the effective memory bandwidth $BW_{\text{mem}}$ from first principles, following the methodology of AccelStack §III-C2 [ACCELSTACK]; §III-C2 gives the qualitative framework but contains no dedicated equation, so the derivation here is an original first-principles extension. The resulting $BW_{\text{mem}}$ is the quantity that enters the roofline model (see `tpot.md` §4).
 
 ---
 
@@ -52,7 +51,18 @@ The model is parameterized by five physical quantities. All are observable from 
 | $f_{\text{data}}$ | Data rate per pin | Gbps | 8 Gbps |
 | $N_{\text{dies}}$ | Number of DRAM dies stacked on the logic die | integer | 4 |
 
-**On pitch ranges.** Hybrid bonding allows pitches of 0.5–2 µm, compared to roughly 55 µm for C4 flip-chip bumps and ~10 µm for microbumps. At 1 µm pitch, a 100 mm² die supports on the order of $10^8$ pads — several orders of magnitude more than conventional packaging.
+**On pitch ranges.** The interconnect landscape spans roughly two orders of magnitude in pitch. Representative commercial and demonstrated datapoints:
+
+| Technology | Pitch | Pad density | Anchor |
+|-----------|-------|-------------|--------|
+| C4 flip-chip | ~100–150 µm | ~100 bumps/mm² | Nvidia A100 [SEMIANALYSIS-HB] |
+| Conventional microbump / Cu pillar | **~50 µm** | **~400 bumps/mm²** | Intel Foveros (2020) [LAU-PKG]; A100 copper pillars [SEMIANALYSIS-HB] |
+| Advanced microbump | ~20–25 µm | ~1,600–2,500 bumps/mm² | Industry trend |
+| Hybrid bonding — near-term | **~10 µm** | **~10,000 pads/mm²** | Intel Foveros Direct (2020) [LAU-PKG] |
+| Hybrid bonding — current production | ~1–2.5 µm | ~160 K–1 M bonds/mm² | Sony CIS; TCB/W2W (Sakuma ECTC 2024, in [ACCELSTACK]) |
+| Hybrid bonding — next-generation | **sub-µm (≥0.5)** | **≥1.2 M bonds/mm²** | TSMC SoIC UHD (2020) [SOIC-UHD] |
+
+At 1 µm pitch, a 100 mm² die supports on the order of $10^8$ pads — four orders of magnitude more than a conventional flip-chip package at the same footprint. The qualitative framing used by AccelStack — hybrid bonding pitch is "5–30× smaller than that of microbumps" [ACCELSTACK, §I] — is consistent with the table above (50 µm ÷ 10 µm ≈ 5×; 50 µm ÷ 1.7 µm ≈ 30×).
 
 **On $\eta_{\text{data}}$.** Not all pads carry data. Power delivery, ground return, clock distribution, ECC check bits, and control/command signals collectively consume roughly 50–70 % of total pads in real DRAM designs. The data pin fraction $\eta_{\text{data}} \approx 0.3$–$0.5$ captures this allocation; a value of 0.4 is used as the default throughout this document.
 
@@ -89,10 +99,7 @@ $$
 The factor of 8 converts from bits to bytes. Substituting Steps 1 and 2:
 
 $$
-BW_{\text{die}}
-= \left\lfloor \left\lfloor \frac{A_{\text{die}}}{p_{HB}^2} \right\rfloor \cdot \eta_{\text{data}} \right\rfloor
-\times \frac{f_{\text{data}}}{8}
-\quad [\text{GB/s}]
+BW_{\text{die}} = \left\lfloor \left\lfloor \frac{A_{\text{die}}}{p_{HB}^2} \right\rfloor \cdot \eta_{\text{data}} \right\rfloor \times \frac{f_{\text{data}}}{8} \quad [\text{GB/s}]
 $$
 
 This is the bandwidth presented by a single DRAM die's interface to whatever it is bonded to — either the logic die (in Model A/B below) or the die below it in the stack.
@@ -124,10 +131,30 @@ This is the theoretical upper bound for fully independent die-to-die connections
 ### Bandwidth Bounds
 
 $$
-BW_{\text{conservative}} \;\le\; B_{\text{eff,mem}} \;\le\; BW_{\text{optimistic}}
+BW_{\text{conservative}} \;\le\; BW_{\text{mem}} \;\le\; BW_{\text{optimistic}}
 $$
 
 **Which model to use.** The AccelStack paper (§III-C2) does not resolve this question definitively [ACCELSTACK]. Practical 3D DRAM designs, including the Samsung HBM4 roadmap and near-term HBM4E architectures, indicate that the conservative model is more realistic: the bottom die becomes the bandwidth bottleneck and upper dies primarily add capacity. The conservative model is therefore the **default for `SystemSpec`**; the optimistic model serves as a research upper bound for future fully-disaggregated 3D integration.
+
+## 2.5 Effective Bandwidth Is Always Discounted from Peak
+
+The $BW_{\text{mem}}$ derived in §2.1–2.4 is a **peak ceiling** — the product of pad count and per-pin data rate. Real kernels never see all of it: coalescing quality, tile geometry, and PHY layout collectively impose an efficiency discount. Datasheet HBM numbers are similarly peak; the sustained bandwidth that enters the roofline (see `notation.md §6`) is always lower. No new symbol is introduced for this discount — it is absorbed into $BW_{\text{mem}}$ as used elsewhere in the suite.
+
+AccelStack's GEMM latency model [ACCELSTACK, Eq. 2] makes the tile dependence of this discount explicit. For a matmul $(m, k) \times (k, n)$ on a $p \times p$ systolic array with tile $(t_m, t_n, t_k)$:
+
+$$
+t_{\text{comp}} = \left\lceil \frac{m}{t_m} \right\rceil \left\lceil \frac{n}{t_n} \right\rceil \left\lceil \frac{k}{t_k} \right\rceil \cdot 2 \left\lceil \frac{t_m}{p} \right\rceil \left\lceil \frac{t_n}{p} \right\rceil t_k
+$$
+
+Tile size $(t_m, t_n, t_k)$ sets operand reuse and therefore the BW demand per compute cycle: smaller tiles demand more BW per cycle, which only a fast and non-contended memory interface can sustain.
+
+**Why 3D hybrid bonding lifts effective BW closer to peak.** AccelStack §III-C (Fig. 6) places "distributed controllers and PHYs, aligned with PEs" on the logic die — a structural advantage that HBM cannot match:
+
+1. **Per-die PHYs, not per-stack.** A hybrid-bonded stack exposes many independent PHY regions per die, whereas HBM funnels 4–8 dies through a single 1,024-bit package edge. Small, fine-grained tile accesses do not serialize.
+2. **PE-aligned placement.** Operand fetch traverses one vertical hop rather than crossing an on-die NoC — intra-die routing contention vanishes.
+3. **Latency headroom.** With $\ell_{3D} \approx 20$–$50$ ns vs. ~$300$ ns for HBM access [ACCELSTACK §III-C], the smallest tile that keeps the pipeline full shrinks by the same factor.
+
+The practical consequence: AccelStack's tiled-GEMM model combined with 3D DRAM's PE-aligned PHYs brings the **effective bandwidth closer to the peak** derived in §2.1–2.4 — **another advantage of 3D DRAM beyond the raw pin × data-rate lift**. The scenario numbers in §3 remain peak ceilings; HBM deployments sit further below them than 3D-stacked deployments do.
 
 ---
 
@@ -142,7 +169,7 @@ This scenario calibrates the model against a known, shipping product (SK Hynix H
 | Parameter | Value |
 |-----------|-------|
 | $A_{\text{die}}$ | 82 mm² (SK Hynix HBM3E die) |
-| $p_{HB}$ | 55 µm (C4/microbump, not hybrid bonding) |
+| $p_{HB}$ | 55 µm (microbump / TSV, not hybrid bonding) |
 | $\eta_{\text{data}}$ | 0.5 |
 | $f_{\text{data}}$ | 6.4 Gbps per pin |
 | $N_{\text{dies}}$ | 4 |
@@ -150,10 +177,7 @@ This scenario calibrates the model against a known, shipping product (SK Hynix H
 **Computation:**
 
 $$
-N_{\text{pins,total}} = \left\lfloor \frac{82 \times 10^6\;\mu\text{m}^2}{(55\;\mu\text{m})^2} \right\rfloor
-= \left\lfloor \frac{82{,}000{,}000}{3{,}025} \right\rfloor
-= \left\lfloor 27{,}107 \right\rfloor
-= 27{,}107
+N_{\text{pins,total}} = \left\lfloor \frac{82 \times 10^6\;\mu\text{m}^2}{(55\;\mu\text{m})^2} \right\rfloor = \left\lfloor \frac{82{,}000{,}000}{3{,}025} \right\rfloor = \left\lfloor 27{,}107 \right\rfloor = 27{,}107
 $$
 
 $$
@@ -181,9 +205,7 @@ $$
 **Computation:**
 
 $$
-N_{\text{pins,total}} = \left\lfloor \frac{100 \times 10^6}{(2)^2} \right\rfloor
-= \left\lfloor \frac{100{,}000{,}000}{4} \right\rfloor
-= 25{,}000{,}000
+N_{\text{pins,total}} = \left\lfloor \frac{100 \times 10^6}{(2)^2} \right\rfloor = \left\lfloor \frac{100{,}000{,}000}{4} \right\rfloor = 25{,}000{,}000
 $$
 
 $$
@@ -219,10 +241,7 @@ $$
 **Computation:**
 
 $$
-N_{\text{pins,total}} = \left\lfloor \frac{100 \times 10^6}{(0.9)^2} \right\rfloor
-= \left\lfloor \frac{100{,}000{,}000}{0.81} \right\rfloor
-= \left\lfloor 123{,}456{,}790 \right\rfloor
-= 123{,}456{,}790
+N_{\text{pins,total}} = \left\lfloor \frac{100 \times 10^6}{(0.9)^2} \right\rfloor = \left\lfloor \frac{100{,}000{,}000}{0.81} \right\rfloor = \left\lfloor 123{,}456{,}790 \right\rfloor = 123{,}456{,}790
 $$
 
 $$
@@ -236,9 +255,7 @@ $$
 **Results:**
 
 $$
-BW_{\text{conservative}} \approx 49 \;\text{TB/s}
-\qquad
-BW_{\text{optimistic}} \approx 4 \times 49 = 197 \;\text{TB/s}
+BW_{\text{conservative}} \approx 49 \;\text{TB/s} \qquad BW_{\text{optimistic}} \approx 4 \times 49 = 197 \;\text{TB/s}
 $$
 
 **Caveats at aggressive pitch.** At 0.9 µm pitch the pin count approaches $1.2 \times 10^8$ per die, and the aggregate I/O power draw ($\sim N_{\text{pins,data}} \times f_{\text{data}} \times E_{\text{bit}}$) may exceed the power budget of the die interface. In practice, $f_{\text{data}}$ may need to drop to 2–4 Gbps per pin to remain within acceptable power density, reducing bandwidth proportionally. Signal integrity and reference voltage distribution at sub-µm pitch are additional practical constraints not captured by this first-principles model.
@@ -256,57 +273,10 @@ $$
 where $k_{\text{interconnect}} > 1$ is the latency reduction factor attributable to the shorter signal path (no interposer, no package trace, direct vertical bond). Typical HBM read latency is approximately 100 ns at the row-activation level [HBM-SPEC]. With hybrid bonding reducing the vertical path from ~100–200 µm (HBM microbump + interposer) to ~1–5 µm (direct bond), an estimated:
 
 $$
-k_{\text{interconnect}} = 2 \text{–} 5
-\quad \Longrightarrow \quad
-\ell_{3D} \approx 20 \text{–} 50 \;\text{ns}
+k_{\text{interconnect}} = 2 \text{–} 5 \quad \Longrightarrow \quad \ell_{3D} \approx 20 \text{–} 50 \;\text{ns}
 $$
 
-**Impact on LLM decode.** For steady-state decode with large weight tensors and sequential KV cache access, the system is strongly memory-**bandwidth**-bound, not latency-bound. The improved latency $\ell_{3D}$ does not affect $t_{\text{token}}$ in the roofline regime (see `tpot.md` §4). Latency reduction does matter for workloads with high spatial locality and frequent cache-miss patterns (e.g., sparse retrieval, tree-attention with irregular access), but those are outside the scope of the steady-state decode model.
-
----
-
-# 5. Feeding into SystemSpec
-
-The bandwidth bounds derived in §2 map directly to `DeviceSpec` fields in the llm_perf `SystemSpec`:
-
-```python
-DeviceSpec(
-    hbm_bandwidth_GBps = BW_conservative,  # default: conservative model (single interface)
-    # or BW_optimistic as research upper bound (independent per-die interfaces)
-    hbm_capacity_GB    = N_dies * capacity_per_die_GB,
-    peak_flops_TF      = ...,
-)
-```
-
-The `hbm_bandwidth_GBps` value becomes $B_{\text{eff,mem}}$ in the roofline model (`tpot.md` §4). Specifically:
-
-$$
-t_{\text{mem}} = \frac{T_{\text{token,device}}^{\text{eff}}}{B_{\text{eff,mem}}}
-\qquad
-t_{\text{local}} = \max(t_{\text{compute}},\; t_{\text{mem}})
-$$
-
-A larger $B_{\text{eff,mem}}$ reduces $t_{\text{mem}}$, potentially shifting the operating regime from memory-bound to compute-bound. For a given LLM configuration, the regime boundary (ridge point) is at arithmetic intensity:
-
-$$
-I^* = \frac{R_{\text{GPU}}}{B_{\text{eff,mem}}}
-$$
-
-Increasing $B_{\text{eff,mem}}$ from 3.35 TB/s (H100 HBM3, per [H100-SPEC]) toward 10 TB/s (Scenario 2 above) lowers $I^*$ by a factor of ~3×, meaning that workloads previously memory-bound may become compute-bound under 3D DRAM, and vice versa.
-
-**Note on `hbm4e.512dev.json`.** The system spec at `llm_perf/database/system/hbm4e.512dev.json` specifies `hbm_bandwidth_GBps = 6400` (6.4 TB/s per device). This value sits between the H100 HBM3 baseline (3.35 TB/s, [H100-SPEC]) and the near-term hybrid bonding projection (Scenario 2: ~10 TB/s at $p_{HB} = 2\;\mu\text{m}$), making it a reasonable interpolation point for near-future HBM4E devices.
-
-Back-calculating the required interconnect pitch to yield 6,400 GB/s from the §2 model ($A_{\text{die}} = 100\;\text{mm}^2$, $\eta_{\text{data}} = 0.4$, $f_{\text{data}} = 8$ Gbps):
-
-$$
-N_{\text{pins,data}} = \frac{BW_{\text{target}}}{f_{\text{data}}/8} = \frac{6{,}400}{1} = 6{,}400
-\quad \Rightarrow \quad
-N_{\text{pins,total}} = \frac{6{,}400}{0.4} = 16{,}000
-\quad \Rightarrow \quad
-p_{HB} = \sqrt{\frac{100 \times 10^6}{16{,}000}} \approx 79\;\mu\text{m}
-$$
-
-A pitch of ~79 µm is in the **microbump** range, not hybrid bonding. This means the 6,400 GB/s entry in `hbm4e.512dev.json` is an **aspirational placeholder** — a user-specified bandwidth target for a hypothetical HBM4E device — rather than a value derived from the 3D hybrid bonding model in §1–4. When using the dram3d model to project hybrid-bonding scenarios, the §3 numerical examples (Scenarios 1–3) are the physically grounded reference points.
+**Impact on LLM decode.** For steady-state decode with large weight tensors and sequential KV cache access, the system is strongly memory-**bandwidth**-bound, not latency-bound. The improved latency $\ell_{3D}$ does not affect $t_{\text{step,user}}$ in the roofline regime (see `tpot.md` §4). Latency reduction does matter for workloads with high spatial locality and frequent cache-miss patterns (e.g., sparse retrieval, tree-attention with irregular access), but those are outside the scope of the steady-state decode model.
 
 ---
 
@@ -326,6 +296,8 @@ Symbols introduced in this document; consolidated into `notation.md` §15.
 | $BW_{\text{die}}$ | Raw bandwidth per die interface | GB/s |
 | $BW_{\text{conservative}}$ | Lower bound: single logic-facing interface | GB/s |
 | $BW_{\text{optimistic}}$ | Upper bound: independent per-die interfaces | GB/s |
+| $t_m, t_n, t_k$ | GEMM tile dimensions in AccelStack Eq. 2 (§2.5) | integer |
+| $p$ | Systolic array edge (PEs per side) in AccelStack Eq. 2 | integer |
 | $k_{\text{interconnect}}$ | Latency reduction factor vs. HBM (§4) | dimensionless |
 | $\ell_{3D}$ | Estimated 3D DRAM read latency | ns |
 
@@ -333,7 +305,10 @@ Symbols introduced in this document; consolidated into `notation.md` §15.
 
 # References
 
-- **[ACCELSTACK]** — Primary source for the 3D DRAM interface methodology (§III-C2: 3D DRAM bandwidth from hybrid bonding pitch and pin count). The bandwidth derivation in `dram3d.md` is a first-principles extension; §III-C2 provides the qualitative framework without a dedicated equation.
+- **[ACCELSTACK]** — Primary source for the 3D DRAM interface methodology (§III-C2: 3D DRAM bandwidth from hybrid bonding pitch and pin count). The bandwidth derivation in `dram3d.md` is a first-principles extension; §III-C2 provides the qualitative framework without a dedicated equation. Also source of the "5–30× smaller than microbumps" qualitative ratio used in §1.
+- **[LAU-PKG]** — Lau 2021, *J. Microelectronics and Electronic Packaging*. Primary quantitative anchor for the §1 pitch table: Intel Foveros Direct (2020) "bumpless pad pitch reduces from 50 µm (for microbumps) to 10 µm; density rises from 400 bumps/mm² to 10,000 pads/mm²".
+- **[SOIC-UHD]** — Chen et al., ECTC 2020. Sub-micron pitch hybrid bonding at ≥1.2 M bonds/mm²; upper-bound datapoint for §1 and Scenario 3 (§3.3).
+- **[SEMIANALYSIS-HB]** — SemiAnalysis cross-section analysis of Nvidia A100: ~130 µm C4, ~50 µm copper pillars. Industry-press reference for the §1 pitch table.
 - **[HBM-SPEC]** — JEDEC JESD235D: HBM2E / HBM3 / HBM3E pin bandwidth and capacity specs. Used for calibration in Scenario 1 (§3.1) and latency baseline in §4.
 - **[H100-SPEC]** — NVIDIA H100 whitepaper: 3.35 TB/s HBM3 bandwidth per GPU. Used as reference point for SystemSpec reconciliation in §5.
 

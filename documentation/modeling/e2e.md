@@ -1,6 +1,6 @@
 # End-to-End LLM Inference Metrics
 
-**Assembling TTFT, TPOT, E2E Latency, Throughput/GPU, Interactivity, and the Throughput–Latency Pareto Frontier**
+**Assembling TTFT, TPOT, Throughput/GPU, Interactivity, and the Throughput–Latency Pareto Frontier**
 
 <br/>
 
@@ -8,9 +8,7 @@
 **Date:** April 2026
 
 **Keywords:**  
-LLM inference, TTFT, time-to-first-token, TPOT, time-per-output-token, E2E latency,  
-throughput per GPU, interactivity, continuous batching, chunked prefill, Pareto frontier,  
-roofline model, InferenceX, throughput–latency tradeoff
+LLM inference, TTFT, time-to-first-token, TPOT, time-per-output-token, throughput per GPU, interactivity, continuous batching, chunked prefill, Pareto frontier, roofline model, throughput–latency tradeoff
 
 ---
 
@@ -21,10 +19,9 @@ roofline model, InferenceX, throughput–latency tradeoff
 - [1. Metric Definitions](#1-metric-definitions)
   - [1.1 Time To First Token (TTFT)](#11-time-to-first-token-ttft)
   - [1.2 Time Per Output Token (TPOT)](#12-time-per-output-token-tpot)
-  - [1.3 End-to-End Latency](#13-end-to-end-latency)
-  - [1.4 Throughput per GPU](#14-throughput-per-gpu)
-  - [1.5 Interactivity](#15-interactivity)
-  - [1.6 Goodput (brief)](#16-goodput-brief)
+  - [1.3 Throughput per GPU](#13-throughput-per-gpu)
+  - [1.4 Interactivity](#14-interactivity)
+  - [1.5 Goodput](#15-goodput)
 
 - [2. TTFT Assembly](#2-ttft-assembly)
   - [2.1 Single-Request TTFT](#21-single-request-ttft)
@@ -35,20 +32,17 @@ roofline model, InferenceX, throughput–latency tradeoff
   - [3.1 Static Batching TPOT](#31-static-batching-tpot)
   - [3.2 Continuous Batching TPOT](#32-continuous-batching-tpot)
 
-- [4. End-to-End Latency](#4-end-to-end-latency)
-  - [4.1 General Formula](#41-general-formula)
-  - [4.2 Regime Analysis](#42-regime-analysis)
-  - [4.3 Numerical Example (H100)](#43-numerical-example-h100)
+- [4. When Prefill Dominates Decode](#4-when-prefill-dominates-decode)
 
 - [5. Throughput/GPU and Interactivity](#5-throughputgpu-and-interactivity)
   - [5.1 Throughput/GPU Derivation](#51-throughputgpu-derivation)
-  - [5.2 Interactivity and the InferenceX Y-Axis](#52-interactivity-and-the-inferencex-y-axis)
+  - [5.2 Interactivity (per-request streaming rate)](#52-interactivity-per-request-streaming-rate)
 
 - [6. Throughput–Latency Pareto Frontier](#6-throughputlatency-pareto-frontier)
   - [6.1 Levers Shaping the Pareto Curve](#61-levers-shaping-the-pareto-curve)
   - [6.2 Three Zones of the Pareto Frontier](#62-three-zones-of-the-pareto-frontier)
   - [6.3 Roofline Ceiling on Pareto Efficiency](#63-roofline-ceiling-on-pareto-efficiency)
-  - [6.4 InferenceX Axis Mapping](#64-inferencex-axis-mapping)
+  - [6.4 Throughput–Interactivity Axis Mapping](#64-throughputinteractivity-axis-mapping)
 
 - [Symbol Summary](#symbol-summary)
 
@@ -58,7 +52,7 @@ roofline model, InferenceX, throughput–latency tradeoff
 
 # 1. Metric Definitions
 
-This section defines all six end-to-end metrics precisely. They are the outputs users and system operators care about; all prior modeling documents (memory, FLOPs, traffic, communication, latency) contribute to computing them. The InferenceX benchmark [INFERENCEX] organizes production LLM inference evaluation around two of these six: **Throughput/GPU** (system efficiency) and **Interactivity** (user-perceived quality). The others provide essential context and diagnostic signal.
+This section defines all six end-to-end metrics precisely. They are the outputs users and system operators care about; all prior modeling documents (memory, FLOPs, traffic, communication, latency) contribute to computing them. Two of these six — **Throughput/GPU** (system efficiency) and **Interactivity** (user-perceived quality) — are the standard axes used by production LLM inference benchmarks. The others provide essential context and diagnostic signal.
 
 Symbols used throughout this document are defined in `notation.md`; see especially §§4, 9, 11, and 14. New symbols introduced here are summarized in the [Symbol Summary](#symbol-summary) at the end.
 
@@ -69,7 +63,7 @@ Symbols used throughout this document are defined in `notation.md`; see especial
 **Definition.** $TTFT$ is the wall-clock elapsed time from the moment a request is received by the serving system to the moment the **first output token** is returned to the caller. It encompasses all latency incurred before the first token can be streamed: request scheduling, tokenization, the prefill forward pass, optional KV cache transfer (disaggregated architectures), and the first decode step that produces token 1.
 
 $$
-TTFT = t_{\text{sched}} + t_{\text{tok}} + t_{\text{prefill}} + t_{\text{KV-transfer}} + t_{\text{token}}
+TTFT = t_{\text{sched}} + t_{\text{tok}} + t_{\text{prefill}} + t_{\text{KV-transfer}} + t_{\text{step,user}}
 $$
 
 where $t_{\text{KV-transfer}} = 0$ for co-located prefill+decode. The prefill latency $t_{\text{prefill}}$ is derived in full in `prefill.md §3`; framework overhead terms $t_{\text{sched}}$ and $t_{\text{tok}}$ are defined in `framework.md §2`.
@@ -80,31 +74,19 @@ where $t_{\text{KV-transfer}} = 0$ for co-located prefill+decode. The prefill la
 
 ## 1.2 Time Per Output Token (TPOT)
 
-**Definition.** $\text{TPOT}$ is the **average inter-token latency** for tokens 2 through $N_{\text{out}}$ of a single response (the decode phase). It equals the per-step decode time $t_{\text{token}}$ from `tpot.md §6.2`, measured per sequence:
+**Definition.** $\text{TPOT}$ is the **user-observed inter-token latency** for tokens 2 through $N_{\text{out}}$ of a single response (the decode phase). Each decode step produces exactly one new token per active sequence, so a user's TPOT equals the full step time $t_{\text{step,user}}$ — **not** amortized across the $B$ parallel sequences:
 
 $$
-\text{TPOT} = \frac{t_{\text{token}}(B)}{B}
+\text{TPOT} = t_{\text{step,user}}(B) = t_{\text{stage}}(B) \cdot \max\left(1,\; \frac{PP}{B}\right)
 $$
 
-where $B$ is the number of sequences decoded concurrently in the same step and $t_{\text{token}}(B)$ is the overlap-aware per-step wall-clock time (see `tpot.md §6.4.2`).
+where $B$ is the number of sequences decoded concurrently, $t_{\text{stage}}(B)$ is the overlap-aware per-stage step time (`tpot.md §6.3.1`), and the $\max(1, PP/B)$ factor is the pipeline bubble correction (`tpot.md §6.3.2`): at $B \ge PP$ the pipeline is kept full and the factor is 1; at $B < PP$ the single microbatch pays full pipeline depth per token.
 
 **Key property.** TPOT is the *streaming rate* perceived by the user. A TPOT of 50 ms means one new token appears every 50 ms — a rate of 20 tokens/s. Human reading comprehension speed is approximately 5–15 tokens/s; TPOT below 100 ms (>10 tokens/s) is a common production SLA threshold.
 
 ---
 
-## 1.3 End-to-End Latency
-
-**Definition.** The full wall-clock latency from request receipt to the **last output token** of a response of $N_{\text{out}}$ tokens:
-
-$$
-\text{E2E}(N_{\text{out}}) = TTFT + (N_{\text{out}} - 1) \times \text{TPOT}
-$$
-
-The factor $(N_{\text{out}} - 1)$ arises because the first output token is already produced by the end of TTFT; the decode phase produces tokens $2, 3, \ldots, N_{\text{out}}$, requiring $N_{\text{out}} - 1$ additional steps.
-
----
-
-## 1.4 Throughput per GPU
+## 1.3 Throughput per GPU
 
 **Definition.** The rate of output token generation per physical GPU, expressed in output tokens/second/GPU:
 
@@ -112,11 +94,11 @@ $$
 \text{Tput/GPU} = \frac{TTPS}{N_{\text{GPUs}}}
 $$
 
-where $TTPS$ is the global cluster token throughput (tokens/s, all sequences) defined in `tpot.md §6.3`, and $N_{\text{GPUs}}$ is the total number of GPUs in the cluster. This is the X-axis of the InferenceX benchmark [INFERENCEX].
+where $TTPS$ is the global cluster token throughput (tokens/s, all sequences) defined in `tpot.md §6.3`, and $N_{\text{GPUs}}$ is the total number of GPUs in the cluster. This is the standard X-axis of throughput–latency benchmark plots.
 
 ---
 
-## 1.5 Interactivity
+## 1.4 Interactivity
 
 **Definition.** The rate at which a single user receives output tokens, expressed in output tokens/second per request:
 
@@ -124,21 +106,31 @@ $$
 \text{Interactivity} = \frac{1}{\text{TPOT}}
 $$
 
-This is the Y-axis of the InferenceX benchmark [INFERENCEX]. Higher interactivity means faster streaming to the individual user. The reciprocal relationship makes clear that Interactivity and TPOT encode identical information in different units.
+This is the standard Y-axis of throughput–latency benchmark plots. Higher interactivity means faster streaming to the individual user. The reciprocal relationship makes clear that Interactivity and TPOT encode identical information in different units.
 
 ---
 
-## 1.6 Goodput (brief)
+## 1.5 Goodput
 
-**Goodput** is the fraction of GPU-time spent on *useful* token generation — i.e., generating tokens for requests that successfully complete, excluding time spent on preempted or aborted requests, speculative tokens that are rejected, and idle stalls waiting for new requests.
-
-A formal goodput model requires a queuing-theoretic treatment and is out of scope for this document. Informally:
+**Definition.** The maximum request arrival rate $\lambda$ (requests/second) the cluster can sustain while keeping both TTFT and TPOT below operator-set service-level objectives [DISAGG-PREFILL]:
 
 $$
-\text{Goodput} = \frac{\text{tokens generated for completed requests}}{\text{max-theoretical tokens/s} \times T_{\text{wall}}}
+\text{Goodput} = \max\,\lambda \quad \text{s.t.} \quad
+P_{p}\!\left[\,TTFT(\lambda)\,\right] \le TTFT_{\text{SLO}}
+\quad\text{and}\quad
+P_{p}\!\left[\,\text{TPOT}(\lambda)\,\right] \le \text{TPOT}_{\text{SLO}}
 $$
 
-Goodput is the primary metric used in [DISAGG-PREFILL] to compare disaggregated vs. co-located serving architectures at varying request rates.
+where $P_{p}[\cdot]$ is the $p$-th percentile of the per-request distribution (typically $p \in \{90, 99\}$).
+
+**Tie to model parameters.** Both constraints are explicit functions of quantities defined elsewhere in this suite:
+
+- $TTFT(\lambda)$ assembles from $t_{\text{sched}}$, $t_{\text{prefill}}$, $t_{\text{handoff}}$, and $t_{\text{step,user}}$ (§2; `prefill.md §6`). Under load it inflates as the prefill queue lengthens.
+- $\text{TPOT}(\lambda) = t_{\text{step,user}}(\overline{B_{\text{eff}}}(\lambda))$ via continuous batching (§3.2), with $\overline{B_{\text{eff}}}(\lambda) \approx \lambda \cdot (TTFT + N_{\text{out}} \cdot \overline{\text{TPOT}})$ from Little's law (§3.2).
+
+The two SLOs jointly bound $\lambda$: $TTFT_{\text{SLO}}$ caps how long the prefill queue can grow; $\text{TPOT}_{\text{SLO}}$ caps how large $\overline{B_{\text{eff}}}$ can become before per-step time crosses into Zone 2/3 of the roofline (§6.2). Goodput is the **tighter** of the two — whichever SLO binds first sets $\lambda$.
+
+**Out of scope.** Speculative-decoding rejections, preemption-driven recompute (`kv.md §4.3`), and request-cancellation effects are real goodput drains but are not modeled in this suite.
 
 ---
 
@@ -168,10 +160,10 @@ For a single request on a **co-located** prefill+decode cluster (no disaggregati
 
    where $t_{\text{prefill,local}} = \max(t_{\text{prefill,compute}},\; t_{\text{prefill,mem}})$ is the per-stage roofline time, $t_{\text{prefill,comm}}$ is the collective communication time during prefill (same TP/EP/SP structure as decode, scaled by $S_{\text{input}}$), $\rho$ is the overlap factor (same as in decode, `tpot.md §6.2`), and $t_{\text{pipeline,warmup}} = (PP - 1) \times t_{\text{stage,max}}$ is the time for the prefill pass to fill the pipeline (`prefill.md §3.3`).
 
-4. **$t_{\text{token}}$** — First decode step: one forward pass of the decode kernel, generating token 1. From `tpot.md §6.2`:
+4. **$t_{\text{step,user}}$** — First decode step: one forward pass of the decode kernel, generating token 1. From `tpot.md §6.2`:
 
    $$
-   t_{\text{token}} = t_{\text{local}} + \max\left(0,\; t_{\text{comm}} - \rho\, t_{\text{local}}\right)
+   t_{\text{step,user}} = t_{\text{local}} + \max\left(0,\; t_{\text{comm}} - \rho\, t_{\text{local}}\right)
    $$
 
 ### Boxed result (co-located)
@@ -179,23 +171,23 @@ For a single request on a **co-located** prefill+decode cluster (no disaggregati
 Combining all four phases, and absorbing $t_{\text{tok}}$ into $t_{\text{sched}}$ as a lumped scheduling overhead:
 
 $$
-TTFT_{\text{single}} = t_{\text{sched}} + t_{\text{prefill}} + t_{\text{token}}
+TTFT_{\text{single}} = t_{\text{sched}} + t_{\text{prefill}} + t_{\text{step,user}}
 $$
 
-> **Simplification note:** $t_{\text{tok}}$ (tokenization) from the general TTFT definition in §1.1 is absorbed into $t_{\text{sched}}$ here as a lumped scheduling overhead — both are CPU-side pre-compute latencies in the 0.1–2 ms range. The general form $TTFT = t_{\text{sched}} + t_{\text{tok}} + t_{\text{prefill}} + t_{\text{KV-transfer}} + t_{\text{token}}$ (§1.1) is exact; the boxed formula above is a simplified co-located single-request variant.
+> **Simplification note:** $t_{\text{tok}}$ (tokenization) from the general TTFT definition in §1.1 is absorbed into $t_{\text{sched}}$ here as a lumped scheduling overhead — both are CPU-side pre-compute latencies in the 0.1–2 ms range. The general form $TTFT = t_{\text{sched}} + t_{\text{tok}} + t_{\text{prefill}} + t_{\text{KV-transfer}} + t_{\text{step,user}}$ (§1.1) is exact; the boxed formula above is a simplified co-located single-request variant.
 
 ### With disaggregated prefill
 
 When prefill and decode run on **separate** GPU clusters [DISAGG-PREFILL], the KV cache generated by the prefill cluster must be transferred over the inter-cluster interconnect before decode can begin. Using the α–β latency model (`framework.md §3`):
 
 $$
-t_{\text{KV-transfer}} = \alpha_{\text{inter}} + \frac{M_{\text{KV-transfer}}}{B_{\text{eff,inter}}}
+t_{\text{KV-transfer}} = \alpha_{\text{inter}} + \frac{M_{\text{KV-transfer}}}{BW_{\text{inter}}}
 $$
 
 where $M_{\text{KV-transfer}} = \frac{2 \cdot S_{\text{input}} \cdot H_{kv} \cdot b}{TP \cdot SP} \cdot \frac{L}{PP}$ is the per-device KV transfer volume. TTFT becomes:
 
 $$
-TTFT_{\text{disagg}} = t_{\text{sched}} + t_{\text{prefill}} + t_{\text{KV-transfer}} + t_{\text{token}}
+TTFT_{\text{disagg}} = t_{\text{sched}} + t_{\text{prefill}} + t_{\text{KV-transfer}} + t_{\text{step,user}}
 $$
 
 The motivation for disaggregation is that the prefill and decode phases have fundamentally different computational characteristics (compute-bound vs. memory-bound) and therefore benefit from different hardware configurations. The cost is the added $t_{\text{KV-transfer}}$ latency. For large KV caches and slow inter-cluster links, this can be the dominant TTFT term.
@@ -234,7 +226,7 @@ $$
 t_{\text{prefill,local}}(B_{\text{prefill}}) =
 \max\left(
 \frac{B_{\text{prefill}} \times F_{\text{prefill,device}}}{R_{\text{GPU}}},\;
-\frac{T_{\theta,\text{device}} + B_{\text{prefill}} \times T_{\text{KV,write,device}}}{B_{\text{eff,mem}}}
+\frac{T_{\theta,\text{device}} + B_{\text{prefill}} \times T_{\text{KV,write,device}}}{BW_{\text{mem}}}
 \right)
 $$
 
@@ -245,7 +237,7 @@ The KV write traffic $T_{\text{KV,write,device}}$ scales with $B_{\text{prefill}
 From a user's perspective, the worst-case TTFT applies to the **last request** admitted to the prefill batch — that request waits for the entire joint prefill to complete before its first token is produced:
 
 $$
-TTFT_{\text{batched}} = t_{\text{sched}} + t_{\text{prefill,local}}(B_{\text{prefill}}) + \max\left(0,\; t_{\text{prefill,comm}} - \rho\, t_{\text{prefill,local}}\right) + t_{\text{pipeline,warmup}} + t_{\text{token}}
+TTFT_{\text{batched}} = t_{\text{sched}} + t_{\text{prefill,local}}(B_{\text{prefill}}) + \max\left(0,\; t_{\text{prefill,comm}} - \rho\, t_{\text{prefill,local}}\right) + t_{\text{pipeline,warmup}} + t_{\text{step,user}}
 $$
 
 Batching prefill requests improves GPU utilization (higher arithmetic intensity → better hardware efficiency) at the cost of increased TTFT for late arrivals in the batch. The optimal $B_{\text{prefill}}$ balances throughput and tail TTFT latency; see `prefill.md §4.3` for the batch-size optimization.
@@ -269,18 +261,18 @@ $$
 Each chunk is a mini-prefill of $C$ tokens. The per-chunk local time follows the same roofline formula as a full prefill (`prefill.md §3.1`) with $S_{\text{input}}$ replaced by $C$:
 
 $$
-t_{\text{chunk}} = \max\left(\frac{F_{\text{prefill,device}}(C)}{R_{\text{GPU}}},\; \frac{T_{\theta,\text{device}} + T_{\text{KV,write,device}}(C)}{B_{\text{eff,mem}}}\right)
+t_{\text{chunk}} = \max\left(\frac{F_{\text{prefill,device}}(C)}{R_{\text{GPU}}},\; \frac{T_{\theta,\text{device}} + T_{\text{KV,write,device}}(C)}{BW_{\text{mem}}}\right)
 $$
 
-For small $C$ (e.g., $C = 256$), the chunk is likely memory-bound (weight traffic dominates KV write traffic), meaning $t_{\text{chunk}} \approx T_{\theta,\text{device}} / B_{\text{eff,mem}}$ — identical to one decode step latency. This is the **chunked-prefill design point**: each chunk costs approximately the same as one decode step, which is the minimum possible disruption to the decode pipeline.
+For small $C$ (e.g., $C = 256$), the chunk is likely memory-bound (weight traffic dominates KV write traffic), meaning $t_{\text{chunk}} \approx T_{\theta,\text{device}} / BW_{\text{mem}}$ — identical to one decode step latency. This is the **chunked-prefill design point**: each chunk costs approximately the same as one decode step, which is the minimum possible disruption to the decode pipeline.
 
 ### TTFT under chunking
 
 The new request's TTFT is the time to process all $N_{\text{chunks}}$ chunks sequentially (each occupying one decode slot), plus scheduling overhead:
 
 $$
-TTFT_{\text{chunked}} = t_{\text{sched}} + N_{\text{chunks}} \times t_{\text{chunk}} + t_{\text{token}}
-\approx t_{\text{sched}} + \left\lceil \frac{S_{\text{input}}}{C} \right\rceil \times t_{\text{chunk}} + t_{\text{token}}
+TTFT_{\text{chunked}} = t_{\text{sched}} + N_{\text{chunks}} \times t_{\text{chunk}} + t_{\text{step,user}}
+\approx t_{\text{sched}} + \left\lceil \frac{S_{\text{input}}}{C} \right\rceil \times t_{\text{chunk}} + t_{\text{step,user}}
 $$
 
 The pipeline warmup $t_{\text{pipeline,warmup}}$ applies once across the entire prefill sequence rather than per chunk (the pipeline is kept warm by the ongoing decode traffic), so it does not multiply by $N_{\text{chunks}}$.
@@ -311,10 +303,10 @@ In **static batching**, all $B$ requests in the batch start together, are padded
 
 ### Per-step wall-clock time
 
-At each decode step, the model processes $B$ tokens simultaneously (one per sequence). The overlap-aware per-step time from `tpot.md §6.2` is:
+At each decode step, the model processes $B$ tokens simultaneously (one per sequence). The overlap-aware per-stage step time from `tpot.md §6.3.1` is:
 
 $$
-t_{\text{token}}(B) = t_{\text{local}}(B) + \max\left(0,\; t_{\text{comm}} - \rho \cdot t_{\text{local}}(B)\right)
+t_{\text{stage}}(B) = t_{\text{local}}(B) + \max\left(0,\; t_{\text{comm}}(B) - \rho \cdot t_{\text{local}}(B)\right)
 $$
 
 where the batched local time is (`tpot.md §6.4.2`):
@@ -323,45 +315,51 @@ $$
 t_{\text{local}}(B) =
 \max\left(
 \frac{B \times F_{\text{token,device}}}{R_{\text{GPU}}},\;
-\frac{T_{\theta,\text{device}} + B \times T_{\text{KV,device}}}{B_{\text{eff,mem}}}
+\frac{T_{\theta,\text{device}} + B \times T_{\text{KV,device}}}{BW_{\text{mem}}}
 \right)
+$$
+
+Applying the pipeline bubble correction (`tpot.md §6.3.2`) gives the user-observed step time:
+
+$$
+t_{\text{step,user}}(B) = t_{\text{stage}}(B) \cdot \max\left(1,\; \frac{PP}{B}\right)
 $$
 
 ### TPOT definition
 
-Each decode step emits exactly **one token per active sequence** and takes $t_{\text{token}}(B)$ wall-clock seconds. The system produces $B$ output tokens in that step — one per sequence — so the amortized cost per output token is $t_{\text{token}}(B) / B$. This is the per-sequence TPOT: how long the system "spends" per token of each sequence's output (`tpot.md §6.4.2`):
+Each decode step emits exactly **one token per active sequence** and takes $t_{\text{step,user}}(B)$ wall-clock seconds from the user's perspective. A given sequence's new token appears once per step, so TPOT equals the full step time — **not** $t_{\text{stage}}/B$ (which would be the amortized per-token cost across all sequences, i.e., the inverse of throughput-per-step, a throughput metric rather than a latency metric):
 
 $$
-\text{TPOT}_{\text{static}}(B) = \frac{t_{\text{token}}(B)}{B}
+\text{TPOT}_{\text{static}}(B) = t_{\text{step,user}}(B)
 $$
 
-This definition is consistent with §1.2 and with `tpot.md §6.4.2`. Note the distinction from the raw step time: $t_{\text{token}}(B)$ is the wall-clock duration of one decode step (all $B$ tokens processed in parallel), while $\text{TPOT}(B) = t_{\text{token}}(B)/B$ is the effective per-output-token latency that determines streaming Interactivity.
+Consistency with §1.2 and `tpot.md §6.4.2`: the user observes one token per decode step per sequence, and the step time is set by the slowest pipeline stage (plus any bubble for $B < PP$). The throughput metric $B/t_{\text{step,user}}$ (tokens/s across the replica) is what is divided by $N_{\text{GPUs}}$ to get Throughput/GPU.
 
 ### Regime behavior
 
-From the batch-size analysis in `tpot.md §6.4.2`:
+From the batch-size analysis in `tpot.md §6.4.2` (assuming $B \ge PP$ so bubble factor is 1):
 
 **Memory-bound regime** ($B \ll B^*$, weight traffic dominates):
 $$
-t_{\text{local}}(B) \approx \frac{T_{\theta,\text{device}}}{B_{\text{eff,mem}}} \quad\Rightarrow\quad \text{TPOT}_{\text{static}}(B) \approx \frac{T_{\theta,\text{device}}}{B \times B_{\text{eff,mem}}}
+t_{\text{stage}}(B) \approx \frac{T_{\theta,\text{device}}}{BW_{\text{mem}}} \quad\Rightarrow\quad \text{TPOT}_{\text{static}}(B) \approx \frac{T_{\theta,\text{device}}}{BW_{\text{mem}}}
 $$
 
-TPOT **improves** (decreases) with $B$: the fixed cost of loading weights is amortized over more sequences. Throughput grows linearly; TPOT falls proportionally.
+TPOT is approximately **flat in $B$**: weights stream once per step regardless of $B$, and step time stays pinned at the weight-streaming cost. Cluster throughput grows with $B$ (more tokens per step) while user-observed latency stays constant.
 
 **Compute-bound regime** ($B \gg B^*$, compute dominates):
 $$
-t_{\text{local}}(B) \approx \frac{B \times F_{\text{token,device}}}{R_{\text{GPU}}} \quad\Rightarrow\quad \text{TPOT}_{\text{static}}(B) \approx \frac{F_{\text{token,device}}}{R_{\text{GPU}}}
+t_{\text{stage}}(B) \approx \frac{B \times F_{\text{token,device}}}{R_{\text{GPU}}} \quad\Rightarrow\quad \text{TPOT}_{\text{static}}(B) \approx \frac{B \times F_{\text{token,device}}}{R_{\text{GPU}}}
 $$
 
-TPOT is approximately **constant** in $B$: the step time grows proportionally with $B$ (more compute), but dividing by $B$ cancels the growth. Per-sequence latency is determined solely by the compute rate.
+TPOT grows **linearly with $B$**: once compute saturates, every added sequence extends the step time and every user sees the extension.
 
 **Summary:**
 
 | Regime | Condition | $\text{TPOT}_{\text{static}}(B)$ |
 |--------|-----------|----------------------------------|
-| Memory-bound | $B \ll B^*$ | $\approx T_{\theta,\text{device}} / (B \times B_{\text{eff,mem}})$ (decreases with $B$) |
-| Crossover | $B = B^*$ | transition to flat TPOT regime |
-| Compute-bound | $B \gg B^*$ | $\approx F_{\text{token,device}} / R_{\text{GPU}}$ (constant in $B$) |
+| Memory-bound | $B \ll B^*$ | $\approx T_{\theta,\text{device}} / BW_{\text{mem}}$ (flat in $B$) |
+| Crossover | $B = B^*$ | knee of the throughput–latency Pareto curve |
+| Compute-bound | $B \gg B^*$ | $\approx B \cdot F_{\text{token,device}} / R_{\text{GPU}}$ (linear in $B$) |
 
 ---
 
@@ -371,19 +369,16 @@ In **continuous batching** [VLLM], requests arrive and depart asynchronously. At
 
 ### Per-request average TPOT
 
-A request that requires $N_{\text{out}}$ decode steps experiences a different $B_{\text{eff},i}$ at each step $i$. Using $\text{TPOT}(B) = t_{\text{token}}(B)/B$ (§1.2, `tpot.md §6.4.2`), the average TPOT over the full response is:
+A request that requires $N_{\text{out}}$ decode steps experiences a different $B_{\text{eff},i}$ at each step $i$. Using $\text{TPOT}(B) = t_{\text{step,user}}(B)$ (§1.2, `tpot.md §6.3.2`), the average TPOT over the full response is the mean step time:
 
 $$
-\overline{\text{TPOT}} = \frac{1}{N_{\text{out}}} \sum_{i=1}^{N_{\text{out}}} \frac{t_{\text{token}}(B_{\text{eff},i})}{B_{\text{eff},i}}
+\overline{\text{TPOT}} = \frac{1}{N_{\text{out}}} \sum_{i=1}^{N_{\text{out}}} t_{\text{step,user}}(B_{\text{eff},i})
 $$
 
-The function $g(B) = t_{\text{token}}(B)/B$ is convex in $B$ (it is decreasing in Zone 1 and flat in Zone 3; its second derivative is non-negative throughout). By Jensen's inequality:
+$t_{\text{step,user}}(B)$ is flat in the memory-bound zone and grows linearly with $B$ in the compute-bound zone (see §3.1). Therefore:
 
-$$
-\overline{\text{TPOT}} \geq \frac{t_{\text{token}}\left(\overline{B_{\text{eff}}}\right)}{\overline{B_{\text{eff}}}}
-$$
-
-In practice the inequality is loose when $B_{\text{eff}}$ is approximately stationary during the lifetime of a request.
+- Under loads where $\overline{B_{\text{eff}}} \ll B^*$: $\overline{\text{TPOT}} \approx t_{\text{step,user}}(\overline{B_{\text{eff}}})$ (stable in load).
+- Under loads where $\overline{B_{\text{eff}}} \gtrsim B^*$: $\overline{\text{TPOT}}$ tracks the mean compute load and grows with $\overline{B_{\text{eff}}}$.
 
 ### Steady-state effective batch size (Little's Law)
 
@@ -393,50 +388,36 @@ $$
 \overline{B_{\text{eff}}} = \lambda \times \mathbb{E}[\text{sojourn time}]
 $$
 
-The sojourn time for a single request is the total wall-clock time it occupies a decode slot: $TTFT + \sum_{i=1}^{N_{\text{out}}} t_{\text{token}}(B_{\text{eff},i})$. Since each step takes $t_{\text{token}}(B_{\text{eff},i})$ wall-clock seconds (not $\text{TPOT} = t_{\text{token}}/B_{\text{eff}}$), the mean sojourn time is:
+The sojourn time for a single request is the total wall-clock time it occupies a decode slot: $TTFT + \sum_{i=1}^{N_{\text{out}}} t_{\text{step,user}}(B_{\text{eff},i})$. Since the user-observed step time is the TPOT, the mean sojourn time is:
 
 $$
-\overline{B_{\text{eff}}} \approx \lambda \times \left(TTFT + \mathbb{E}[N_{\text{out}}] \times \overline{t_{\text{step}}}\right)
-\qquad \text{where } \overline{t_{\text{step}}} = \mathbb{E}[t_{\text{token}}(B_{\text{eff}})]
+\overline{B_{\text{eff}}} \approx \lambda \times \left(TTFT + \mathbb{E}[N_{\text{out}}] \times \overline{\text{TPOT}}\right)
+\qquad \text{where } \overline{\text{TPOT}} = \mathbb{E}[t_{\text{step,user}}(B_{\text{eff}})]
 $$
 
-This is self-referential ($\overline{t_{\text{step}}}$ depends on $\overline{B_{\text{eff}}}$) and resolved numerically in practice:
+This is self-referential ($\overline{\text{TPOT}}$ depends on $\overline{B_{\text{eff}}}$) and resolved numerically in practice:
 
-- At **low load** ($\lambda$ small): $\overline{B_{\text{eff}}}$ is small → each step is memory-bound ($t_{\text{step}} \approx T_\theta/B_{\text{eff,mem}}$) → TPOT $\approx T_\theta / (B_{\text{eff}} \times B_{\text{eff,mem}})$ is high (inefficient — weight cost not amortized).
-- At **higher load** ($\lambda$ growing): $\overline{B_{\text{eff}}}$ grows → TPOT improves (weight cost amortized across more sequences); throughput also grows.
-- At **saturation** ($B_{\text{eff}} > B^*$): TPOT plateaus at $F_{\text{token,device}}/R_{\text{GPU}}$; throughput also plateaus.
+- At **low load** ($\lambda$ small): $\overline{B_{\text{eff}}}$ is small → each step is memory-bound → TPOT $\approx T_\theta/BW_{\text{mem}}$ (flat; weight-streaming cost regardless of $B$). Throughput is low because $B$ is small, but per-user latency is already at the memory-bound floor.
+- At **higher load** ($\lambda$ growing): $\overline{B_{\text{eff}}}$ grows → throughput grows nearly linearly while TPOT stays flat, until the batch crosses $B^*$.
+- At **saturation** ($B_{\text{eff}} > B^*$): throughput plateaus at $R_{\text{GPU}}/F_{\text{token,device}}$; TPOT grows linearly with $B_{\text{eff}}$ from that point on.
 
 ### The efficiency–load relationship
 
-The key insight is: with TPOT defined as the amortized per-output-token cost ($t_{\text{token}}/B$), **higher load improves both TPOT and throughput** up to the Zone 3 ceiling. There is no fundamental tension between Tput/GPU and Interactivity — they are constrained to lie on the same hyperbola $\text{Tput/GPU} \times \text{TPOT} = 1/N_{\text{GPUs,per-replica}}$ regardless of load. The practical tradeoff is between **operating close to or below $B^*$** (near-optimal for both metrics) versus **idling below Zone 1** (waste). This tradeoff is developed in full in §6.
+With TPOT defined as the user-observed step time ($t_{\text{step,user}}$), **higher load improves throughput at constant TPOT** through Zone 1, then trades TPOT for throughput beyond $B^*$. The throughput axis saturates at a hard compute ceiling; the TPOT axis has no ceiling and grows linearly past $B^*$. The throughput–TPOT hyperbola $\text{Tput/GPU} \times \text{TPOT} = B / N_{\text{GPUs,per-replica}}$ is parameterized by $B$: in Zone 1 the ratio slides along increasing $B$ (more throughput, same TPOT); in Zone 3 it tracks the compute bound. This tradeoff is developed in full in §6.
 
 ---
 
 <div style="page-break-before: always;"></div>
 
-# 4. End-to-End Latency
+# 4. When Prefill Dominates Decode
 
-## 4.1 General Formula
+For a response of $N_{\text{out}}$ output tokens, the total decode contribution to wall-clock latency is $(N_{\text{out}} - 1) \times \text{TPOT}$ — token 1 is already produced by the end of TTFT, and tokens $2, \ldots, N_{\text{out}}$ each cost one TPOT. The relative weight of prefill (captured in TTFT) versus decode (captured in the TPOT term) depends on $N_{\text{out}}$.
 
-Combining the TTFT and TPOT definitions from §§1.1–1.2, the full wall-clock latency from request receipt to the final output token is:
+**Short responses** ($N_{\text{out}}$ small): the decode contribution $(N_{\text{out}} - 1) \times \text{TPOT}$ is small relative to TTFT. Latency is **prefill-dominated**; reducing $S_{\text{input}}$ or using chunked prefill has the largest impact.
 
-$$
-\text{E2E}(N_{\text{out}}) = TTFT + (N_{\text{out}} - 1) \times \text{TPOT}
-$$
+**Long responses** ($N_{\text{out}}$ large): the prefill contribution is amortized over many decode steps; TTFT contributes negligibly. Latency is **decode-dominated**; increasing GPU count (DP replicas) or batch efficiency has the largest impact.
 
-**Derivation.** Token 1 arrives at time $TTFT$ (the first-token latency). Tokens $2, 3, \ldots, N_{\text{out}}$ are produced in $N_{\text{out}} - 1$ subsequent decode steps, each taking $\text{TPOT}$ seconds. The wall-clock time of the last token is therefore $TTFT + (N_{\text{out}} - 1) \times \text{TPOT}$.
-
----
-
-## 4.2 Regime Analysis
-
-The relative contribution of prefill (captured in TTFT) and decode (captured in the TPOT term) depends on $N_{\text{out}}$:
-
-**Short responses** ($N_{\text{out}}$ small): E2E $\approx TTFT$. The decode contribution $(N_{\text{out}} - 1) \times \text{TPOT}$ is small relative to TTFT. Latency is dominated by prefill; reducing $S_{\text{input}}$ or using chunked prefill has the largest impact.
-
-**Long responses** ($N_{\text{out}}$ large): E2E $\approx N_{\text{out}} \times \text{TPOT}$. The prefill contribution is amortized over many decode steps; TTFT contributes negligibly. Latency is dominated by decode; increasing GPU count (DP replicas) or batch efficiency has the largest impact.
-
-**Crossover point.** The decode term equals the TTFT term when:
+**Crossover point.** The two contributions are equal when:
 
 $$
 (N_{\text{out}} - 1) \times \text{TPOT} = TTFT
@@ -444,29 +425,15 @@ $$
 N_{\text{out}}^{\star} \approx \frac{TTFT}{\text{TPOT}} + 1
 $$
 
-For $N_{\text{out}} \ll N_{\text{out}}^{\star}$, the response is "prefill-dominated"; for $N_{\text{out}} \gg N_{\text{out}}^{\star}$, it is "decode-dominated."
+For $N_{\text{out}} \ll N_{\text{out}}^{\star}$, the response is prefill-dominated; for $N_{\text{out}} \gg N_{\text{out}}^{\star}$, decode-dominated.
 
----
+**Numerical example (H100, 70B-class dense, $S_{\text{input}} = 2048$, $B = 1$):**
 
-## 4.3 Numerical Example (H100)
+- $t_{\text{prefill}} \approx 100$ ms (compute-bound prefill at $S_{\text{input}} = 2048$; from `prefill.md §3`)
+- $\text{TPOT} \approx 20$ ms (memory-bound decode at $B = 1$; from $T_{\theta} / BW_{\text{mem}}$ with 70B weights at bf16 and 3.35 TB/s HBM)
+- $t_{\text{sched}} \approx 0.1$ ms; $t_{\text{step,user}} \approx 20$ ms (first decode step ≈ TPOT at $B = 1$)
 
-We use representative H100 SXM5 parameters [H100-SPEC] for a 70B-class dense model with $S_{\text{input}} = 2048$ and batch size $B = 1$:
-
-- $t_{\text{prefill}} \approx 100$ ms (compute-bound prefill at $S_{\text{input}} = 2048$; typical from `prefill.md §3`)
-- $\text{TPOT} \approx 20$ ms (memory-bound decode at $B = 1$; from $T_{\theta} / B_{\text{eff,mem}}$ with 70B weights at bf16 and 3.35 TB/s HBM)
-- $t_{\text{sched}} \approx 0.1$ ms (negligible in single-request scenario)
-- $t_{\text{token}} \approx 20$ ms (first decode step ≈ TPOT at $B = 1$)
-
-So $TTFT \approx 100 + 20 = 120$ ms, giving $N_{\text{out}}^{\star} = 120/20 + 1 = 7$ tokens.
-
-| $N_{\text{out}}$ | Decode contribution | TTFT contribution | E2E latency | Prefill fraction |
-|-----------------|---------------------|-------------------|-------------|-----------------|
-| 7 | $(7-1) \times 20 = 120$ ms | 120 ms | ~240 ms | ~50% |
-| 50 | $49 \times 20 = 980$ ms | 120 ms | ~1.1 s | ~11% |
-| 250 | $249 \times 20 = 4.98$ s | 120 ms | ~5.1 s | ~2.4% |
-| 1000 | $999 \times 20 = 19.98$ s | 120 ms | ~20.1 s | ~0.6% |
-
-For responses in the range typical of conversational use ($N_{\text{out}} = 50$–$250$), TTFT contributes 2–11% of total E2E latency. At $N_{\text{out}} = 1000$ (long-form generation), TTFT is negligible. These numbers underscore that **TTFT optimization matters most for short, latency-sensitive responses**, while **TPOT optimization dominates for long-form generation**.
+$TTFT \approx 100 + 20 = 120$ ms gives $N_{\text{out}}^{\star} = 120/20 + 1 = 7$ tokens. For conversational responses ($N_{\text{out}} = 50$–$250$), TTFT contributes 2–11% of the total streaming time and decode dominates; at $N_{\text{out}} = 1000$, TTFT is well under 1%. The takeaway: **TTFT optimization matters most for very short, latency-sensitive responses** (under ~$N_{\text{out}}^{\star}$ tokens), while **TPOT optimization dominates everywhere else**.
 
 ---
 
@@ -511,29 +478,29 @@ Pipeline ($PP$), Tensor ($TP$), Expert ($EP$), and Sequence ($SP$) parallelism a
 
 ---
 
-## 5.2 Interactivity and the InferenceX Y-Axis
+## 5.2 Interactivity (per-request streaming rate)
 
-From §1.5, Interactivity = $1/\text{TPOT}$. Expanding with the static batching result from §3.1 ($\text{TPOT}(B) = t_{\text{token}}(B)/B$):
+From §1.4, Interactivity = $1/\text{TPOT}$. Expanding with the static batching result from §3.1 ($\text{TPOT}(B) = t_{\text{step,user}}(B)/B$):
 
 $$
-\text{Interactivity} = \frac{1}{\text{TPOT}_{\text{static}}(B)} = \frac{B}{t_{\text{token}}(B)}
+\text{Interactivity} = \frac{1}{\text{TPOT}_{\text{static}}(B)} = \frac{B}{t_{\text{step,user}}(B)}
 $$
 
-**At the memory-bound operating point** ($B \ll B^*$, $t_{\text{token}} \approx T_{\theta}/B_{\text{eff,mem}}$):
+**At the memory-bound operating point** ($B \ll B^*$, $t_{\text{step,user}} \approx T_{\theta}/BW_{\text{mem}}$):
 $$
-\text{Interactivity} \approx \frac{B \times B_{\text{eff,mem}}}{T_{\theta,\text{device}}} \quad\propto\quad B
+\text{Interactivity} \approx \frac{B \times BW_{\text{mem}}}{T_{\theta,\text{device}}} \quad\propto\quad B
 $$
 
 Interactivity **grows** with $B$ in the memory-bound regime: amortizing the fixed weight-load cost over more sequences benefits each sequence's streaming rate. Both Tput/GPU and Interactivity improve together in this zone.
 
-**At the compute-bound operating point** ($B \gg B^*$, $t_{\text{token}} \approx B \times F/R_{\text{GPU}}$):
+**At the compute-bound operating point** ($B \gg B^*$, $t_{\text{step,user}} \approx B \times F/R_{\text{GPU}}$):
 $$
 \text{Interactivity} \approx \frac{R_{\text{GPU}}}{F_{\text{token,device}}} \qquad (\text{constant in } B)
 $$
 
 Interactivity **plateaus** in the compute-bound regime: the step time grows proportionally with $B$, and dividing the $B$ tokens across that longer step leaves the per-sequence rate unchanged. This is the **maximum interactivity** achievable on the given hardware for this model, set entirely by the compute rate and per-token FLOPs.
 
-**Human reading threshold.** For streaming LLM output to feel "live" to a human reader, interactivity above approximately 5–15 tokens/s (TPOT below 67–200 ms) is required. This maps to a specific constraint on $t_{\text{token}}$ — a maximum allowable step time — which, through the roofline model, constrains the maximum batch size $B$ that can be served while meeting the SLA.
+**Human reading threshold.** For streaming LLM output to feel "live" to a human reader, interactivity above approximately 5–15 tokens/s (TPOT below 67–200 ms) is required. This maps to a specific constraint on $t_{\text{step,user}}$ — a maximum allowable step time — which, through the roofline model, constrains the maximum batch size $B$ that can be served while meeting the SLA.
 
 ---
 
@@ -541,9 +508,9 @@ Interactivity **plateaus** in the compute-bound regime: the step time grows prop
 
 # 6. Throughput–Latency Pareto Frontier
 
-The Pareto frontier is the set of (Tput/GPU, Interactivity) pairs that are achievable without waste: no point on the frontier can improve both metrics simultaneously. This section assembles the frontier from the roofline model, identifies the three operating zones, derives the roofline efficiency ceiling, and maps the result to the InferenceX benchmark axes [INFERENCEX].
+The Pareto frontier is the set of (Tput/GPU, Interactivity) pairs that are achievable without waste: no point on the frontier can improve both metrics simultaneously. This section assembles the frontier from the roofline model, identifies the three operating zones, derives the roofline efficiency ceiling, and maps the result onto the standard throughput–interactivity axes used by production LLM inference benchmarks.
 
-> **Terminology note:** In this model, Tput/GPU and Interactivity both improve monotonically as $B$ increases through the memory-bound regime, because their product is the constant $1/N_{\text{GPUs,per-replica}}$ (§6.3). The curve therefore traces one arm of a hyperbola rather than exhibiting a classical multi-objective Pareto tradeoff. We use "Pareto frontier" in the ML systems sense — the set of efficient operating points — following [INFERENCEX] convention.
+> **Terminology note:** In this model, Tput/GPU and Interactivity both improve monotonically as $B$ increases through the memory-bound regime, because their product is the constant $1/N_{\text{GPUs,per-replica}}$ (§6.3). The curve therefore traces one arm of a hyperbola rather than exhibiting a classical multi-objective Pareto tradeoff. We use "Pareto frontier" in the ML systems sense — the set of efficient operating points.
 
 ---
 
@@ -553,24 +520,24 @@ Three principal levers shift the operating point along the Pareto frontier, or m
 
 1. **Batch size $B$ (or $B_{\text{eff}}$ under continuous batching).** Moving along the frontier. Increasing $B$ increases Tput/GPU (more tokens processed per step) but also increases TPOT (each step takes longer), reducing Interactivity. Decreasing $B$ improves Interactivity at the cost of lower Tput/GPU.
 
-2. **Parallelism configuration (TP, PP, EP, SP; fixed DP).** Shifting the frontier. TP/PP/EP/SP change $t_{\text{token}}(B)$ by altering per-device FLOPs, traffic, and communication overhead. They also change $B^*$ (the crossover batch size from `tpot.md §6.4.1`). Better parallelism configurations can push the frontier outward (higher Tput/GPU for the same Interactivity).
+2. **Parallelism configuration (TP, PP, EP, SP; fixed DP).** Shifting the frontier. TP/PP/EP/SP change $t_{\text{step,user}}(B)$ by altering per-device FLOPs, traffic, and communication overhead. They also change $B^*$ (the crossover batch size from `tpot.md §6.4.1`). Better parallelism configurations can push the frontier outward (higher Tput/GPU for the same Interactivity).
 
-3. **Context length $S$.** Shifting the frontier inward. Longer decode contexts $S$ increase KV cache traffic $T_{\text{KV,device}}$, which lowers $B^*$ (the system becomes compute-bound at smaller batches) and increases $t_{\text{token}}$ for all $B$, shrinking both Tput/GPU and Interactivity simultaneously.
+3. **Context length $S$.** Shifting the frontier inward. Longer decode contexts $S$ increase KV cache traffic $T_{\text{KV,device}}$, which lowers $B^*$ (the system becomes compute-bound at smaller batches) and increases $t_{\text{step,user}}$ for all $B$, shrinking both Tput/GPU and Interactivity simultaneously.
 
 ---
 
 ## 6.2 Three Zones of the Pareto Frontier
 
-The Pareto curve sweeps $B$ from $1$ to $\infty$. Its shape is inherited directly from `tpot.md §6.4.3`; we express it here in the (Tput/GPU, Interactivity) coordinate system of InferenceX [INFERENCEX].
+The Pareto curve sweeps $B$ from $1$ to $\infty$. Its shape is inherited directly from `tpot.md §6.4.3`; we express it here in the (Tput/GPU, Interactivity) coordinate system used by throughput–latency benchmark plots.
 
 Define Tput/GPU and Interactivity as explicit functions of $B$:
 
 $$
-\text{Tput/GPU}(B) = \frac{B}{t_{\text{token}}(B) \times N_{\text{GPUs,per-replica}}}
+\text{Tput/GPU}(B) = \frac{B}{t_{\text{step,user}}(B) \times N_{\text{GPUs,per-replica}}}
 $$
 
 $$
-\text{Interactivity}(B) = \frac{1}{t_{\text{token}}(B)}
+\text{Interactivity}(B) = \frac{1}{t_{\text{step,user}}(B)}
 $$
 
 where $N_{\text{GPUs,per-replica}} = PP \cdot TP \cdot EP \cdot SP$ is the number of GPUs per DP replica.
@@ -580,18 +547,18 @@ where $N_{\text{GPUs,per-replica}} = PP \cdot TP \cdot EP \cdot SP$ is the numbe
 Weight traffic dominates. From `tpot.md §6.4.3`:
 
 $$
-t_{\text{token}}(B) \approx \frac{T_{\theta,\text{device}}}{B_{\text{eff,mem}}}
+t_{\text{step,user}}(B) \approx \frac{T_{\theta,\text{device}}}{BW_{\text{mem}}}
 \qquad (B \ll B^*)
 $$
 
 The step time is approximately **constant** in $B$. Therefore:
 
 $$
-\text{Tput/GPU}(B) \approx \frac{B \cdot B_{\text{eff,mem}}}{T_{\theta,\text{device}} \cdot N_{\text{GPUs,per-replica}}} \quad\propto\quad B
+\text{Tput/GPU}(B) \approx \frac{B \cdot BW_{\text{mem}}}{T_{\theta,\text{device}} \cdot N_{\text{GPUs,per-replica}}} \quad\propto\quad B
 $$
 
 $$
-\text{Interactivity}(B) = \frac{B}{t_{\text{token}}(B)} \approx \frac{B \times B_{\text{eff,mem}}}{T_{\theta,\text{device}}} \quad\propto\quad B
+\text{Interactivity}(B) = \frac{B}{t_{\text{step,user}}(B)} \approx \frac{B \times BW_{\text{mem}}}{T_{\theta,\text{device}}} \quad\propto\quad B
 $$
 
 **Zone 1 behavior:** Both Tput/GPU and Interactivity grow linearly with $B$. This is the ideal operating regime — increasing batch size improves *both* system efficiency *and* per-user streaming speed simultaneously. The system is underutilizing compute; adding more sequences amortizes the fixed weight-load cost over more outputs, benefiting every axis.
@@ -605,7 +572,7 @@ The system operates near the ridge point. Both throughput and TPOT transition. T
 KV cache traffic (or equivalently, compute) dominates. From `tpot.md §6.4.3`:
 
 $$
-t_{\text{token}}(B) \approx \frac{B \times F_{\text{token,device}}}{R_{\text{GPU}}}
+t_{\text{step,user}}(B) \approx \frac{B \times F_{\text{token,device}}}{R_{\text{GPU}}}
 \qquad (B \gg B^*)
 $$
 
@@ -616,7 +583,7 @@ $$
 $$
 
 $$
-\text{Interactivity}(B) = \frac{B}{t_{\text{token}}(B)} \approx \frac{R_{\text{GPU}}}{F_{\text{token,device}}} \quad (\text{constant in } B)
+\text{Interactivity}(B) = \frac{B}{t_{\text{step,user}}(B)} \approx \frac{R_{\text{GPU}}}{F_{\text{token,device}}} \quad (\text{constant in } B)
 $$
 
 **Zone 3 behavior:** Throughput plateaus at the compute ceiling; Interactivity also plateaus. Both metrics saturate — adding more sequences changes neither per-user streaming speed nor per-GPU token production rate. The system is compute-saturated; the Pareto frontier "flattens out" and further increases in $B$ yield no benefit on either axis.
@@ -633,15 +600,15 @@ $$
 
 ## 6.3 Roofline Ceiling on Pareto Efficiency
 
-A fundamental property of the Pareto frontier emerges when we compute the product $\text{Tput/GPU} \times \text{TPOT} = \text{Tput/GPU} / \text{Interactivity}$ at a given operating point. Using $\text{Tput/GPU}(B) = B / (t_{\text{token}}(B) \cdot N_{\text{GPUs,per-replica}})$ and $\text{TPOT}(B) = t_{\text{token}}(B) / B$:
+A fundamental property of the Pareto frontier emerges when we compute the product $\text{Tput/GPU} \times \text{TPOT} = \text{Tput/GPU} / \text{Interactivity}$ at a given operating point. Using $\text{Tput/GPU}(B) = B / (t_{\text{step,user}}(B) \cdot N_{\text{GPUs,per-replica}})$ and $\text{TPOT}(B) = t_{\text{step,user}}(B) / B$:
 
 $$
 \text{Tput/GPU}(B) \times \text{TPOT}(B)
-= \frac{B}{t_{\text{token}}(B) \cdot N_{\text{GPUs,per-replica}}} \times \frac{t_{\text{token}}(B)}{B}
+= \frac{B}{t_{\text{step,user}}(B) \cdot N_{\text{GPUs,per-replica}}} \times \frac{t_{\text{step,user}}(B)}{B}
 = \frac{1}{N_{\text{GPUs,per-replica}}}
 $$
 
-This identity holds for **any $B$** and any regime — the $B$ and $t_{\text{token}}$ terms cancel exactly:
+This identity holds for **any $B$** and any regime — the $B$ and $t_{\text{step,user}}$ terms cancel exactly:
 
 $$
 \text{Tput/GPU} \times \text{TPOT} = \frac{1}{N_{\text{GPUs,per-replica}}}
@@ -655,9 +622,9 @@ Equivalently, for a fixed hardware configuration: higher Tput/GPU always implies
 
 ---
 
-## 6.4 InferenceX Axis Mapping
+## 6.4 Throughput–Interactivity Axis Mapping
 
-The InferenceX benchmark [INFERENCEX] organizes LLM inference performance on a two-axis scatter plot:
+Production LLM inference benchmarks typically organize performance on a two-axis scatter plot:
 
 - **X-axis: Throughput/GPU** — output tokens per second per GPU
 - **Y-axis: Interactivity** — output tokens per second per request ($= 1/\text{TPOT}$)
@@ -676,7 +643,7 @@ The Pareto frontier traced by sweeping $B$ from 1 to $\infty$ has the characteri
 
 **The ideal operating point** is at or near $B^*$: the system is at the knee of the curve, maximizing both axes simultaneously.
 
-Different hardware configurations (H100 vs. A100), model sizes (7B vs. 70B vs. 405B), and parallelism choices shift the frontier outward or inward. A 3D-stacked accelerator with higher HBM bandwidth [ACCELSTACK] increases $B_{\text{eff,mem}}$, which raises the Zone 1 slope and pushes $B^*$ higher — expanding the diagonal Zone 1 segment and increasing the Zone 3 plateau level.
+Different hardware configurations (H100 vs. A100), model sizes (7B vs. 70B vs. 405B), and parallelism choices shift the frontier outward or inward. A 3D-stacked accelerator with higher HBM bandwidth [ACCELSTACK] increases $BW_{\text{mem}}$, which raises the Zone 1 slope and pushes $B^*$ higher — expanding the diagonal Zone 1 segment and increasing the Zone 3 plateau level.
 
 The roofline ceiling from §6.3 — $\text{Tput/GPU} \times \text{TPOT} = 1 / N_{\text{GPUs,per-replica}}$ — constrains every operating point: all systems lie on the hyperbola $\text{Tput/GPU} = 1 / (N_{\text{GPUs,per-replica}} \cdot \text{TPOT})$ defined by their parallelism configuration, regardless of batch size or serving policy. Systems with smaller $N_{\text{GPUs,per-replica}}$ (more aggressive model sharding) operate on a higher hyperbola — a better hardware-efficiency frontier.
 
@@ -690,8 +657,8 @@ The following symbols are introduced in this document and are **not** defined in
 
 | Symbol | Definition | First used |
 |--------|-----------|-----------|
-| $N_{\text{out}}$ | Number of output tokens in a single response (decode length) | §1.3 |
-| $N_{\text{out}}^{\star}$ | Crossover output length at which TTFT = decode contribution to E2E | §4.2 |
+| $N_{\text{out}}$ | Number of output tokens in a single response (decode length) | §1.2 |
+| $N_{\text{out}}^{\star}$ | Crossover output length at which TTFT = decode contribution ($(N-1)\cdot\text{TPOT}$) | §4 |
 | $C$ | Chunked-prefill chunk size (tokens per chunk) | §2.3 |
 | $N_{\text{chunks}}$ | Number of prefill chunks: $\lceil S_{\text{input}} / C \rceil$ | §2.3 |
 | $t_{\text{chunk}}$ | Per-chunk prefill latency (roofline at $C$ tokens) | §2.3 |
@@ -699,9 +666,12 @@ The following symbols are introduced in this document and are **not** defined in
 | $N_{\text{GPUs,per-replica}}$ | GPUs per DP replica: $PP \cdot TP \cdot EP \cdot SP$ | §5.1 |
 | $\overline{B_{\text{eff}}}$ | Mean effective batch size in steady-state continuous batching | §3.2 |
 | $\overline{\text{TPOT}}$ | Average TPOT over a request's decode lifetime under continuous batching | §3.2 |
-| $\text{Tput/GPU}$ | System throughput per GPU: $TTPS / N_{\text{GPUs}}$ (tokens/s/GPU) | §1.4 |
-| $\text{Interactivity}$ | Per-user output rate: $1/\text{TPOT}$ (tokens/s/request) | §1.5 |
-| $\text{Goodput}$ | Fraction of GPU time spent on useful token generation | §1.6 |
+| $\text{Tput/GPU}$ | System throughput per GPU: $TTPS / N_{\text{GPUs}}$ (tokens/s/GPU) | §1.3 |
+| $\text{Interactivity}$ | Per-user output rate: $1/\text{TPOT}$ (tokens/s/request) | §1.4 |
+| $\text{Goodput}$ | Maximum $\lambda$ such that both TTFT and TPOT SLOs hold at percentile $p$ | §1.5 |
+| $TTFT_{\text{SLO}}$ | Operator-set upper bound on TTFT (seconds) used in the goodput definition | §1.5 |
+| $\text{TPOT}_{\text{SLO}}$ | Operator-set upper bound on TPOT (seconds) used in the goodput definition | §1.5 |
+| $p$ | SLO compliance percentile (typically 90 or 99) | §1.5 |
 
 The following existing symbols from `notation.md` are used extensively; they are listed here for reading convenience:
 
@@ -711,7 +681,7 @@ The following existing symbols from `notation.md` are used extensively; they are
 | $t_{\text{prefill}}$ | `notation.md §11` | Full prefill latency (roofline + comm + pipeline warmup) |
 | $t_{\text{prefill,local}}$ | `notation.md §11` | Per-stage prefill local roofline time |
 | $t_{\text{prefill,comm}}$ | `notation.md §11` | Prefill communication time |
-| $t_{\text{token}}$ | `notation.md §9` | Overlap-aware per-step decode time |
+| $t_{\text{step,user}}$ | `notation.md §9` | Overlap-aware per-step decode time |
 | $TPS_{\text{single}}$ | `notation.md §9` | Single-replica decode throughput (tokens/s) |
 | $TTPS$ | `notation.md §9` | Global decode throughput (tokens/s) |
 | $t_{\text{sched}}$ | `notation.md §13` | Request scheduling / batch assembly latency |
@@ -724,7 +694,6 @@ The following existing symbols from `notation.md` are used extensively; they are
 
 ## References
 
-- [INFERENCEX] SemiAnalysis (2024–2025). *InferenceX: LLM Inference Benchmark.* <https://inferencex.semianalysis.com/inference> — Throughput/GPU vs. Interactivity axes; TPOT and E2E latency definitions.
 - [VLLM] Kwon et al. (2023). *Efficient Memory Management for Large Language Model Serving with PagedAttention.* SOSP 2023. arXiv:2309.06180 — Continuous batching; PagedAttention.
 - [SARATHI] Agrawal et al. (2023). *SARATHI: Efficient LLM Inference by Piggybacking Decodes with Chunked Prefills.* arXiv:2308.16369 — Chunked prefill scheduling; head-of-line blocking reduction.
 - [DISAGG-PREFILL] Zhong et al. (2024). *DistServe: Disaggregating Prefill and Decoding for Goodput-Optimized Large Language Model Serving.* OSDI 2024. arXiv:2401.09670 — Disaggregated prefill; KV transfer latency; goodput framework.
