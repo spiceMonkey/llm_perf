@@ -134,7 +134,7 @@ _(→ tpot.md; → dram3d.md for 3D DRAM extensions)_
 _(→ tpot.md)_
 
 - $\alpha_{TP}, \alpha_{EP}, \alpha_{SP}, \alpha_{PP}$ — Per-collective startup latency (α–β model).
-- $BW_{\text{TP}}, BW_{\text{EP}}, BW_{\text{SP}}, BW_{\text{PP}}$ — Effective interconnect bandwidths.
+- $BW_{\text{TP}}, BW_{\text{EP}}, BW_{\text{SP}}, BW_{\text{PP}}$ — Effective interconnect bandwidths (single-direction, GB/s). All bandwidth quantities in this suite are single-direction unless explicitly labeled bidirectional.
 - $n_{TP}$ — Number of TP collective iterations per layer per token.
 - $n_{EP}$ — Number of EP collective iterations per layer per token.
 - $n_{SP}$ — Number of SP collective iterations per layer per token.
