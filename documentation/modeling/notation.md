@@ -131,15 +131,20 @@ _(→ tpot.md; → dram3d.md for 3D DRAM extensions)_
 ---
 
 ## 7. Networking
-_(→ tpot.md; → switching.md §1 for fabric scope)_
+_(→ tpot.md; → switching.md §1 for single-tier model; → switching.md §7 for the fabric-chain / multi-tier extension)_
 
-- $\alpha_{TP}, \alpha_{EP}, \alpha_{SP}, \alpha_{PP}$ — **Effective end-to-end** per-collective startup latency (α–β model), measured across the scale-up fabric that carries that domain's traffic. Assumes a **single switching tier** — see *Scope note* below.
-- $BW_{\text{TP}}, BW_{\text{EP}}, BW_{\text{SP}}, BW_{\text{PP}}$ — **Effective end-to-end** interconnect bandwidths (single-direction, GB/s) across that same single-tier fabric. All bandwidth quantities in this suite are single-direction unless explicitly labeled bidirectional.
+The system model names physical networks as **fabrics** (`FabricSpec`); each fabric is an ordered list of switching tiers, innermost first. A collective (TP / EP / SP / PP) declares an ordered **fabric chain** via `SystemSpec.collective_fabrics[collective]`. Walking that chain innermost-first yields a single flattened tier list; a collective of group size $G$ spans tiers $0..k$ where $k$ is the smallest index with $\prod_{i=0}^{k} P_i \ge G$.
+
+- $P_{role,i}$ — Radix at tier $i$ along the $role$ collective's fabric chain (ranks reachable within that tier from any single rank).
+- $\alpha_{role,i}$ — Per-traversal startup latency of tier $i$ along the $role$ collective's fabric chain (μs).
+- $BW_{role,i}$ — Effective per-port single-direction bandwidth of tier $i$ along the $role$ collective's fabric chain (GB/s, post-$\eta$).
+- $\alpha_{role}(G)$ — **Span latency** for a collective of group size $G$: $\alpha_{role}(G) = \sum_{i \le k} \alpha_{role,i}$ with $k$ as above.
+- $BW_{role}(G)$ — **Span bandwidth** for a collective of group size $G$: $BW_{role}(G) = \min_{i \le k} BW_{role,i}$ (narrowest crossed tier dominates, across fabric boundaries as well as within a fabric).
 - $n_{TP}$ — Number of TP collective iterations per layer per token.
 - $n_{EP}$ — Number of EP collective iterations per layer per token.
 - $n_{SP}$ — Number of SP collective iterations per layer per token.
 
-**Scope note — single-tier fabric.** Every $\alpha_{role}$ / $BW_{role}$ above represents the total cost of a collective that traverses exactly one switching tier (one NVSwitch fabric, one UALink leaf, one monolithic crossbar). When hierarchical multi-tier support lands, these symbols will generalize to per-tier values $\alpha_{role,i}$ / $BW_{role,i}$ for tier $i$, and a collective whose rank-set spans $k$ tiers pays $\sum_{i \le k} \alpha_{role,i}$ with the bandwidth floor of the narrowest tier it crosses. See `switching.md` §1 for the current scope boundary.
+**Single-tier shorthand.** A chain with one fabric and one tier collapses to the flat pair $\alpha_{role} \equiv \alpha_{role,0}$, $BW_{role} \equiv BW_{role,0}$, independent of $G$. The decode/prefill equations in tpot.md and prefill.md are written against this flat pair; multi-tier analyses substitute $\alpha_{role}(G)$ and $BW_{role}(G)$ with $G$ set by the role-specific group size (e.g. $G = \text{TP}$ for TP collectives, $G = \text{EP}$ for EP, $G = 2$ for point-to-point PP hops). See `switching.md` §7 for the full derivation and worked example.
 
 ---
 

@@ -46,6 +46,10 @@ that replaces the constant $BW_{role}$ without changing the α–β collective s
   - [5.2 Effective Bandwidth and Latency](#52-effective-bandwidth-and-latency)
   - [5.3 Worked Examples](#53-worked-examples)
 - [6. Open Questions](#6-open-questions)
+- [7. Multi-Tier Extension](#7-multi-tier-extension)
+  - [7.1 Fabrics and Tier Descriptors](#71-fabrics-and-tier-descriptors)
+  - [7.2 Spanning a Collective Across Tiers](#72-spanning-a-collective-across-tiers)
+  - [7.3 Example: NVL576 as Ideal vs. Hierarchical](#73-example-nvl576-as-ideal-vs-hierarchical)
 - [Appendix A. Collective Bandwidth Multiplier](#appendix-a-collective-bandwidth-multiplier)
 - [References](#references)
 
@@ -275,6 +279,80 @@ Now both factors bite: per-port rate dropped to 506 GB/s from the silicon budget
 4. **SHARP-beyond-AR.** NVLS SHARP currently covers all-reduce; all-to-all SHARP is announced for Rubin-gen. When it ships, update §4.5 to include SHARP-accelerated all-to-all with a similar $\eta = 1.0$, $2\times$ capacity treatment.
 5. **NVLink vs. UALink/ESUN η divergence.** NVLink uses proprietary credit-based flow control and tight software integration (NCCL), while UALink/ESUN fabrics use Ethernet-derived framing (ESUN 4-byte header) with CBFC/LLR. Protocol overhead ($\eta_{\text{proto}}$) may differ: NVLink ~0.97 vs. UALink/ESUN ~0.93–0.95 (speculative — no measured data yet). Tomahawk Ultra's in-network collectives (INC) could also change the SHARP-equivalent treatment for Ethernet-based scale-up.
 6. **Photonic interconnects.** Lightmatter's Passage M1000 claims 114 Tbps total optical bandwidth (57 Tbps single-direction) in a photonic interposer — an order of magnitude above electrical switch chips. If validated, this changes the $B_{\text{agg}}$ ceiling fundamentally and could push $P^*$ into the thousands. Not modeled here; watch for measured $\eta$ data.
+
+---
+
+## 7. Multi-tier extension
+
+Sections 1–6 assume a single switching tier. Real systems beyond one rack add a second (or higher) tier stitching racks together — e.g. a hypothetical NVL576 built from 8× NVL72 racks plus an inter-rack scale-out layer. This section extends the model to capture tier-aware α and bandwidth. A one-tier, one-fabric collective is a trivial case of the general chain and produces identical numbers to §3.
+
+### 7.1 Fabrics and tier descriptors
+
+The system model names physical networks as **fabrics**. Each `FabricSpec` is an ordered list of switching tiers, innermost first. A tier $i \in \{0, 1, \ldots\}$ inside a fabric is a triple:
+
+| Symbol | Description | Units |
+|---|---|---|
+| $P_i$ | Radix at tier $i$ — ranks reachable within this tier from any single rank | — |
+| $BW_i$ | Effective per-port bandwidth at tier $i$ (single-direction, post-$\eta$) | GB/s |
+| $\alpha_i$ | Per-traversal latency of tier $i$'s switching silicon | μs |
+
+Tier 0 is the innermost (e.g. intra-rack NVSwitch). The cumulative reach at tier $k$ is $\prod_{i=0}^{k} P_i$ ranks. A fabric with $n$ tiers can host a collective reaching up to $\prod_{i=0}^{n-1} P_i$ ranks on its own.
+
+Each collective (TP, EP, SP, PP) declares an ordered **fabric chain** via `SystemSpec.collective_fabrics[collective] = [fabric_name_0, fabric_name_1, ...]`. A collective first escalates through the tiers of its innermost fabric; when the collective's group size exceeds that fabric's reach, the walk continues into the next fabric in the chain. This lets scale-up (e.g. NVLink) and scale-out (e.g. InfiniBand / Ethernet) be modeled as distinct physical networks with their own $(P_i, BW_i, \alpha_i)$ triples, rather than as tiers of one synthetic fabric.
+
+The single-tier, single-fabric case — one entry in `collective_fabrics`, one tier inside that fabric — reduces to §3's flat $(\alpha, BW)$ pair with $P_0 = N_{\text{devices}}$.
+
+### 7.2 Spanning a collective across tiers
+
+Flatten the collective's fabric chain into a single tier list by concatenating tiers innermost-first across every fabric in the chain (the same ordering `SystemSpec.get_tier_chain` returns). Then, for a collective of group size $G$ (e.g. TP=16 → $G$=16; EP=$N_{\text{exp}}$ → $G$=$N_{\text{exp}}$), identify the smallest tier index $k$ in that flattened list such that
+
+$$
+\prod_{i=0}^{k} P_i \;\ge\; G .
+$$
+
+The collective crosses tiers $0..k$. Its effective α and BW become
+
+$$
+\alpha_{\text{span}}(G) \;=\; \sum_{i=0}^{k} \alpha_i, \qquad
+BW_{\text{span}}(G) \;=\; \min_{i \le k} BW_i .
+$$
+
+The intuition:
+
+- **α sums** because every tier crossed contributes its switching latency to the per-message startup cost; the critical path touches each tier in series.
+- **BW is floored at the narrowest crossed tier** because the inter-tier link is the bottleneck — faster innermost tiers can't speed up traffic that has to funnel through a slower outer tier. When the span crosses from one fabric into the next (e.g. NVLink → IB), the same rule applies at the fabric boundary.
+
+Collectives that fit entirely within the innermost fabric's tier 0 (e.g. TP=8 on an 8-GPU ring inside an NVL72) see only $(\alpha_0, BW_0)$ — identical to today's single-tier model. Collectives that spill into an outer tier — whether in the same fabric or in the next fabric of the chain — pay every tier's α and are bandwidth-limited by the narrowest tier along the walk.
+
+### 7.3 Example: NVL576 as ideal vs. hierarchical
+
+Two ways to imagine a 576-GPU scale-up domain:
+
+**Ideal (single fabric, single tier):** one monolithic NVLink fabric where every pair of ranks is intra-rack-class. See `database/system/gb200.nvl576.ideal.json`.
+
+Fabrics: `{"nvlink5-flat": [tier_0]}`. Every collective chains `["nvlink5-flat"]`.
+
+| Fabric | Tier | $P_0$ | $BW_0$ | $\alpha_0$ |
+|---|---|---|---|---|
+| nvlink5-flat | 0 (only) | 576 | 900 GB/s | 0.5 μs |
+
+Every collective — TP=8, TP=72, TP=576 — pays $(0.5\ \mu s, 900\ \text{GB/s})$. Physically unrealizable at this radix with current silicon (see §2.2), but it bounds "how fast could the model run if topology were free."
+
+**Hierarchical (two fabrics: scale-up + scale-out):** 8× NVL72 racks stitched by an inter-rack scale-out fabric. Scale-up and scale-out are distinct physical technologies — NVLink inside the rack, InfiniBand (or Ethernet) between racks — so they appear as two named fabrics rather than two tiers of one fabric. See `database/system/gb200.nvl576.hierarchical.json`.
+
+Fabrics: `{"nvlink5": [tier_0], "ib": [tier_0]}`. Each collective chains `["nvlink5", "ib"]`, escalating into `ib` once the group exceeds what `nvlink5`'s single tier can reach.
+
+| Fabric | Tier | $P_i$ | $BW_i$ | $\alpha_i$ |
+|---|---|---|---|---|
+| nvlink5 (intra-rack NVSwitch) | 0 | 72 | 900 GB/s | 0.5 μs |
+| ib (inter-rack scale-out) | 0 | 8 | 400 GB/s | 2.5 μs |
+
+Collective size $G$ | Chain walked | $\alpha_{\text{span}}$ | $BW_{\text{span}}$
+---|---|---|---
+$G \le 72$ | nvlink5 only | 0.5 μs | 900 GB/s
+$72 < G \le 576$ | nvlink5 then ib | 3.0 μs | 400 GB/s
+
+The cliff at $G = 73$ — where the collective first needs to reach outside one rack (equivalently, where the walk crosses from `nvlink5` into `ib`) — is the single most consequential number in any hierarchical scale-up analysis. TP/EP partitions that stay ≤ 72 cost the same as NVL72; anything larger pays the scale-out bandwidth floor on every collective step.
 
 ---
 
