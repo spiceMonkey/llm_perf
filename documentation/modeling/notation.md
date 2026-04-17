@@ -131,13 +131,15 @@ _(→ tpot.md; → dram3d.md for 3D DRAM extensions)_
 ---
 
 ## 7. Networking
-_(→ tpot.md)_
+_(→ tpot.md; → switching.md §1 for fabric scope)_
 
-- $\alpha_{TP}, \alpha_{EP}, \alpha_{SP}, \alpha_{PP}$ — Per-collective startup latency (α–β model).
-- $BW_{\text{TP}}, BW_{\text{EP}}, BW_{\text{SP}}, BW_{\text{PP}}$ — Effective interconnect bandwidths (single-direction, GB/s). All bandwidth quantities in this suite are single-direction unless explicitly labeled bidirectional.
+- $\alpha_{TP}, \alpha_{EP}, \alpha_{SP}, \alpha_{PP}$ — **Effective end-to-end** per-collective startup latency (α–β model), measured across the scale-up fabric that carries that domain's traffic. Assumes a **single switching tier** — see *Scope note* below.
+- $BW_{\text{TP}}, BW_{\text{EP}}, BW_{\text{SP}}, BW_{\text{PP}}$ — **Effective end-to-end** interconnect bandwidths (single-direction, GB/s) across that same single-tier fabric. All bandwidth quantities in this suite are single-direction unless explicitly labeled bidirectional.
 - $n_{TP}$ — Number of TP collective iterations per layer per token.
 - $n_{EP}$ — Number of EP collective iterations per layer per token.
 - $n_{SP}$ — Number of SP collective iterations per layer per token.
+
+**Scope note — single-tier fabric.** Every $\alpha_{role}$ / $BW_{role}$ above represents the total cost of a collective that traverses exactly one switching tier (one NVSwitch fabric, one UALink leaf, one monolithic crossbar). When hierarchical multi-tier support lands, these symbols will generalize to per-tier values $\alpha_{role,i}$ / $BW_{role,i}$ for tier $i$, and a collective whose rank-set spans $k$ tiers pays $\sum_{i \le k} \alpha_{role,i}$ with the bandwidth floor of the narrowest tier it crosses. See `switching.md` §1 for the current scope boundary.
 
 ---
 
