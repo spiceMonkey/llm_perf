@@ -165,6 +165,69 @@ SemiAnalysis. https://newsletter.semianalysis.com/p/hybrid-bonding-process-flow-
 
 ---
 
+## Network Topologies and Collective Algorithms
+
+**[PY09]**  
+Patarasuk, P., & Yuan, X. (2009).  
+*Bandwidth Optimal All-Reduce Algorithms for Clusters of Workstations.*  
+Journal of Parallel and Distributed Computing, 69(2):117–124.  
+→ Ring all-reduce achieves $2(N-1)/N \cdot M/BW$ bandwidth-optimal bound on any tree-connected fabric. Used for torus dim-by-dim AR bandwidth analysis in switching.md §8.3.
+
+**[CHPV07]**  
+Chan, E., Heimlich, M., Purkayastha, A., & van de Geijn, R. (2007).  
+*Collective Communication: Theory, Practice, and Experience.*  
+Concurrency and Computation: Practice and Experience, 19(13):1749–1783.  
+→ Dimension-decomposed all-reduce framework; telescoping derivation of multi-dim ring costs. Used in switching.md §8.3 for the dim-by-dim ring AR derivation.
+
+**[KDSA08]**  
+Kim, J., Dally, W.J., Scott, S., & Abts, D. (2008).  
+*Technology-Driven, Highly-Scalable Dragonfly Topology.*  
+ISCA 2008, pp. 77–88.  
+→ Dragonfly $(p, a, h, g)$ parameterization; minimal adaptive routing (diameter 3) vs. Valiant routing (diameter 5); canonical balanced construction $g = a h + 1$. Foundational reference for switching.md §9.
+
+**[JAIN22]**  
+Jain, P., et al. (2022).  
+*Optimized MPI Collective Algorithms for Dragonfly Topology.*  
+ICS 2022.  
+→ Hierarchical three-tier AR decomposition for dragonfly; confirms full global-link utilization under uniform admissible routing. Basis for switching.md §9.4 formulas.
+
+**[SLINGSHOT]**  
+De Sensi, D., Di Girolamo, S., McMahon, K., Roweth, D., & Hoefler, T. (2020).  
+*An In-Depth Analysis of the Slingshot Interconnect.*  
+SC 2020.  
+→ Rosetta 64-port dragonfly; measured α-calibration across router/group/global tiers; adaptive-routing effectiveness under real workloads. Calibration source for the `slingshot11.dragonfly.json` system.
+
+**[SWING]**  
+Cascagrande, M., De Sensi, D., et al. (2024).  
+*Swing: Short-cutting Rings for Higher-Bandwidth Allreduce.*  
+arXiv:2401.09356.  
+→ Alternative torus AR algorithm that short-cuts non-adjacent rank pairs; flagged as future work in switching.md §8.7 (not implemented — `torus_algorithm="swing"` raises `NotImplementedError`).
+
+**[HAMMESH]**  
+Hoefler, T., Bonato, S., De Sensi, D., Di Girolamo, S., Li, S., Heddes, M., Belk, J., Goel, D., Castro, M., & Scott, S. (2022).  
+*HammingMesh: A Network Topology for Large-Scale Deep Learning.*  
+SC 2022.  
+→ Irregular torus-family topology with improved bisection at fixed link count; alternative tier type referenced in switching.md §8.7 (not modeled).
+
+**[TPU-V4]**  
+Jouppi, N.P., Kurian, G., Li, S., Ma, P., Nagarajan, R., Nai, L., Patil, N., Subramanian, S., Swing, A., Towles, B., Young, C., Zhou, X., Zhou, Z., & Patterson, D. (2023).  
+*TPU v4: An Optically Reconfigurable Supercomputer for Machine Learning with Hardware Support for Embeddings.*  
+ISCA 2023.  
+→ 3D torus with optical circuit switching for slice reconfiguration; twisted-torus 1.63× A2A gain on asymmetric layouts (§V). Motivates switching.md §8.5's $D_\mathrm{max}$ layout-sensitivity analysis.
+
+**[PAARD]**  
+*Proximity-Aware All-Reduce on Dragonfly.*  
+ISPA 2021.  
+→ Topology-aware AR scheduling on dragonfly under multi-job interference. Referenced in switching.md §9.6 open questions.
+
+**[VALIANT81]**  
+Valiant, L.G. (1981).  
+*A Scheme for Fast Parallel Communication.*  
+SIAM Journal on Computing, 11(2):350–361.  
+→ Randomized two-hop routing via intermediate node for adversarial-traffic balancing; cited in switching.md §9.3 as the worst-case dragonfly routing fallback.
+
+---
+
 ## LLM Scaling and Architecture Surveys
 
 **[KAPLAN-SCALING]**  
