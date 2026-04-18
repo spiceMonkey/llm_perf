@@ -216,7 +216,8 @@ FLOPs:
 - $F_{\text{score,prefill}}$ — Attention score FLOPs: $2 S_{\text{input}}^2 H$.
 - $F_{\text{value,prefill}}$ — Value application FLOPs: $2 S_{\text{input}}^2 H$.
 - $F_{\text{ffn,prefill}}$ — FFN FLOPs for prefill: $6 H I_{\text{eff}} S_{\text{input}}$.
-- $F_{\text{layer,prefill}}$ — Per-layer prefill FLOPs (projections + $S^2$ attention).
+- $F_{\text{router,prefill}}$ — Router gate FLOPs per MoE layer for prefill: $2 H N_{\text{exp}} S_{\text{input}}$ (unsharded across TP; zero for dense layers).
+- $F_{\text{layer,prefill}}$ — Per-layer prefill FLOPs (projections + $S^2$ attention + FFN; MoE layers additionally include the router term).
 - $F_{\text{prefill,device}}$ — Total prefill FLOPs per device across all layers on this PP stage.
 
 Timing:

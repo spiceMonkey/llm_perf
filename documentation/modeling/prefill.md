@@ -148,23 +148,40 @@ $$
 
 ---
 
+## 1.3.5 MoE Router Gate FLOPs
+
+For MoE layers, each token first passes through a lightweight **routing gate** — a small $H \to N_{\text{exp}}$ GEMM that produces one logit per expert. The top-$k$ experts are then selected by argmax over this gate vector, and only their FFN weights run on each token. The gate itself contributes FLOPs independent of $k$:
+
+$$
+F_{\text{router,prefill}} =
+2 \cdot H \cdot N_{\text{exp}} \cdot S_{\text{input}}
+$$
+
+The router is **replicated, not sharded** across TP ranks: the gate matrix $H \times N_{\text{exp}}$ is tiny (e.g., $20480 \times 16 \approx 330\text{k}$ weights on GPT-1.8T) and sharding it would cost more in synchronization than it saves in FLOPs. Each TP rank redundantly computes the full gate. This term is **zero for dense layers** and contributes a small fraction of total FLOPs in practice (0.1–0.5% on production MoE models), but must be included for consistency with decode (see `tpot.md §3.3`, "MoE FFN FLOPs") and for correct arithmetic intensity accounting.
+
+---
+
 ## 1.4 Per-Layer Total and FlashAttention Note
 
-Combining projections, attention KV, and FFN per transformer layer:
+Combining projections, attention KV, and FFN per transformer layer. Dense and MoE layers differ in their FFN term and in whether they include router FLOPs:
 
 $$
-F_{\text{layer,prefill}} =
-F_{\text{proj,prefill}} + F_{\text{attn,KV,prefill}} + F_{\text{ffn,prefill}}
-$$
-
-$$
-F_{\text{layer,prefill}} =
-(4H^2 + 4 H H_{kv} + 6 H I_{\text{eff}}) S_{\text{input}}
+F_{\text{layer,prefill}}^{\text{dense}} =
+F_{\text{proj,prefill}} + F_{\text{attn,KV,prefill}} + F_{\text{ffn,prefill}}^{\text{dense}} =
+(4H^2 + 4 H H_{kv} + 6 H I_{\text{dense}}) S_{\text{input}}
 \;+\;
 4 S_{\text{input}}^2 H
 $$
 
-The first term grows as $O(S_{\text{input}})$ and corresponds to GEMM operations on the weight matrices. The second term grows as $O(S_{\text{input}}^2)$ and comes from the full pairwise attention computation.
+$$
+F_{\text{layer,prefill}}^{\text{MoE}} =
+F_{\text{proj,prefill}} + F_{\text{attn,KV,prefill}} + F_{\text{ffn,prefill}}^{\text{MoE}} + F_{\text{router,prefill}} =
+(4H^2 + 4 H H_{kv} + 6 H k I_{\text{moe}} + 2 H N_{\text{exp}}) S_{\text{input}}
+\;+\;
+4 S_{\text{input}}^2 H
+$$
+
+The first term grows as $O(S_{\text{input}})$ and corresponds to GEMM operations on the weight matrices (including the MoE router). The second term grows as $O(S_{\text{input}}^2)$ and comes from the full pairwise attention computation.
 
 ### Regime crossover
 
@@ -228,19 +245,26 @@ $$
 
 ### Full per-device expression
 
-Collecting all terms:
+Collecting all terms, separated by layer type. Let $L_{\text{dense}}$ and $L_{\text{moe}}$ be the number of dense and MoE layers (with $L_{\text{dense}} + L_{\text{moe}} = L$):
 
 $$
 F_{\text{prefill,device}} =
-\frac{L}{PP}
-\left[
-\frac{(4H^2 + 4 H H_{kv}) S_{\text{input}}}{TP} +
-\frac{6 H I_{\text{eff}} S_{\text{input}}}{TP \cdot EP} +
+\frac{L_{\text{dense}}}{PP}
+\underbrace{\left[
+\frac{(4H^2 + 4 H H_{kv} + 6 H I_{\text{dense}}) S_{\text{input}}}{TP} +
 \frac{4 S_{\text{input}}^2 H}{TP \cdot SP}
-\right]
+\right]}_{\text{dense layer}}
+\;+\;
+\frac{L_{\text{moe}}}{PP}
+\underbrace{\left[
+\frac{(4H^2 + 4 H H_{kv}) S_{\text{input}}}{TP} +
+\frac{6 H k I_{\text{moe}} S_{\text{input}}}{TP \cdot EP} +
+\frac{4 S_{\text{input}}^2 H}{TP \cdot SP} +
+2 H N_{\text{exp}} S_{\text{input}}
+\right]}_{\text{MoE layer (router unsharded)}}
 $$
 
-For a **dense model** ($EP = 1$, $I_{\text{eff}} = I_{\text{dense}}$):
+For a **pure dense model** ($L_{\text{moe}} = 0$, $EP = 1$):
 
 $$
 F_{\text{prefill,device}}^{\text{dense}} =
@@ -250,6 +274,8 @@ F_{\text{prefill,device}}^{\text{dense}} =
 \frac{4 S_{\text{input}}^2 H}{SP}
 \right]
 $$
+
+For a **pure MoE model** ($L_{\text{dense}} = 0$), the router term $2 H N_{\text{exp}} S_{\text{input}}$ stays outside the $TP$ sharding — it is replicated on every TP rank (§1.3.5).
 
 ---
 
