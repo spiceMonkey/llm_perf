@@ -18,6 +18,9 @@ from llm_perf.core.primitives import (
     ring_moe_all_to_all,
     tree_moe_all_to_all,
     ring_all_gather,
+    torus_all_reduce,
+    torus_all_gather,
+    torus_moe_all_to_all,
     aggregate_per_stage,
     dense_weight_bytes,
     moe_weight_bytes,
@@ -96,6 +99,77 @@ def test_collective_cost():
                             n_SP=1, t_SP=2.0, n_EP=1, t_EP=3.0, t_PP=4.0),
         15.0,
     )
+
+
+# ────────────────────────────────────────────────────────────
+# torus collective_cost
+# ────────────────────────────────────────────────────────────
+
+def test_torus_collective_cost():
+    print("torus_collective_cost:")
+    M, alpha, bw = 1000.0, 1e-6, 1e9
+
+    # T5 continuity: torus_all_reduce(dims=(N,)) == ring_all_reduce(N).
+    # G=4: 2·3·α + 2·(3/4)·M/BW = 6e-6 + 1.5e-6 = 7.5e-6
+    _check(
+        "torus_AR k=1 continuity",
+        torus_all_reduce(M, (4,), alpha, bw),
+        ring_all_reduce(M, 4, alpha, bw),
+    )
+    # 2D 4×4: hops = 3+3 = 6, N=16 → 2·6·α + 2·(15/16)·M/BW
+    _check(
+        "torus_AR 4x4",
+        torus_all_reduce(M, (4, 4), alpha, bw),
+        12 * alpha + 2 * (15 / 16) * (M / bw),
+    )
+    # BW-term invariance across layouts at fixed N=16 (α=0 isolates):
+    # all of (16,), (2,8), (4,4), (2,2,4) yield 2·(15/16)·M/BW.
+    bw_term = 2 * (15 / 16) * (M / bw)
+    _check("torus_AR BW-term (16,)",   torus_all_reduce(M, (16,),     0.0, bw), bw_term)
+    _check("torus_AR BW-term (2,8)",   torus_all_reduce(M, (2, 8),    0.0, bw), bw_term)
+    _check("torus_AR BW-term (4,4)",   torus_all_reduce(M, (4, 4),    0.0, bw), bw_term)
+    _check("torus_AR BW-term (2,2,4)", torus_all_reduce(M, (2, 2, 4), 0.0, bw), bw_term)
+
+    # torus_all_gather: T5 continuity + 2D
+    # G=4: 3·α + 3·M/BW
+    _check(
+        "torus_AG k=1 continuity",
+        torus_all_gather(M, (4,), alpha, bw),
+        ring_all_gather(M, 4, alpha, bw),
+    )
+    # 2D 4×4: hops=6, N=16 → 6·α + 15·M/BW
+    _check(
+        "torus_AG 4x4",
+        torus_all_gather(M, (4, 4), alpha, bw),
+        6 * alpha + 15 * (M / bw),
+    )
+
+    # torus_moe_all_to_all: bisection-limited A2A.
+    # Balanced 8×8×8: diam=4+4+4=12, D_max=8 → 12·α + 8·M/(4·BW)
+    _check(
+        "torus_A2A 8x8x8 balanced",
+        torus_moe_all_to_all(M, (8, 8, 8), alpha, bw),
+        12 * alpha + 8 * M / (4 * bw),
+    )
+    # Extreme 2×2×128: diam=1+1+64=66, D_max=128 → BW-term 16× the balanced case.
+    _check(
+        "torus_A2A 2x2x128 extreme",
+        torus_moe_all_to_all(M, (2, 2, 128), alpha, bw),
+        66 * alpha + 128 * M / (4 * bw),
+    )
+    # Layout sensitivity: BW-term scales exactly as D_max ratio (128/8 = 16×).
+    _check(
+        "torus_A2A D_max ratio (128/8)",
+        torus_moe_all_to_all(M, (2, 2, 128), 0.0, bw),
+        16 * torus_moe_all_to_all(M, (8, 8, 8), 0.0, bw),
+    )
+
+    # No-op / zero-guard parity with crossbar primitives.
+    _check("torus_AR N=1",     torus_all_reduce(M, (1,),  alpha, bw), 0.0)
+    _check("torus_AR empty",   torus_all_reduce(M, (),    alpha, bw), 0.0)
+    _check("torus_AR BW=0",    torus_all_reduce(M, (4, 4), alpha, 0.0), 0.0)
+    _check("torus_AG BW=0",    torus_all_gather(M, (4, 4), alpha, 0.0), 0.0)
+    _check("torus_A2A BW=0",   torus_moe_all_to_all(M, (4, 4), alpha, 0.0), 0.0)
 
 
 # ────────────────────────────────────────────────────────────
@@ -181,6 +255,7 @@ def test_linear_flops_per_token():
 
 def main() -> int:
     test_collective_cost()
+    test_torus_collective_cost()
     test_weight_footprint()
     test_kv_footprint()
     test_linear_flops_per_token()
