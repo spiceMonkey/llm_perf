@@ -8,7 +8,7 @@ the symbols. Tagged citations (e.g. `[MEGATRON]`, `[FA2]`) resolve to entries in
 ---
 
 ## 1. Parallelism Architecture
-_(→ tpot.md)_
+_(→ decode.md)_
 
 All documents in this suite assume a fixed nesting order for parallelism dimensions:
 
@@ -51,7 +51,7 @@ SP shards the **KV cache** (activation state), not model parameters. Only after 
 ---
 
 ## 2. Parallelism Dimensions
-_(→ tpot.md)_
+_(→ decode.md)_
 
 - $DP$ — Data Parallelism. Number of full model replicas; each handles disjoint input batches.
   $$DP = \left\lfloor \frac{N_{\text{GPUs}}}{PP \cdot EP \cdot TP \cdot SP} \right\rfloor$$
@@ -64,7 +64,7 @@ _(→ tpot.md)_
 ---
 
 ## 3. Model Dimensions
-_(→ tpot.md)_
+_(→ decode.md)_
 
 - $L$ — Number of transformer layers.
 - $L_{\text{moe}}$ — Number of MoE layers (defaults to $L$ if all layers are MoE, or $0$ for dense).
@@ -86,7 +86,7 @@ _(→ tpot.md)_
 ---
 
 ## 4. Sequence, Batch, and Precision
-_(→ tpot.md §6.4 for batch scaling; → prefill.md for prefill batch)_
+_(→ decode.md §6.4 for batch scaling; → prefill.md for prefill batch)_
 
 - $S$ — Decode context length (tokens in KV cache during decoding).
 - $S_{\text{input}}$ — Input sequence length for prefill.
@@ -98,7 +98,7 @@ _(→ tpot.md §6.4 for batch scaling; → prefill.md for prefill batch)_
 ---
 
 ## 5. Memory
-_(→ tpot.md; → kv.md for paging extensions)_
+_(→ decode.md; → kv.md for paging extensions)_
 
 Parameter sizes:
 - $P_{\text{attn}}$ — Attention parameter count.
@@ -122,7 +122,7 @@ Memory traffic (bytes **moved** between HBM and compute per token):
 ---
 
 ## 6. Device Compute and Bandwidth
-_(→ tpot.md; → dram3d.md for 3D DRAM extensions)_
+_(→ decode.md; → dram3d.md for 3D DRAM extensions)_
 
 - $N_{\text{GPUs}}$ — Total devices in the cluster.
 - $R_{\text{GPU}}$ — Peak compute throughput (FLOPs/s).
@@ -131,7 +131,7 @@ _(→ tpot.md; → dram3d.md for 3D DRAM extensions)_
 ---
 
 ## 7. Networking
-_(→ tpot.md; → switching.md §1 for single-tier model; → switching.md §7 for the fabric-chain / multi-tier extension)_
+_(→ decode.md; → switching.md §1 for single-tier model; → switching.md §7 for the fabric-chain / multi-tier extension)_
 
 The system model names physical networks as **fabrics** (`FabricSpec`); each fabric is an ordered list of switching tiers, innermost first. A collective (TP / EP / SP / PP) declares an ordered **fabric chain** via `SystemSpec.collective_fabrics[collective]`. Walking that chain innermost-first yields a single flattened tier list; a collective of group size $G$ spans tiers $0..k$ where $k$ is the smallest index with $\prod_{i=0}^{k} P_i \ge G$.
 
@@ -144,12 +144,12 @@ The system model names physical networks as **fabrics** (`FabricSpec`); each fab
 - $n_{EP}$ — Number of EP collective iterations per layer per token.
 - $n_{SP}$ — Number of SP collective iterations per layer per token.
 
-**Single-tier shorthand.** A chain with one fabric and one tier collapses to the flat pair $\alpha_{role} \equiv \alpha_{role,0}$, $BW_{role} \equiv BW_{role,0}$, independent of $G$. The decode/prefill equations in tpot.md and prefill.md are written against this flat pair; multi-tier analyses substitute $\alpha_{role}(G)$ and $BW_{role}(G)$ with $G$ set by the role-specific group size (e.g. $G = \text{TP}$ for TP collectives, $G = \text{EP}$ for EP, $G = 2$ for point-to-point PP hops). See `switching.md` §7 for the full derivation and worked example.
+**Single-tier shorthand.** A chain with one fabric and one tier collapses to the flat pair $\alpha_{role} \equiv \alpha_{role,0}$, $BW_{role} \equiv BW_{role,0}$, independent of $G$. The decode/prefill equations in decode.md and prefill.md are written against this flat pair; multi-tier analyses substitute $\alpha_{role}(G)$ and $BW_{role}(G)$ with $G$ set by the role-specific group size (e.g. $G = \text{TP}$ for TP collectives, $G = \text{EP}$ for EP, $G = 2$ for point-to-point PP hops). See `switching.md` §7 for the full derivation and worked example.
 
 ---
 
 ## 8. FLOPs
-_(→ tpot.md)_
+_(→ decode.md)_
 
 Attention:
 - $F_Q, F_K, F_V, F_O$ — FLOPs for Q, K, V, output projections.
@@ -174,12 +174,12 @@ Layer and token:
 ---
 
 ## 9. Decode Timing and Throughput
-_(→ tpot.md)_
+_(→ decode.md)_
 
 - $t_{\text{compute}}$ — Per-token compute time: $F_{\text{token,device}} / R_{\text{GPU}}$.
 - $t_{\text{mem}}$ — Per-token memory time: $T_{\text{token,device}}^{\text{eff}} / BW_{\text{mem}}$.
 - $t_{\text{local}}$ — Roofline local time: $\max(t_{\text{compute}}, t_{\text{mem}})$.
-- $t_{TP}, t_{EP}, t_{SP}, t_{PP}$ — Communication time per step per parallelism type (message sizes scale with $B$; see tpot.md §5).
+- $t_{TP}, t_{EP}, t_{SP}, t_{PP}$ — Communication time per step per parallelism type (message sizes scale with $B$; see decode.md §5).
 - $t_{\text{comm}}$ — Combined communication time per decode step per PP stage.
 - $t_{\text{stage}}$ — Per-PP-stage step time (overlap-aware, pre-bubble):
   $$t_{\text{stage}} = t_{\text{local}} + \max(0,\; t_{\text{comm}} - \rho \cdot t_{\text{local}})$$
@@ -195,13 +195,13 @@ _(→ tpot.md)_
 ---
 
 ## 10. Batch Scaling
-_(→ tpot.md §6.4)_
+_(→ decode.md §6.4)_
 
 - $OI(B)$ — Operational intensity as a function of batch size $B$:
   $$OI(B) = \frac{B \times F_{\text{token,device}}}{T_{\theta,\text{device}} + B \times T_{\text{KV,device}}}$$
 - $B^*$ — Crossover batch size where the roofline transitions from memory-bound to compute-bound:
   $$B^* = \frac{T_{\theta,\text{device}} \times R_{\text{GPU}}}{F_{\text{token,device}} \times BW_{\text{mem}} - T_{\text{KV,device}} \times R_{\text{GPU}}}$$
-  **Existence:** finite and positive iff $F_{\text{token,device}} / T_{\text{KV,device}} > R_{\text{ridge}}$ (asymptotic OI ceiling exceeds the ridge point). When violated — e.g., very long contexts on small models — decode stays memory-bound at every $B$ and $B^{\star} \to \infty$ (tpot.md §6.4.1).
+  **Existence:** finite and positive iff $F_{\text{token,device}} / T_{\text{KV,device}} > R_{\text{ridge}}$ (asymptotic OI ceiling exceeds the ridge point). When violated — e.g., very long contexts on small models — decode stays memory-bound at every $B$ and $B^{\star} \to \infty$ (decode.md §6.4.1).
 - $\text{TPOT}(B)$ — Batched Time Per Output Token (user-observed): $t_{\text{step,user}}(B)$.
   Memory-bound ($B \ll B^*$): $\approx T_{\theta,\text{device}} / BW_{\text{mem}}$ (flat in $B$).
   Compute-bound ($B \gg B^*$): $\approx B \cdot F_{\text{token,device}} / R_{\text{GPU}}$ (linear in $B$).

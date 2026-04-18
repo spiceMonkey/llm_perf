@@ -5,7 +5,7 @@
 
 ---
 
-The hardware roofline model in `tpot.md` establishes a lower bound on per-token decode latency, governed by compute throughput and HBM bandwidth. Real serving systems, however, introduce additional latency above this bound that lives entirely on the host CPU and serving-software path: tokenization at request entry, CUDA kernel launch or graph replay per decode step, request scheduling and batch assembly, token sampling, and response streaming. These are empirical constants that require profiling on the target system — they cannot be derived from hardware specifications alone. This document catalogs the CPU / software-stack overhead terms, explains where each comes from, and defines the per-request framework overhead $t_{\text{framework}}$ that enters end-to-end cost accounting in `e2e.md`. Hardware-level overheads tied to the network fabric (e.g., disaggregated KV transfer) are covered in `prefill.md §6`; memory-traffic calibration constants (e.g., the activation I/O residual) are covered in `tpot.md`.
+The hardware roofline model in `decode.md` establishes a lower bound on per-token decode latency, governed by compute throughput and HBM bandwidth. Real serving systems, however, introduce additional latency above this bound that lives entirely on the host CPU and serving-software path: tokenization at request entry, CUDA kernel launch or graph replay per decode step, request scheduling and batch assembly, token sampling, and response streaming. These are empirical constants that require profiling on the target system — they cannot be derived from hardware specifications alone. This document catalogs the CPU / software-stack overhead terms, explains where each comes from, and defines the per-request framework overhead $t_{\text{framework}}$ that enters end-to-end cost accounting in `e2e.md`. Hardware-level overheads tied to the network fabric (e.g., disaggregated KV transfer) are covered in `prefill.md §6`; memory-traffic calibration constants (e.g., the activation I/O residual) are covered in `decode.md`.
 
 ---
 
@@ -39,7 +39,7 @@ The table below catalogs the CPU / software-stack overhead terms, organized by t
 | Token sampling | Decode per-step | $t_{\text{sample}}$ | ~20–200 µs |
 | Response streaming / detokenization | Decode per-token | $t_{\text{detok}}$ | ~1–10 µs/token |
 
-> **Out of scope for this document.** Disaggregated KV transfer latency (an α–β network-fabric term) is derived in `prefill.md §6.4`. Memory-traffic calibration constants used by `traffic_model.py` live with the decode traffic model in `tpot.md`.
+> **Out of scope for this document.** Disaggregated KV transfer latency (an α–β network-fabric term) is derived in `prefill.md §6.4`. Memory-traffic calibration constants used by the decode traffic model live in `decode.md` (implemented in `core/decode_model.py`).
 
 ---
 
@@ -169,7 +169,7 @@ $$
 t_{\text{total}} = t_{\text{TTFT}} + T_{\text{out}} \cdot t_{\text{step,user}} + t_{\text{framework}}
 $$
 
-where $t_{\text{TTFT}}$ and $t_{\text{step,user}}$ are defined in `prefill.md` and `tpot.md` respectively. End-to-end assembly is in `e2e.md`.
+where $t_{\text{TTFT}}$ and $t_{\text{step,user}}$ are defined in `prefill.md` and `decode.md` respectively. End-to-end assembly is in `e2e.md`.
 
 **Order-of-magnitude comparison.** For a representative decode-heavy workload ($T_{\text{out}} = 512$, graph mode, greedy sampling, co-located):
 

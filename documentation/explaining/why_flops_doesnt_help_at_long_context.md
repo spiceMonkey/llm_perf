@@ -183,6 +183,6 @@ The quadratic $S^2$ in compute is the key asymmetry. Decode processes 1 query ag
 ## 10. Related reading
 
 - `documentation/explaining/frontier_convergence_at_high_b.md` — the $B^*$ formula and the partition-invariant FLOPS ceiling (relevant when the denominator *is* positive).
-- `documentation/modeling/tpot.md` — derivation of $t_{compute}$, $t_{mem}$, $T_\theta$, $T_{kv}$.
+- `documentation/modeling/decode.md` — derivation of $t_{compute}$, $t_{mem}$, $T_\theta$, $T_{kv}$.
 - `pareto_vs_flops.ipynb` — the sweep data this note explains.
 - `pareto_vs_mem.ipynb` — the mirror sweep where HBM BW *does* move the frontier on both corners.

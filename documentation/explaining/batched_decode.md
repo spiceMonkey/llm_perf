@@ -99,7 +99,7 @@ Each of the B tokens independently performs the same computation through every l
 
 > **F_step = B x F_token**
 
-where F_token is the per-device per-token FLOPs defined in [../modeling/tpot.md §3](../modeling/tpot.md#3-compute-flops-per-token).
+where F_token is the per-device per-token FLOPs defined in [../modeling/decode.md §3](../modeling/decode.md#3-compute-flops-per-token).
 
 ## 3.2 Memory Traffic Per Step
 
@@ -337,8 +337,8 @@ The per-step analysis is identical: at any given step, B_active sequences are in
 
 ## Cross-References
 
-- [../modeling/tpot.md §6.4](../modeling/tpot.md#64-batch-size-scaling-and-throughputlatency-tradeoff) — Formal derivation of all batched decode equations
-- [../modeling/tpot.md §4](../modeling/tpot.md#4-compute-vs-memory-bound-roofline-model) — Roofline model and operational intensity
+- [../modeling/decode.md §6.4](../modeling/decode.md#64-batch-size-scaling-and-throughputlatency-tradeoff) — Formal derivation of all batched decode equations
+- [../modeling/decode.md §4](../modeling/decode.md#4-compute-vs-memory-bound-roofline-model) — Roofline model and operational intensity
 - [prefill.md](../modeling/prefill.md) — Prefill latency analysis (complementary to decode)
 - [e2e.md](../modeling/e2e.md) — End-to-end metric assembly (TTFT + TPOT)
 - [kv.md](../modeling/kv.md) — KV paging and HBM capacity limits on B

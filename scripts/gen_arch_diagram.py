@@ -85,7 +85,7 @@ ax.text(10.5, 9.85, "Decode Cluster", ha="center", va="center",
         fontsize=14, fontweight="bold", color="#BF360C")
 ax.text(10.5, 9.55, "(memory-bound, autoregressive)", ha="center", va="center",
         fontsize=10, color="#BF360C", fontstyle="italic")
-ref_text(10.5, 9.28, "modeling/tpot.md · core/latency_model.py", fontsize=7.5)
+ref_text(10.5, 9.28, "modeling/decode.md · core/decode_model.py", fontsize=7.5)
 
 # Decode devices — 4 top, 4 bottom, tight spacing
 dw, dh = 1.55, 0.85
@@ -98,7 +98,7 @@ for row_y in [top_y, bot_y]:
         rounded_box(dx + 0.04, row_y + 0.04, dw - 0.08, 0.36, C_HBM, label="HBM", fontsize=9.5, lw=0.8, ec="#7B1FA2")
 
 # Device-level references
-ref_text(10.5, 9.0, "core/memory_model.py · flops_model.py · traffic_model.py", fontsize=7.5)
+ref_text(10.5, 9.0, "core/memory_model.py · decode_model.py · primitives/", fontsize=7.5)
 
 # PP connections (horizontal arrows between top-row devices)
 for dx in [7.4, 9.2, 11.0]:
@@ -115,7 +115,7 @@ ax.text(13.05, 7.18, "DP ×", ha="center", va="center",
 rounded_box(5.85, 5.7, 6.5, 0.42, C_SWITCH, lw=1.5, ec="#2E7D32")
 ax.text(9.1, 5.91, "Scale-Up Switch  (TP / EP / SP)", ha="center", va="center",
         fontsize=11, fontweight="bold", color="#1B5E20")
-ref_text(9.1, 5.35, "modeling/switching.md · core/comm_model.py", fontsize=7.5)
+ref_text(9.1, 5.35, "modeling/switching.md · core/decode_model.py", fontsize=7.5)
 
 # ═══════════════════════════════════════════════════════════════════
 # KV Transfer interconnect (between clusters)

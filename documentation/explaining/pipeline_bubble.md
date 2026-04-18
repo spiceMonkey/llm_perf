@@ -52,9 +52,9 @@ $$
 \text{input} \;\to\; \text{stage 1} \;\to\; \text{stage 2} \;\to\; \cdots \;\to\; \text{stage PP} \;\to\; \text{output token}
 $$
 
-Each stage hands its output activations to the next stage over a point-to-point link (the PP hop; see [tpot.md §5.1](../modeling/tpot.md#51-pipeline-parallel-pp-hop)).
+Each stage hands its output activations to the next stage over a point-to-point link (the PP hop; see [decode.md §5.1](../modeling/decode.md#51-pipeline-parallel-pp-hop)).
 
-The cost of one stage processing one microbatch is the **per-stage step time** $t_{\text{stage}}$, defined in [tpot.md §6.3.1](../modeling/tpot.md#631-per-stage-step-time). This is the overlap-aware sum of local compute/memory time and any unhidden communication inside that stage.
+The cost of one stage processing one microbatch is the **per-stage step time** $t_{\text{stage}}$, defined in [decode.md §6.3.1](../modeling/decode.md#631-per-stage-step-time). This is the overlap-aware sum of local compute/memory time and any unhidden communication inside that stage.
 
 Because each stage only holds $L/PP$ layers, $t_{\text{stage}}$ scales as $1/PP$ (fewer layers per stage → less weight traffic and compute per stage). This is where the "PP makes things faster" intuition comes from.
 
@@ -206,7 +206,7 @@ where $\gamma_{\text{pp}} \equiv \max(1, PP/B)$. The two regimes are:
 
 - **$B < PP$:** factor = $PP/B$, $t_{\text{step,user}} = (PP/B) \cdot t_{\text{stage}}$. At $B=1$ this is $PP \cdot t_{\text{stage}}$ — the full pipeline depth per emitted token.
 
-From a user's perspective, TPOT = $t_{\text{step,user}}$ (one token per decode step, per user — see [tpot.md §6.3.2](../modeling/tpot.md#632-pipeline-bubble-correction-user-observed-step-time)).
+From a user's perspective, TPOT = $t_{\text{step,user}}$ (one token per decode step, per user — see [decode.md §6.3.2](../modeling/decode.md#632-pipeline-bubble-correction-user-observed-step-time)).
 
 ## 5.2 Why It Is Only First-Order
 
@@ -290,7 +290,7 @@ When sweeping $(PP, TP, EP, SP)$ at low $B$:
 
 4. **Once inflight batching is enabled and $B \ge PP$ is achievable**, PP becomes latency-useful again — but at that point the analysis is in the throughput regime, where the key figure of merit is Tput/GPU at the crossover batch $B^*$ (see [batched_decode.md §4](batched_decode.md#4-the-crossover-batch-size-b)).
 
-5. **The bubble correction is already applied in [core/latency_model.py](../../llm_perf/core/latency_model.py)** — no manual post-hoc fix is required in sweeps or notebooks.
+5. **The bubble correction is already applied in [core/decode_model.py](../../llm_perf/core/decode_model.py)** — no manual post-hoc fix is required in sweeps or notebooks.
 
 ---
 
@@ -302,7 +302,7 @@ The bubble at $B < PP$ is a fundamental consequence of data dependencies: token 
 
 **Q: What about TP? Does TP have a bubble too?**
 
-No. TP splits *one* matrix multiply across devices and then all-reduces the result. All TP ranks do useful work simultaneously within every layer — there is no idle-stage analogue. TP pays an all-reduce communication cost (see [tpot.md §5.3](../modeling/tpot.md#53-tensor-parallel-tp-all-reduce)) but no geometric bubble.
+No. TP splits *one* matrix multiply across devices and then all-reduces the result. All TP ranks do useful work simultaneously within every layer — there is no idle-stage analogue. TP pays an all-reduce communication cost (see [decode.md §5.3](../modeling/decode.md#53-tensor-parallel-tp-all-reduce)) but no geometric bubble.
 
 **Q: What about EP?**
 
@@ -376,8 +376,8 @@ NVIDIA Technical Blog.
 
 ## Cross-References
 
-- [../modeling/tpot.md §6.3](../modeling/tpot.md#63-pipeline-bubble-tps-and-ttps) — Formal equations for $t_{\text{stage}}$, bubble factor, $t_{\text{step,user}}$.
+- [../modeling/decode.md §6.3](../modeling/decode.md#63-pipeline-bubble-tps-and-ttps) — Formal equations for $t_{\text{stage}}$, bubble factor, $t_{\text{step,user}}$.
 - [../modeling/e2e.md §1.2](../modeling/e2e.md#12-time-per-output-token-tpot) — TPOT definition from user perspective.
 - [../modeling/notation.md §9](../modeling/notation.md#9-decode-timing-and-throughput) — Symbol reference.
 - [batched_decode.md](batched_decode.md) — Companion: why batching ($B \ge PP$) is the primary escape from the bubble regime.
-- [../../llm_perf/core/latency_model.py](../../llm_perf/core/latency_model.py) — Code implementation of the $\max(1, PP/B)$ correction.
+- [../../llm_perf/core/decode_model.py](../../llm_perf/core/decode_model.py) — Code implementation of the $\max(1, PP/B)$ correction.

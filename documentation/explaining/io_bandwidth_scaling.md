@@ -55,9 +55,9 @@ This document derives the closed-form sensitivities — equivalently, log-log el
 
 # 2. Setup and Notation
 
-The analytical decode model is developed in `documentation/modeling/tpot.md`. We summarize the minimal set of identities used here.
+The analytical decode model is developed in `documentation/modeling/decode.md`. We summarize the minimal set of identities used here.
 
-**Per-stage step time** (`tpot.md §6.3.1`):
+**Per-stage step time** (`decode.md §6.3.1`):
 $$
 t_{\text{stage}}(B) = t_{\text{local}}(B) + \max\!\bigl(0,\; t_{\text{comm}}(B) - \rho \cdot t_{\text{local}}(B)\bigr)
 $$
@@ -76,9 +76,9 @@ $$
 t_{\text{comm}}(B) = \underbrace{\alpha \cdot N_{\text{hops}}}_{\text{latency term}} \;+\; \underbrace{\frac{m(B)}{B_n}}_{\text{bandwidth term}}
 $$
 
-For decode, message sizes $m(B)$ scale linearly with $B$ (see `tpot.md §5`: $m_{TP}, m_{EP}, m_{PP}, m_{SP}$ all carry a $B$ factor).
+For decode, message sizes $m(B)$ scale linearly with $B$ (see `decode.md §5`: $m_{TP}, m_{EP}, m_{PP}, m_{SP}$ all carry a $B$ factor).
 
-**User-observed TPOT** (bubble-corrected; `tpot.md §6.3.2`):
+**User-observed TPOT** (bubble-corrected; `decode.md §6.3.2`):
 $$
 \mathrm{TPOT}(B) = t_{\text{stage}}(B) \cdot \max\!\left(1, \frac{PP}{B}\right)
 $$
@@ -215,7 +215,7 @@ $$
 t_{\text{comm}}(B) = \underbrace{\alpha^{up} N_{\text{hops}}^{up} + \frac{m^{up}(B)}{B_n^{up}}}_{t_{\text{comm}}^{up}\;(\text{TP + EP + SP})} \;+\; \underbrace{\alpha^{out} + \frac{m_{PP}(B)}{B_n^{out}}}_{t_{\text{comm}}^{out}\;(\text{PP hop})}
 $$
 
-where $m^{up}(B) = m_{TP}(B) + m_{EP}(B) + m_{SP}(B)$ aggregates the scale-up message sizes (all $\propto B$; see `tpot.md §5`) and $m_{PP}(B) = B \cdot H/TP \cdot b$ is the per-stage PP message. All other identities from §2 carry over unchanged.
+where $m^{up}(B) = m_{TP}(B) + m_{EP}(B) + m_{SP}(B)$ aggregates the scale-up message sizes (all $\propto B$; see `decode.md §5`) and $m_{PP}(B) = B \cdot H/TP \cdot b$ is the per-stage PP message. All other identities from §2 carry over unchanged.
 
 The HBM-side model, the roofline $t_{\text{local}}$, the bubble correction, and the crossover parameter $\kappa = T_{\text{kv}} R / (F B_m)$ are all **unchanged** — the two-network split only touches the comm term. In particular, the ceiling $R/F$ at the knee and the elasticity $\varepsilon_{B_m}$ are identical to the single-network case.
 
@@ -385,7 +385,7 @@ The single scalar $\kappa = T_{\text{kv}} R / (F B_m)$ summarizes the entire tra
 
 # 9. Numerical Validation
 
-Derivations were sanity-checked against the `llm_perf` core pipeline (`memory_model.py` → `flops_model.py` → `traffic_model.py` → `comm_model.py` → `latency_model.py`) by sweeping each of $B_m$, $B_n$, $\alpha$ by ±1% and measuring the induced log-change in TPOT.
+Derivations were sanity-checked against the `llm_perf` core pipeline (`memory_model.py` → `decode_model.py` / `prefill_model.py` → `primitives/`) by sweeping each of $B_m$, $B_n$, $\alpha$ by ±1% and measuring the induced log-change in TPOT.
 
 **Regime 1b validation** (TP=8, $\rho=0$, $B=1$, $S_{\text{decode}}=1024$, H100-class system). Configuration chosen to force unhidden comm on the critical path:
 
@@ -437,6 +437,6 @@ DP scales throughput (TTPS) but not per-replica TPOT. The elasticities here are 
 - [VLLM] Kwon et al. *Efficient Memory Management for Large Language Model Serving with PagedAttention.* SOSP 2023.
 - [ROOFLINE] Williams, Waterman, Patterson. *Roofline: An Insightful Visual Performance Model for Multicore Architectures.* CACM 2009.
 - [ALPHA-BETA] Hockney. *The communication challenge for MPP: Intel Paragon and Meiko CS-2.* Parallel Computing 1994.
-- [tpot.md] `documentation/modeling/tpot.md` — full derivation of the decode model
+- [decode.md] `documentation/modeling/decode.md` — full derivation of the decode model
 - [pipeline_bubble.md] `documentation/explaining/pipeline_bubble.md` — PP bubble correction
 - [notation.md] `documentation/modeling/notation.md` — symbol glossary

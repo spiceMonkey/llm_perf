@@ -44,7 +44,7 @@ LLM inference, NVLink, NVSwitch, SHARP, in-network reduction, collective communi
 
 # 1. Motivation
 
-The TPOT model developed in `tpot.md` and the sensitivity analysis in `io_bandwidth_scaling.md` treat each parallelism domain (TP, EP, SP, PP) as characterized by a single $(\alpha, B_n)$ pair plus a collective algorithm multiplier $N_{\text{hops}}$. This lumped representation is correct to first order but hides two architecturally important facts:
+The TPOT model developed in `decode.md` and the sensitivity analysis in `io_bandwidth_scaling.md` treat each parallelism domain (TP, EP, SP, PP) as characterized by a single $(\alpha, B_n)$ pair plus a collective algorithm multiplier $N_{\text{hops}}$. This lumped representation is correct to first order but hides two architecturally important facts:
 
 1. **α is not one number** — it decomposes into an endpoint-side cost (software, driver, NIC engine) and a fabric-side cost (switch cut-through, link propagation). The two scale very differently with topology and with collective algorithm choice.
 
@@ -285,4 +285,4 @@ A natural next step would be to extend the TPOT model to expose $N_{\text{hops}}
 - [RING-ALLREDUCE] Patarasuk, Yuan. *Bandwidth Optimal All-reduce Algorithms for Clusters of Workstations.* JPDC 2009.
 - [io_bandwidth_scaling.md] `documentation/explaining/io_bandwidth_scaling.md` — sensitivity analysis this note extends
 - [pipeline_bubble.md] `documentation/explaining/pipeline_bubble.md` — PP bubble and scale-out motivation
-- [tpot.md] `documentation/modeling/tpot.md` — full TPOT derivation
+- [decode.md] `documentation/modeling/decode.md` — full TPOT derivation

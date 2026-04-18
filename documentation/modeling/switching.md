@@ -62,7 +62,7 @@ that replaces the constant $BW_{role}$ without changing the α–β collective s
 **Out of scope (for now).**
 
 - Multi-tier fabrics (spine-leaf, Clos, dragonfly). These need a separate tier-aware model — ranks traversing the fabric incur per-tier α and oversubscription-dependent BW. Leave for a future `scale_out_network.md`.
-- Topology-explicit collective formulas (e.g. ring vs. tree vs. halving-doubling). The α–β abstraction in this doc is topology-agnostic; the collective's rank-count dependence is already captured in the communication model's ring/tree variants (tpot.md §5).
+- Topology-explicit collective formulas (e.g. ring vs. tree vs. halving-doubling). The α–β abstraction in this doc is topology-agnostic; the collective's rank-count dependence is already captured in the communication model's ring/tree variants (decode.md §5).
 - Adversarial traffic patterns (targeted incast, pathological many-to-one). LLM collectives are structured (ring all-reduce, balanced all-to-all); we assume non-adversarial mixing throughout.
 
 **Why this abstraction is enough for inference.** LLM inference collectives are:
@@ -368,7 +368,7 @@ The NCCL "busbw" correction [NCCL-PERF] converts algorithm-level throughput ($\t
 
 For ring all-reduce, the factor approaches 2 because the algorithm has two phases (reduce-scatter + all-gather), each moving $(P-1)/P$ of the data through every link. A perfect ring all-reduce achieves per-link utilization equal to the link bandwidth.
 
-**Why this is excluded from $\eta$:** the collective communication model (tpot.md §5) already accounts for the correct message sizes and step counts for each algorithm (ring, tree, all-to-all). The $2(P-1)/P$ bandwidth scaling is baked into those formulas. Including it in $\eta$ would double-count.
+**Why this is excluded from $\eta$:** the collective communication model (decode.md §5) already accounts for the correct message sizes and step counts for each algorithm (ring, tree, all-to-all). The $2(P-1)/P$ bandwidth scaling is baked into those formulas. Including it in $\eta$ would double-count.
 
 When calibrating $\eta$ against published benchmarks, compare $\text{busbw} / BW_{\text{link}}$ — this ratio reflects the physical fabric efficiency ($\eta_{\text{HoL}} \cdot \eta_{\text{buf}} \cdot \eta_{\text{proto}}$) with the algorithmic multiplier already factored out.
 

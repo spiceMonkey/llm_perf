@@ -10,13 +10,13 @@ KV cache, PagedAttention, block allocation, fragmentation, HBM capacity, memory 
 
 ## Abstract
 
-The baseline KV cache model in `tpot.md` §1.3 and §2.3 assumes contiguous allocation: keys and values for all $S$ token positions are stored and accessed as a single dense tensor per layer. Real production serving systems, however, use **paged KV allocation** (PagedAttention [VLLM]) to enable dynamic memory sharing, efficient preemption, and fine-grained capacity management. Paging introduces **internal fragmentation** — the last block of each sequence is typically partially filled — and additional traffic overhead for block-table lookups, copy-on-write branching, and potential preemption events. This document quantifies those overheads analytically, derives a fragmentation-corrected HBM capacity model, and shows how paging interacts with TP, SP, and PP sharding.
+The baseline KV cache model in `decode.md` §1.3 and §2.3 assumes contiguous allocation: keys and values for all $S$ token positions are stored and accessed as a single dense tensor per layer. Real production serving systems, however, use **paged KV allocation** (PagedAttention [VLLM]) to enable dynamic memory sharing, efficient preemption, and fine-grained capacity management. Paging introduces **internal fragmentation** — the last block of each sequence is typically partially filled — and additional traffic overhead for block-table lookups, copy-on-write branching, and potential preemption events. This document quantifies those overheads analytically, derives a fragmentation-corrected HBM capacity model, and shows how paging interacts with TP, SP, and PP sharding.
 
 ---
 
 ## Table of Contents
 
-- [1. Baseline KV Model (from tpot.md)](#1-baseline-kv-model-from-modelingtpotmd)
+- [1. Baseline KV Model (from decode.md)](#1-baseline-kv-model-from-decodemd)
 - [2. PagedAttention Block Structure](#2-pagedattention-block-structure)
 - [3. Fragmentation Factor](#3-fragmentation-factor)
   - [3.1 Internal Fragmentation](#31-internal-fragmentation)
@@ -32,9 +32,9 @@ The baseline KV cache model in `tpot.md` §1.3 and §2.3 assumes contiguous allo
 
 > **Scope:** This document models standard GQA/MQA KV cache with $H_{kv} = n_{kv} \cdot d_{\text{head}}$ per token per layer. It does **not** model Multi-head Latent Attention (MLA) as used in DeepSeek-V2/V3, where a low-rank latent vector of dimension $d_c \ll H_{kv}$ is stored per token instead. MLA's KV cache volume is computed differently and would require a separate model section.
 
-## 1. Baseline KV Model (from tpot.md)
+## 1. Baseline KV Model (from decode.md)
 
-This section briefly restates the contiguous KV model established in `tpot.md` §1.3 and §2.3 as the reference point. The derivations are not repeated here; refer to those sections for the full treatment.
+This section briefly restates the contiguous KV model established in `decode.md` §1.3 and §2.3 as the reference point. The derivations are not repeated here; refer to those sections for the full treatment.
 
 ### Per-layer KV memory (§1.3)
 
@@ -148,7 +148,7 @@ The one exception is systems that require physically contiguous multi-block regi
 
 ## 4. Block Allocation Traffic Overhead
 
-The baseline KV traffic $T_{\text{KV,device}}$ from `tpot.md` §2.3 accounts for reading and writing KV tensor values. Paged allocation introduces additional memory operations beyond this: block-table lookups, copy-on-write for branching, and preemption.
+The baseline KV traffic $T_{\text{KV,device}}$ from `decode.md` §2.3 accounts for reading and writing KV tensor values. Paged allocation introduces additional memory operations beyond this: block-table lookups, copy-on-write for branching, and preemption.
 
 ### 4.1 Block Table Lookup
 
@@ -248,7 +248,7 @@ $$
 M_{\text{HBM,KV,avail}} = M_{\text{HBM}} - M_{\theta,\text{device}} - M_{\text{act,device}} - M_{\text{sys}}
 $$
 
-where $M_{\text{sys}}$ is a system-level overhead reserve (CUDA context, kernel workspace, OS pages; typically 1–2 GB per GPU). $M_{\theta,\text{device}}$ and $M_{\text{act,device}}$ are defined in `tpot.md` §1.4.
+where $M_{\text{sys}}$ is a system-level overhead reserve (CUDA context, kernel workspace, OS pages; typically 1–2 GB per GPU). $M_{\theta,\text{device}}$ and $M_{\text{act,device}}$ are defined in `decode.md` §1.4.
 
 ### KV capacity after fragmentation
 
@@ -281,7 +281,7 @@ S_{\max} \approx \frac{\hat{S}}{1 + \text{BLK}_{KV} / (2\hat{S})}
 = \hat{S} - \frac{\text{BLK}_{KV}}{2}
 $$
 
-where $\hat{S}$ is the contiguous-allocation estimate from `tpot.md` §6.1:
+where $\hat{S}$ is the contiguous-allocation estimate from `decode.md` §6.1:
 
 $$
 \hat{S} = \frac{\left(M_{\text{HBM}} - M_{\theta,\text{device}} - M_{\text{act,device}}\right) \cdot TP \cdot SP}{2 \, H_{kv} \, b \cdot (L/PP)}
@@ -291,7 +291,7 @@ The paging correction reduces $S_{\max}$ by exactly $\text{BLK}_{KV} / 2$ tokens
 
 ### Summary: fragmentation-corrected HBM constraint
 
-The HBM feasibility condition from `tpot.md` §6.1 is refined by replacing the nominal KV capacity with the fragmentation-penalized version:
+The HBM feasibility condition from `decode.md` §6.1 is refined by replacing the nominal KV capacity with the fragmentation-penalized version:
 
 $$
 \frac{L}{PP}
@@ -301,7 +301,7 @@ $$
 \le M_{\text{HBM}} - M_{\text{sys}}
 $$
 
-For $\varphi_{\text{avg}} = 1$ (contiguous allocation), this reduces exactly to the expression in §6.1 of `tpot.md`.
+For $\varphi_{\text{avg}} = 1$ (contiguous allocation), this reduces exactly to the expression in §6.1 of `decode.md`.
 
 ---
 
@@ -319,10 +319,10 @@ Ainslie, J., Lee-Thorp, J., de Jong, M., Zelaski, T., Sanghai, S., & Xu, Y. (202
 EMNLP 2023. arXiv:2305.13245.  
 → Grouped-query attention; $n_{kv} < n_q$; KV cache size reduction via $H_{kv} = n_{kv} \cdot d_{\text{head}}$.
 
-**[tpot.md §1.3]** — Baseline per-layer and per-device KV memory derivation.
+**[decode.md §1.3]** — Baseline per-layer and per-device KV memory derivation.
 
-**[tpot.md §2.3]** — Baseline per-device KV traffic per token.
+**[decode.md §2.3]** — Baseline per-device KV traffic per token.
 
-**[tpot.md §6.1]** — HBM feasibility constraint under contiguous KV allocation.
+**[decode.md §6.1]** — HBM feasibility constraint under contiguous KV allocation.
 
 See `documentation/references.md` for full bibliography.

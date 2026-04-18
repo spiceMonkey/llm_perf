@@ -35,7 +35,7 @@
 
 ## Introduction
 
-Conventional HBM attaches DRAM dies to a logic die via through-silicon vias (TSVs) and solder-bump interconnects (copper pillars / microbumps), with pitches on the order of **~50 µm** [LAU-PKG][SEMIANALYSIS-HB]; at these pitches the number of interface pins is limited by package-level I/O layout rather than die area. 3D stacking with **hybrid bonding** collapses this interconnect to direct copper-to-copper bonds through a dielectric interlayer, reaching **~10 µm near-term and sub-micron in next-generation designs** [LAU-PKG][SOIC-UHD] — unlocking bandwidth that scales with die area rather than package perimeter. AccelStack captures this qualitatively as "hybrid bonding techniques could potentially offer 5–30× smaller than that of microbumps" [ACCELSTACK, §I]. This document derives the effective memory bandwidth $BW_{\text{mem}}$ from first principles, following the methodology of AccelStack §III-C2 [ACCELSTACK]; §III-C2 gives the qualitative framework but contains no dedicated equation, so the derivation here is an original first-principles extension. The resulting $BW_{\text{mem}}$ is the quantity that enters the roofline model (see `tpot.md` §4).
+Conventional HBM attaches DRAM dies to a logic die via through-silicon vias (TSVs) and solder-bump interconnects (copper pillars / microbumps), with pitches on the order of **~50 µm** [LAU-PKG][SEMIANALYSIS-HB]; at these pitches the number of interface pins is limited by package-level I/O layout rather than die area. 3D stacking with **hybrid bonding** collapses this interconnect to direct copper-to-copper bonds through a dielectric interlayer, reaching **~10 µm near-term and sub-micron in next-generation designs** [LAU-PKG][SOIC-UHD] — unlocking bandwidth that scales with die area rather than package perimeter. AccelStack captures this qualitatively as "hybrid bonding techniques could potentially offer 5–30× smaller than that of microbumps" [ACCELSTACK, §I]. This document derives the effective memory bandwidth $BW_{\text{mem}}$ from first principles, following the methodology of AccelStack §III-C2 [ACCELSTACK]; §III-C2 gives the qualitative framework but contains no dedicated equation, so the derivation here is an original first-principles extension. The resulting $BW_{\text{mem}}$ is the quantity that enters the roofline model (see `decode.md` §4).
 
 ---
 
@@ -276,7 +276,7 @@ $$
 k_{\text{interconnect}} = 2 \text{–} 5 \quad \Longrightarrow \quad \ell_{3D} \approx 20 \text{–} 50 \;\text{ns}
 $$
 
-**Impact on LLM decode.** For steady-state decode with large weight tensors and sequential KV cache access, the system is strongly memory-**bandwidth**-bound, not latency-bound. The improved latency $\ell_{3D}$ does not affect $t_{\text{step,user}}$ in the roofline regime (see `tpot.md` §4). Latency reduction does matter for workloads with high spatial locality and frequent cache-miss patterns (e.g., sparse retrieval, tree-attention with irregular access), but those are outside the scope of the steady-state decode model.
+**Impact on LLM decode.** For steady-state decode with large weight tensors and sequential KV cache access, the system is strongly memory-**bandwidth**-bound, not latency-bound. The improved latency $\ell_{3D}$ does not affect $t_{\text{step,user}}$ in the roofline regime (see `decode.md` §4). Latency reduction does matter for workloads with high spatial locality and frequent cache-miss patterns (e.g., sparse retrieval, tree-attention with irregular access), but those are outside the scope of the steady-state decode model.
 
 ---
 

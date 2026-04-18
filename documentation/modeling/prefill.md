@@ -144,7 +144,7 @@ F_{\text{ffn,prefill}} =
 6 \cdot H \cdot I_{\text{eff}} \cdot S_{\text{input}}
 $$
 
-> **Convention note:** A gated MLP has three full GEMMs — gate ($H \to I$), up ($H \to I$), and down ($I \to H$) — each contributing $2HIS_{\text{input}}$ FLOPs, for a total of $6HI_{\text{eff}}S_{\text{input}}$. The elementwise activation (SiLU/GeLU) and gate multiply are $O(I)$ and genuinely negligible. The training scaling-law literature ([KAPLAN-SCALING], [CHINCHILLA]) uses $4HI$, corresponding to a non-gated 2-matrix FFN. Since this model targets **inference** of modern gated-MLP architectures, we use the exact $6HI$ throughout. This ensures accurate hardware prefill latency predictions in the compute-bound regime and yields the exact OI result $\text{OI} = 2S_{\text{input}}/b$ without approximation (since FLOPs $= 2 \times$ params for every weight matrix). See also `tpot.md §3.3`.
+> **Convention note:** A gated MLP has three full GEMMs — gate ($H \to I$), up ($H \to I$), and down ($I \to H$) — each contributing $2HIS_{\text{input}}$ FLOPs, for a total of $6HI_{\text{eff}}S_{\text{input}}$. The elementwise activation (SiLU/GeLU) and gate multiply are $O(I)$ and genuinely negligible. The training scaling-law literature ([KAPLAN-SCALING], [CHINCHILLA]) uses $4HI$, corresponding to a non-gated 2-matrix FFN. Since this model targets **inference** of modern gated-MLP architectures, we use the exact $6HI$ throughout. This ensures accurate hardware prefill latency predictions in the compute-bound regime and yields the exact OI result $\text{OI} = 2S_{\text{input}}/b$ without approximation (since FLOPs $= 2 \times$ params for every weight matrix). See also `decode.md §3.3`.
 
 ---
 
@@ -157,7 +157,7 @@ F_{\text{router,prefill}} =
 2 \cdot H \cdot N_{\text{exp}} \cdot S_{\text{input}}
 $$
 
-The router is **replicated, not sharded** across TP ranks: the gate matrix $H \times N_{\text{exp}}$ is tiny (e.g., $20480 \times 16 \approx 330\text{k}$ weights on GPT-1.8T) and sharding it would cost more in synchronization than it saves in FLOPs. Each TP rank redundantly computes the full gate. This term is **zero for dense layers** and contributes a small fraction of total FLOPs in practice (0.1–0.5% on production MoE models), but must be included for consistency with decode (see `tpot.md §3.3`, "MoE FFN FLOPs") and for correct arithmetic intensity accounting.
+The router is **replicated, not sharded** across TP ranks: the gate matrix $H \times N_{\text{exp}}$ is tiny (e.g., $20480 \times 16 \approx 330\text{k}$ weights on GPT-1.8T) and sharding it would cost more in synchronization than it saves in FLOPs. Each TP rank redundantly computes the full gate. This term is **zero for dense layers** and contributes a small fraction of total FLOPs in practice (0.1–0.5% on production MoE models), but must be included for consistency with decode (see `decode.md §3.3`, "MoE FFN FLOPs") and for correct arithmetic intensity accounting.
 
 ---
 
@@ -438,7 +438,7 @@ $$
 
 where:
 
-- $T_{\theta,\text{device}}$ — weight read traffic per device (same as decode; see `tpot.md §2.1`):
+- $T_{\theta,\text{device}}$ — weight read traffic per device (same as decode; see `decode.md §2.1`):
 
   $$
   T_{\theta,\text{device}}
@@ -488,7 +488,7 @@ At typical prefill lengths (compute-bound regime, Section 2.3): $t_{\text{prefil
 
 ## 3.2 Communication During Prefill
 
-The communication collectives required during prefill are structurally the same as during decode (same TP/EP/SP/PP operations per layer), but **message sizes scale with the sequence dimension** because outputs have shape $[S_{\text{input}} \times H]$ rather than $[1 \times H]$.
+The communication collectives required during prefill are structurally the same as during decode (same TP/EP/SP/PP operations per layer), but **message sizes scale with the sequence dimension** because outputs have shape $[S_{\text{input}} \times H]$ rather than $[1 \times H]$. The single-request formulas below use $S_{\text{input}}$ as the step token count; under batched prefill (§4), the per-collective payload scales by $B_{\text{prefill}} \cdot S_{\text{input}}$ instead — the same step-token factor that drives flops and KV-write traffic in §4.1.
 
 All collective latencies follow the $\alpha$–$\beta$ model [ALPHA-BETA]:
 
@@ -561,7 +561,7 @@ $$
 
 ### Total per-stage communication time (prefill)
 
-Following the same structure as `tpot.md §5.5`, collectives within each layer are sequential:
+Following the same structure as `decode.md §5.5`, collectives within each layer are sequential:
 
 $$
 t_{\text{prefill,comm}} =
@@ -906,7 +906,7 @@ M_{\text{KV,total}}=
 \quad \text{(bytes)}
 $$
 
-This follows directly from the per-layer KV cache expression in `tpot.md §1.3`, summed over all $L$ layers. With GQA [GQA], $H_{kv} = n_{kv} \cdot d_{\text{head}} \ll H$, substantially reducing the transfer volume compared to MHA ($H_{kv} = H$).
+This follows directly from the per-layer KV cache expression in `decode.md §1.3`, summed over all $L$ layers. With GQA [GQA], $H_{kv} = n_{kv} \cdot d_{\text{head}} \ll H$, substantially reducing the transfer volume compared to MHA ($H_{kv} = H$).
 
 **Example (LLaMA-3 70B):** $L = 80$, $n_{kv} = 8$, $d_{\text{head}} = 128$, $H_{kv} = 1024$, $S_{\text{input}} = 4096$, $b = 2$ (bf16):
 
