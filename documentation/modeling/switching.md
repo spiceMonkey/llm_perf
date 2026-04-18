@@ -1,6 +1,6 @@
 # Scale-Up Network Switch Model
 
-**Modeling Effective Bandwidth and Latency for Single-Layer Scale-Up Fabrics**
+**Modeling Effective Bandwidth and Latency for Scale-Up Fabrics**
 
 <br/>
 
@@ -8,11 +8,11 @@
 **Date:** April 2026
 
 **Keywords:**  
-scale-up network, NVSwitch, NVLink, UALink, ESUN, crossbar, switch fabric, aggregate bandwidth, radix, head-of-line blocking, VOQ, efficiency factor, single-direction bandwidth, Pareto frontier, collective communication
+scale-up network, NVSwitch, NVLink, UALink, ESUN, crossbar, switch fabric, aggregate bandwidth, radix, head-of-line blocking, VOQ, efficiency factor, single-direction bandwidth, Pareto frontier, collective communication, multi-tier fabric, fabric chain, hierarchical scale-up
 
 ---
 
-A single-layer scale-up network (crossbar-class switch) feeds TP, EP, SP, and rack-local PP collectives. The decode and prefill models treat the per-role bandwidth $BW_{role}$ and startup latency $\alpha_{role}$ as constants. That abstraction holds only while all ranks in a collective sit under a **single non-blocking switching layer** with enough silicon bandwidth budget to feed every port at its nominal rate. This document makes that abstraction honest: as port count $P$ grows past the single-chip capacity frontier, the effective per-port bandwidth must decrease, and an efficiency factor $\eta$ captures the protocol/fabric losses that show up even in the ideal case.
+A scale-up network feeds TP, EP, SP, and rack-local PP collectives. The decode and prefill models treat the per-role bandwidth $BW_{role}$ and startup latency $\alpha_{role}$ as constants. That abstraction holds only while each switching tier along the collective's path has enough silicon bandwidth budget to feed every port at its nominal rate, and while the collective's group size is known so its fabric chain can be costed. This document makes that abstraction honest in two stages. §2–6 develop the single-tier building block: as port count $P$ at a tier grows past the single-chip capacity frontier, the effective per-port bandwidth must decrease, and an efficiency factor $\eta$ captures the protocol/fabric losses that show up even in the ideal case. §7 composes tiers into named fabrics and fabric chains — a collective that outgrows its innermost tier escalates into outer tiers (or across fabric boundaries into a scale-out fabric) with a principled α-sum / BW-min rule.
 
 **Bandwidth convention.** All bandwidth quantities in this document — $B_{\text{agg}}$, $BW_{\text{nominal}}$, $BW_{\text{eff}}$, $BW_{\text{port}}$ — are **single-direction** (unidirectional) unless explicitly labeled otherwise. This matches the convention in the decode and prefill models and NCCL busbw measurements. Industry datasheets often quote full-duplex (bidirectional) aggregate capacity; we halve those figures.
 
@@ -57,11 +57,10 @@ that replaces the constant $BW_{role}$ without changing the α–β collective s
 
 ## 1. Scope
 
-**In scope.** Single-layer scale-up fabric: one monolithic switching tier between every pair of GPUs participating in a collective. Includes NVLink/NVSwitch within a rack (NVL72), a hypothetical larger single-switch pod, or a UALink-class Ethernet scale-up leaf. All ports connect to the same switching silicon; traffic hops the switch exactly once.
+**In scope.** Scale-up fabrics composed of one or more switching tiers. §2–6 model a single non-blocking tier — one monolithic switching chip between every pair of participating GPUs (NVLink/NVSwitch within a rack, UALink-class leaf, Tomahawk Ultra scale-up Ethernet). §7 extends to multi-tier fabrics and fabric chains: a collective's group size dictates how many tiers it must cross, each contributing its α to the startup cost and capping the sustained BW. Scale-out (inter-rack InfiniBand / Ethernet) appears as a second named fabric in the chain rather than a tier of the first, so the same α-sum / BW-min rule handles NVL72, NVL576-hierarchical, and scale-out-only deployments uniformly.
 
-**Out of scope (for now).**
+**Out of scope.**
 
-- Multi-tier fabrics (spine-leaf, Clos, dragonfly). These need a separate tier-aware model — ranks traversing the fabric incur per-tier α and oversubscription-dependent BW. Leave for a future `scale_out_network.md`.
 - Topology-explicit collective formulas (e.g. ring vs. tree vs. halving-doubling). The α–β abstraction in this doc is topology-agnostic; the collective's rank-count dependence is already captured in the communication model's ring/tree variants (decode.md §5).
 - Adversarial traffic patterns (targeted incast, pathological many-to-one). LLM collectives are structured (ring all-reduce, balanced all-to-all); we assume non-adversarial mixing throughout.
 
@@ -156,7 +155,7 @@ All quantities are single-direction. Two regimes:
 - **Radix-limited** ($P \le B_{\text{agg}} / BW_{\text{nominal}}$): the fabric can feed every port at its nominal single-direction rate. $BW_{\text{eff}} = \eta \cdot BW_{\text{nominal}}$, flat in $P$.
 - **Capacity-limited** ($P > B_{\text{agg}} / BW_{\text{nominal}}$): aggregate budget is the bottleneck. $BW_{\text{eff}} = \eta \cdot B_{\text{agg}} / P$, falls as $1/P$.
 
-The crossover $P^* = B_{\text{agg}} / BW_{\text{nominal}}$ is the **port count at which single-layer scale-up exhausts its silicon budget**. Past $P^*$, the only ways to grow the collective are (a) accept per-port rate degradation, or (b) tier the network (outside this doc's scope).
+The crossover $P^* = B_{\text{agg}} / BW_{\text{nominal}}$ is the **port count at which single-layer scale-up exhausts its silicon budget**. Past $P^*$, the only ways to grow the collective are (a) accept per-port rate degradation, or (b) tier the network — the fabric-chain extension in §7.
 
 ---
 
