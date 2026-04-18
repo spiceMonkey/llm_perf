@@ -14,7 +14,12 @@ import dataclasses
 import json
 import math
 import sys
+import warnings
 from pathlib import Path
+
+# Silence expected dispatcher UserWarnings on torus misalignment and
+# mixed-topology fallback — same rationale as capture_golden.py.
+warnings.filterwarnings("ignore", category=UserWarning)
 
 from llm_perf.calculators.inference_calculator import InferenceCalculator
 from llm_perf.calculators.prefill_calculator import PrefillCalculator

@@ -15,7 +15,13 @@ import dataclasses
 import json
 import math
 import sys
+import warnings
 from pathlib import Path
+
+# Silence expected dim-alignment / mixed-chain UserWarnings emitted by the
+# dispatcher for torus and hybrid systems. The golden captures numerics,
+# not warning streams, so muting keeps the capture log legible.
+warnings.filterwarnings("ignore", category=UserWarning)
 
 from llm_perf.calculators.inference_calculator import InferenceCalculator
 from llm_perf.calculators.prefill_calculator import PrefillCalculator
@@ -44,6 +50,9 @@ SYSTEMS = [
     "example.sys",
     "gb200.nvl576.ideal",
     "gb200.nvl576.hierarchical",
+    "tpu.v5p.pod",
+    "slingshot11.dragonfly",
+    "hybrid.torus_scaleup_df_scaleout",
 ]
 
 # (PP, TP, EP, SP). Each row exercises a distinct sharding regime.
