@@ -19,6 +19,9 @@ import warnings
 
 from llm_perf.core.primitives import (
     cost_collective,
+    dragonfly_all_gather,
+    dragonfly_all_reduce,
+    dragonfly_moe_all_to_all,
     p2p_hop,
     ring_all_gather,
     ring_all_reduce,
@@ -27,7 +30,7 @@ from llm_perf.core.primitives import (
     tree_all_reduce,
     tree_moe_all_to_all,
 )
-from llm_perf.specs.system_spec import CrossbarTier, TorusTier, span_tiers
+from llm_perf.specs.system_spec import CrossbarTier, DragonflyTier, TorusTier, span_tiers
 from llm_perf.utils import GB_TO_BYTES, US_TO_SECONDS
 
 
@@ -207,6 +210,105 @@ def test_T5_torus_k1_continuity():
 
 
 # ────────────────────────────────────────────────────────────
+# T6 — Dispatcher vs. dragonfly primitive parity (single DragonflyTier)
+# ────────────────────────────────────────────────────────────
+
+def test_T6_dragonfly_dispatch_parity():
+    print("T6 dragonfly dispatcher parity:")
+    # Slingshot-ish tier — calibration-scale, not physically exact.
+    tier = DragonflyTier(
+        name="df",
+        p_endpoints=4, a_routers=4, h_global=4, g_groups=4,
+        bw_per_port_GBps=25.0,  alpha_us=0.3,
+        alpha_local_us=0.8,      bw_local_GBps=25.0,
+        alpha_global_us=1.5,     bw_global_GBps=25.0,
+    )
+    alpha_r_s = tier.alpha_us * US_TO_SECONDS
+    bw_r_Bps = tier.bw_per_port_GBps * GB_TO_BYTES
+    alpha_l_s = tier.alpha_local_us * US_TO_SECONDS
+    bw_l_Bps = tier.bw_local_GBps * GB_TO_BYTES
+    alpha_g_s = tier.alpha_global_us * US_TO_SECONDS
+    bw_g_Bps = tier.bw_global_GBps * GB_TO_BYTES
+
+    # Case A: G = p·a·g = 64 → full (p, a, g). AR.
+    G = 64
+    M = 1e6
+    want = dragonfly_all_reduce(
+        M, 4, 4, 4,
+        alpha_r_s, bw_r_Bps,
+        alpha_l_s, bw_l_Bps,
+        alpha_g_s, bw_g_Bps,
+    )
+    got = cost_collective([tier], "all_reduce", M, G, algorithm="ring")
+    _check(f"AR G={G} best_case", got, want)
+
+    # Case B: Same, worst_case=True via the dispatcher path.
+    want_wc = dragonfly_all_reduce(
+        M, 4, 4, 4,
+        alpha_r_s, bw_r_Bps,
+        alpha_l_s, bw_l_Bps,
+        alpha_g_s, bw_g_Bps,
+        worst_case=True,
+    )
+    # Build a tiny TuningSpec-shaped passthrough via the dispatcher keyword.
+    got_wc = cost_collective(
+        [tier], "all_reduce", M, G,
+        algorithm="ring", worst_case=True,
+    )
+    _check(f"AR G={G} worst_case", got_wc, want_wc)
+
+    # Case C: G = p = 4 → collapses to (p, 1, 1). Should match ring_all_reduce.
+    want_ring = ring_all_reduce(M, 4, alpha_r_s, bw_r_Bps)
+    got_ring = cost_collective([tier], "all_reduce", M, 4, algorithm="ring")
+    _check("AR G=p collapses to ring", got_ring, want_ring)
+
+    # Case D: G = p·a = 16 → (p, a, 1). No L2.
+    want_pa = dragonfly_all_reduce(
+        M, 4, 4, 1,
+        alpha_r_s, bw_r_Bps,
+        alpha_l_s, bw_l_Bps,
+        alpha_g_s, bw_g_Bps,
+    )
+    got_pa = cost_collective([tier], "all_reduce", M, 16, algorithm="ring")
+    _check("AR G=p·a (intra-group only)", got_pa, want_pa)
+
+    # Case E: MoE A2A parity across dispatcher.
+    want_a2a = dragonfly_moe_all_to_all(
+        M, 4, 4, 4,
+        alpha_r_s, bw_r_Bps,
+        alpha_l_s, bw_l_Bps,
+        alpha_g_s, bw_g_Bps,
+    )
+    got_a2a = cost_collective([tier], "moe_a2a", M, 64, algorithm="ring")
+    _check("A2A G=64 best_case", got_a2a, want_a2a)
+
+    # Case F: AG parity.
+    want_ag = dragonfly_all_gather(
+        M, 4, 4, 4,
+        alpha_r_s, bw_r_Bps,
+        alpha_l_s, bw_l_Bps,
+        alpha_g_s, bw_g_Bps,
+    )
+    got_ag = cost_collective([tier], "all_gather", M, 64)
+    _check("AG G=64 best_case", got_ag, want_ag)
+
+    # Case G: dragonfly path emits no UserWarning.
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        cost_collective([tier], "all_reduce", M, 64, algorithm="ring")
+        cost_collective([tier], "moe_a2a",    M, 64, algorithm="ring")
+        cost_collective([tier], "all_gather", M, 64)
+        cost_collective([tier], "all_reduce", M, 64, algorithm="ring", worst_case=True)
+    user_warns = [w for w in caught if issubclass(w.category, UserWarning)]
+    if not user_warns:
+        print("  PASS  dragonfly path emits no UserWarning")
+    else:
+        _failures.append(f"T6: unexpected warnings: {[str(w.message) for w in user_warns]}")
+        for w in user_warns:
+            print(f"  FAIL  unexpected warning: {w.message}")
+
+
+# ────────────────────────────────────────────────────────────
 
 def main() -> int:
     test_T1_single_tier()
@@ -214,6 +316,7 @@ def main() -> int:
     test_T3_randomized()
     test_T4_crossbar_silent()
     test_T5_torus_k1_continuity()
+    test_T6_dragonfly_dispatch_parity()
     if _failures:
         print(f"\n{len(_failures)} FAILURES:")
         for f in _failures:

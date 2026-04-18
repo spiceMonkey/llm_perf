@@ -21,6 +21,9 @@ from llm_perf.core.primitives import (
     torus_all_reduce,
     torus_all_gather,
     torus_moe_all_to_all,
+    dragonfly_all_reduce,
+    dragonfly_all_gather,
+    dragonfly_moe_all_to_all,
     aggregate_per_stage,
     dense_weight_bytes,
     moe_weight_bytes,
@@ -173,6 +176,167 @@ def test_torus_collective_cost():
 
 
 # ────────────────────────────────────────────────────────────
+# dragonfly collective_cost
+# ────────────────────────────────────────────────────────────
+
+def test_dragonfly_collective_cost():
+    print("dragonfly_collective_cost:")
+    M, bw = 1000.0, 1e9
+    alpha_r, alpha_l, alpha_g = 1e-6, 2e-6, 5e-6
+    bw_r, bw_l, bw_g = 2e9, 1e9, 0.5e9
+
+    # Trivial-tier continuity: a=g=1 reduces to ring_all_reduce(M, p, α_r, BW_r).
+    # p=4, a=1, g=1 → 2·3·α_r + 2·(3/4)·M/BW_r.
+    _check(
+        "df_AR a=1 g=1 continuity",
+        dragonfly_all_reduce(
+            M, 4, 1, 1,
+            alpha_r, bw_r,
+            alpha_l, bw_l,
+            alpha_g, bw_g,
+        ),
+        ring_all_reduce(M, 4, alpha_r, bw_r),
+    )
+    # p=4, a=2, g=1: adds L1 contribution, no L2. Hand-compute.
+    # L0 = 2·3·α_r + 2·(3/4)·M/BW_r = 6e-6 + 1.5·M/BW_r
+    # L1 = 2·1·α_l + 2·(1/2)·(M/4)/BW_l = 2·α_l + (M/4)/BW_l
+    want = (6 * alpha_r + 1.5 * M / bw_r) + (2 * alpha_l + (M / 4) / bw_l)
+    _check(
+        "df_AR p=4 a=2 g=1",
+        dragonfly_all_reduce(
+            M, 4, 2, 1,
+            alpha_r, bw_r,
+            alpha_l, bw_l,
+            alpha_g, bw_g,
+        ),
+        want,
+    )
+    # Full three-tier p=4, a=2, g=3.
+    # L0 = 6·α_r + 1.5·M/BW_r
+    # L1 = 2·α_l + (M/4)/BW_l
+    # L2 = 2·2·α_g + 2·(2/3)·(M/8)/BW_g
+    l0 = 6 * alpha_r + 1.5 * M / bw_r
+    l1 = 2 * alpha_l + (M / 4) / bw_l
+    l2 = 4 * alpha_g + (4 / 3) * (M / 8) / bw_g
+    _check(
+        "df_AR p=4 a=2 g=3 best",
+        dragonfly_all_reduce(
+            M, 4, 2, 3,
+            alpha_r, bw_r,
+            alpha_l, bw_l,
+            alpha_g, bw_g,
+        ),
+        l0 + l1 + l2,
+    )
+    # worst_case=True doubles L2 only.
+    _check(
+        "df_AR p=4 a=2 g=3 worst_case",
+        dragonfly_all_reduce(
+            M, 4, 2, 3,
+            alpha_r, bw_r,
+            alpha_l, bw_l,
+            alpha_g, bw_g,
+            worst_case=True,
+        ),
+        l0 + l1 + 2 * l2,
+    )
+
+    # AG trivial-tier continuity: a=g=1 reduces to ring_all_gather(M, p, α_r, BW_r).
+    _check(
+        "df_AG a=1 g=1 continuity",
+        dragonfly_all_gather(
+            M, 4, 1, 1,
+            alpha_r, bw_r,
+            alpha_l, bw_l,
+            alpha_g, bw_g,
+        ),
+        ring_all_gather(M, 4, alpha_r, bw_r),
+    )
+    # AG p=2, a=2, g=2 hand-compute:
+    # L0 = 1·α_r + 1·M/BW_r
+    # L1 = 1·α_l + 1·(2·M)/BW_l
+    # L2 = 1·α_g + 1·(2·2·M)/BW_g = α_g + 4·M/BW_g
+    want_ag = (
+        (alpha_r + M / bw_r)
+        + (alpha_l + 2 * M / bw_l)
+        + (alpha_g + 4 * M / bw_g)
+    )
+    _check(
+        "df_AG p=2 a=2 g=2 best",
+        dragonfly_all_gather(
+            M, 2, 2, 2,
+            alpha_r, bw_r,
+            alpha_l, bw_l,
+            alpha_g, bw_g,
+        ),
+        want_ag,
+    )
+    # AG worst_case doubles L2 only.
+    _check(
+        "df_AG p=2 a=2 g=2 worst_case",
+        dragonfly_all_gather(
+            M, 2, 2, 2,
+            alpha_r, bw_r,
+            alpha_l, bw_l,
+            alpha_g, bw_g,
+            worst_case=True,
+        ),
+        (alpha_r + M / bw_r)
+        + (alpha_l + 2 * M / bw_l)
+        + 2 * (alpha_g + 4 * M / bw_g),
+    )
+
+    # MoE A2A == AR formula identity (mirrors ring_moe_all_to_all == ring_all_reduce).
+    _check(
+        "df_A2A == df_AR identity",
+        dragonfly_moe_all_to_all(
+            M, 4, 2, 3,
+            alpha_r, bw_r,
+            alpha_l, bw_l,
+            alpha_g, bw_g,
+        ),
+        dragonfly_all_reduce(
+            M, 4, 2, 3,
+            alpha_r, bw_r,
+            alpha_l, bw_l,
+            alpha_g, bw_g,
+        ),
+    )
+    # Worst-case propagates through the alias.
+    _check(
+        "df_A2A worst_case",
+        dragonfly_moe_all_to_all(
+            M, 4, 2, 3,
+            alpha_r, bw_r,
+            alpha_l, bw_l,
+            alpha_g, bw_g,
+            worst_case=True,
+        ),
+        dragonfly_all_reduce(
+            M, 4, 2, 3,
+            alpha_r, bw_r,
+            alpha_l, bw_l,
+            alpha_g, bw_g,
+            worst_case=True,
+        ),
+    )
+
+    # No-op / zero-guards.
+    _check(
+        "df_AR p=a=g=1",
+        dragonfly_all_reduce(M, 1, 1, 1, alpha_r, bw_r, alpha_l, bw_l, alpha_g, bw_g),
+        0.0,
+    )
+    # Zero BW on any tier suppresses that tier's contribution only.
+    # p=2, a=2, g=1 with BW_l=0 → just L0.
+    _check(
+        "df_AR BW_l=0 suppresses L1",
+        dragonfly_all_reduce(M, 2, 2, 1, alpha_r, bw_r, alpha_l, 0.0, alpha_g, bw_g),
+        2 * 1 * alpha_r + 2 * (1 / 2) * (M / bw_r),
+    )
+
+
+# ────────────────────────────────────────────────────────────
 # weight_footprint
 # ────────────────────────────────────────────────────────────
 
@@ -256,6 +420,7 @@ def test_linear_flops_per_token():
 def main() -> int:
     test_collective_cost()
     test_torus_collective_cost()
+    test_dragonfly_collective_cost()
     test_weight_footprint()
     test_kv_footprint()
     test_linear_flops_per_token()
