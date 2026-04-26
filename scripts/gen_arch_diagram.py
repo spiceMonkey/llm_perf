@@ -115,7 +115,7 @@ ax.text(13.05, 7.18, "DP ×", ha="center", va="center",
 rounded_box(5.85, 5.7, 6.5, 0.42, C_SWITCH, lw=1.5, ec="#2E7D32")
 ax.text(9.1, 5.91, "Scale-Up Switch  (TP / EP / SP)", ha="center", va="center",
         fontsize=11, fontweight="bold", color="#1B5E20")
-ref_text(9.1, 5.35, "modeling/switching.md · core/decode_model.py", fontsize=7.5)
+ref_text(9.1, 5.35, "modeling/collectives.md · core/decode_model.py", fontsize=7.5)
 
 # ═══════════════════════════════════════════════════════════════════
 # KV Transfer interconnect (between clusters)

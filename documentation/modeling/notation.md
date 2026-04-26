@@ -131,20 +131,20 @@ _(→ decode.md; → dram3d.md for 3D DRAM extensions)_
 ---
 
 ## 7. Networking
-_(→ decode.md; → switching.md §1 for single-tier crossbar model; → switching.md §7 for fabric chains; → switching.md §8 for torus tiers; → switching.md §9 for dragonfly tiers; → switching.md §10 for unified dispatch; → collectives.md §3–§6 for the shipped-primitive cost table consumed by decode.md / prefill.md; → collectives.md §7 for dynamic η_α / η_β)_
+_(→ decode.md; → collectives.md §3–§6 for the shipped-primitive cost table consumed by decode.md / prefill.md; → collectives.md §7 for dynamic η_α / η_β)_
 
 The system model names physical networks as **fabrics** (`FabricSpec`); each fabric is an ordered list of switching tiers, innermost first. A collective (TP / EP / SP / PP) declares an ordered **fabric chain** via `SystemSpec.collective_fabrics[collective]`. Walking that chain innermost-first yields a single flattened tier list; a collective of group size $G$ spans tiers $0..k$ where $k$ is the smallest index with $\prod_{i=0}^{k} P_i \ge G$.
 
-- $P_{role,i}$ — Reach at tier $i$ along the $role$ collective's fabric chain (ranks reachable within that tier from any single rank). Topology-dependent: crossbar $P_i$ = switch radix; torus $P_i = \prod_j D_j$; dragonfly $P_i = p a g$.
+- $P_{role,i}$ — Reach at tier $i$ along the $role$ collective's fabric chain (ranks reachable within that tier from any single rank). Topology-dependent: crossbar $P_i$ = switch radix; torus $P_i = \prod_j D_j$.
 - $\alpha_{role,i}$ — Per-traversal startup latency of tier $i$ along the $role$ collective's fabric chain (μs).
 - $BW_{role,i}$ — Effective per-port single-direction bandwidth of tier $i$ along the $role$ collective's fabric chain (GB/s, post-$\eta$).
-- $\alpha_{role}(G)$ — **Span latency** for a collective of group size $G$: $\alpha_{role}(G) = \sum_{i \le k} \alpha_{role,i}$ with $k$ as above. Crossbar-only shorthand — topology-structured tiers use their native primitive (§8, §9) rather than a flat α-sum.
+- $\alpha_{role}(G)$ — **Span latency** for a collective of group size $G$: $\alpha_{role}(G) = \sum_{i \le k} \alpha_{role,i}$ with $k$ as above. Crossbar-only shorthand — torus tiers use their dim-decomposed primitives (collectives.md §3.2 / §4.2 / §5.2) rather than a flat α-sum.
 - $BW_{role}(G)$ — **Span bandwidth** for a collective of group size $G$: $BW_{role}(G) = \min_{i \le k} BW_{role,i}$ (narrowest crossed tier dominates, across fabric boundaries as well as within a fabric). Crossbar-only shorthand, same caveat as above.
 - $n_{TP}$ — Number of TP collective iterations per layer per token.
 - $n_{EP}$ — Number of EP collective iterations per layer per token.
 - $n_{SP}$ — Number of SP collective iterations per layer per token.
 
-**Torus tier symbols** (switching.md §8):
+**Torus tier symbols** (collectives.md §2 / §5.2):
 - $k$ — Torus dimensionality (number of axes).
 - $(D_1, \ldots, D_k)$ — Per-dim extents; reach $N = \prod_i D_i$.
 - $D_\mathrm{max}$ — $\max_i D_i$; sets the A2A bisection floor.
@@ -152,20 +152,11 @@ The system model names physical networks as **fabrics** (`FabricSpec`); each fab
 - $BW_\mathrm{link}$ — Per-link single-direction bandwidth (equal to tier's $BW_i$).
 - $BW_\mathrm{bisect}^\mathrm{min}$ — Minimum bisection capacity: $2 N BW_\mathrm{link} / D_\mathrm{max}$.
 
-**Dragonfly tier symbols** (switching.md §9):
-- $p$ — Endpoints per router.
-- $a$ — Routers per group.
-- $h$ — Global links per router.
-- $g$ — Number of groups; canonical balanced $g = a h + 1$; reach $p \cdot a \cdot g$.
-- $\alpha_\mathrm{r}, \alpha_\mathrm{l}, \alpha_\mathrm{g}$ — Per-tier latencies: intra-router / intra-group (router-router) / inter-group (global link).
-- $BW_\mathrm{r}, BW_\mathrm{l}, BW_\mathrm{g}$ — Per-tier single-direction bandwidth at the three tiers.
-- $c$ — Valiant-routing multiplier on the L2 sub-cost: $c = 2$ under `worst_case=True`, else $c = 1$.
-
 **Contention coefficients** (collectives.md §7):
 - $\eta_\alpha$ — Dynamic α-inflator for a switching tier ($\geq 1$; ideal = 1). Captures serialization penalties under concurrent collectives and off-prefix layouts that steady-state microbenchmarks miss.
-- $\eta_\beta$ — Dynamic BW-deflator for a switching tier ($\in (0, 1]$; ideal = 1). Captures runtime bandwidth loss beyond the calibrated tier-level peak; distinct from the static `switching.md §4` efficiency already baked into that calibration. Hierarchical fabrics cap upper-tier $\eta_\beta$ at $\min(\eta_\beta^\mathrm{hw}, 1/s)$ where $s$ is the oversubscription ratio (collectives.md §7.2).
+- $\eta_\beta$ — Dynamic BW-deflator for a switching tier ($\in (0, 1]$; ideal = 1). Captures runtime bandwidth loss beyond the calibrated peak. Hierarchical fabrics cap upper-tier $\eta_\beta$ at $\min(\eta_\beta^\mathrm{hw}, 1/s)$ where $s$ is the oversubscription ratio (collectives.md §7.2).
 
-**Single-tier shorthand.** A chain with one crossbar fabric and one crossbar tier collapses to the flat pair $\alpha_{role} \equiv \alpha_{role,0}$, $BW_{role} \equiv BW_{role,0}$, independent of $G$. The decode/prefill equations in decode.md and prefill.md are written against this flat pair; multi-tier and topology-structured analyses substitute the appropriate span quantity (or topology-native formula) with $G$ set by the role-specific group size (e.g. $G = \text{TP}$ for TP collectives, $G = \text{EP}$ for EP, $G = 2$ for point-to-point PP hops). See `switching.md` §7 for the generic fabric-chain derivation and §8 / §9 for the torus and dragonfly specializations; `collectives.md §3–§6` for the shipped-primitive cost table (ring / DBT AR on star, dim-decomposed ring on torus, hierarchical RS → sub-AR → AG, in-network reduction via NVLS / Quantum SHARP / Tomahawk Ultra) consumed by decode.md §5 and prefill.md §3.2; `collectives.md §7` for $\eta_\alpha / \eta_\beta$ application.
+**Single-tier shorthand.** A chain with one crossbar fabric and one crossbar tier collapses to the flat pair $\alpha_{role} \equiv \alpha_{role,0}$, $BW_{role} \equiv BW_{role,0}$, independent of $G$. The decode/prefill equations in decode.md and prefill.md are written against this flat pair; multi-tier and torus analyses substitute the appropriate span quantity (or torus-native formula) with $G$ set by the role-specific group size (e.g. $G = \text{TP}$ for TP collectives, $G = \text{EP}$ for EP, $G = 2$ for point-to-point PP hops). See `collectives.md §3–§6` for the shipped-primitive cost table (ring / DBT AR on star, dim-decomposed ring on torus, hierarchical RS → sub-AR → AG, in-network reduction via NVLS / Quantum SHARP / Tomahawk Ultra) consumed by decode.md §5 and prefill.md §3.2; `collectives.md §7` for $\eta_\alpha / \eta_\beta$ application.
 
 **Collective-primitive coefficients** (collectives.md §3–§6):
 - $n_\alpha$ — Coefficient on $\alpha$ in a shipped-primitive cost formula (number of startup traversals). Per-primitive values in collectives.md §3–§6.

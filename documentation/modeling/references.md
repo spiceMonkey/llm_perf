@@ -171,13 +171,13 @@ SemiAnalysis. https://newsletter.semianalysis.com/p/hybrid-bonding-process-flow-
 Patarasuk, P., & Yuan, X. (2009).  
 *Bandwidth Optimal All-Reduce Algorithms for Clusters of Workstations.*  
 Journal of Parallel and Distributed Computing, 69(2):117–124.  
-→ Ring all-reduce achieves $2(N-1)/N \cdot M/BW$ bandwidth-optimal bound on any tree-connected fabric. Used for torus dim-by-dim AR bandwidth analysis in switching.md §8.3 and shipped-primitive cost tables in collectives.md §3.1 / §3.2.
+→ Ring all-reduce achieves $2(N-1)/N \cdot M/BW$ bandwidth-optimal bound on any tree-connected fabric. Used for the shipped-primitive cost tables in collectives.md §3.1 / §3.2 (star ring + torus dim-decomposed ring).
 
 **[CHPV07]**  
 Chan, E., Heimlich, M., Purkayastha, A., & van de Geijn, R. (2007).  
 *Collective Communication: Theory, Practice, and Experience.*  
 Concurrency and Computation: Practice and Experience, 19(13):1749–1783.  
-→ Dimension-decomposed all-reduce framework; telescoping derivation of multi-dim ring costs. Used in switching.md §8.3 and collectives.md §3.2 / §4.2 for the dim-decomposed ring AR / AG / RS derivation.
+→ Dimension-decomposed all-reduce framework; telescoping derivation of multi-dim ring costs. Used in collectives.md §3.2 / §4.2 for the dim-decomposed ring AR / AG / RS derivation.
 
 **[SST09]**  
 Sanders, P., Speck, J., & Träff, J.L. (2009).  
@@ -207,13 +207,13 @@ AWS Neuron documentation, https://awsdocs-neuron.readthedocs-hosted.com/.
 Kim, J., Dally, W.J., Scott, S., & Abts, D. (2008).  
 *Technology-Driven, Highly-Scalable Dragonfly Topology.*  
 ISCA 2008, pp. 77–88.  
-→ Dragonfly $(p, a, h, g)$ parameterization; minimal adaptive routing (diameter 3) vs. Valiant routing (diameter 5); canonical balanced construction $g = a h + 1$. Foundational reference for switching.md §9.
+→ Dragonfly $(p, a, h, g)$ parameterization; minimal adaptive routing (diameter 3) vs. Valiant routing (diameter 5); canonical balanced construction $g = a h + 1$. Foundational dragonfly reference (dragonfly support is currently out of scope in this codebase).
 
 **[JAIN22]**  
 Jain, P., et al. (2022).  
 *Optimized MPI Collective Algorithms for Dragonfly Topology.*  
 ICS 2022.  
-→ Hierarchical three-tier AR decomposition for dragonfly; confirms full global-link utilization under uniform admissible routing. Basis for switching.md §9.4 formulas.
+→ Hierarchical three-tier AR decomposition for dragonfly; confirms full global-link utilization under uniform admissible routing.
 
 **[SLINGSHOT]**  
 De Sensi, D., Di Girolamo, S., McMahon, K., Roweth, D., & Hoefler, T. (2020).  
@@ -225,30 +225,30 @@ SC 2020.
 Cascagrande, M., De Sensi, D., et al. (2024).  
 *Swing: Short-cutting Rings for Higher-Bandwidth Allreduce.*  
 arXiv:2401.09356.  
-→ Alternative torus AR algorithm that short-cuts non-adjacent rank pairs; flagged as future work in switching.md §8.7 (not implemented — `torus_algorithm="swing"` raises `NotImplementedError`).
+→ Alternative torus AR algorithm that short-cuts non-adjacent rank pairs; not implemented (`torus_algorithm="swing"` raises `NotImplementedError`).
 
 **[HAMMESH]**  
 Hoefler, T., Bonato, S., De Sensi, D., Di Girolamo, S., Li, S., Heddes, M., Belk, J., Goel, D., Castro, M., & Scott, S. (2022).  
 *HammingMesh: A Network Topology for Large-Scale Deep Learning.*  
 SC 2022.  
-→ Irregular torus-family topology with improved bisection at fixed link count; alternative tier type referenced in switching.md §8.7 (not modeled).
+→ Irregular torus-family topology with improved bisection at fixed link count; alternative tier type, not modeled.
 
 **[TPU-V4]**  
 Jouppi, N.P., Kurian, G., Li, S., Ma, P., Nagarajan, R., Nai, L., Patil, N., Subramanian, S., Swing, A., Towles, B., Young, C., Zhou, X., Zhou, Z., & Patterson, D. (2023).  
 *TPU v4: An Optically Reconfigurable Supercomputer for Machine Learning with Hardware Support for Embeddings.*  
 ISCA 2023.  
-→ 3D torus with optical circuit switching for slice reconfiguration; twisted-torus 1.63× A2A gain on asymmetric layouts (§V). Motivates switching.md §8.5's $D_\mathrm{max}$ layout-sensitivity analysis and the bisection-bound A2A formula in collectives.md §5.2.
+→ 3D torus with optical circuit switching for slice reconfiguration; twisted-torus 1.63× A2A gain on asymmetric layouts (§V). Motivates the bisection-bound A2A formula and $D_\mathrm{max}$ layout-sensitivity analysis in collectives.md §5.2.
 
 **[PAARD]**  
 *Proximity-Aware All-Reduce on Dragonfly.*  
 ISPA 2021.  
-→ Topology-aware AR scheduling on dragonfly under multi-job interference. Referenced in switching.md §9.6 open questions.
+→ Topology-aware AR scheduling on dragonfly under multi-job interference.
 
 **[VALIANT81]**  
 Valiant, L.G. (1981).  
 *A Scheme for Fast Parallel Communication.*  
 SIAM Journal on Computing, 11(2):350–361.  
-→ Randomized two-hop routing via intermediate node for adversarial-traffic balancing; cited in switching.md §9.3 as the worst-case dragonfly routing fallback.
+→ Randomized two-hop routing via intermediate node for adversarial-traffic balancing; classical dragonfly worst-case routing fallback.
 
 **[NCCL-TESTS]**  
 NVIDIA Corporation. (2020–2025).  
@@ -273,7 +273,7 @@ Holmen, J. (2024).
 *Frontier Exascale Architecture: AMD MI250X and HPE Slingshot.*  
 ATPESC 2024, Argonne National Laboratory Training Track 2 Talk 2.  
 https://extremecomputingtraining.anl.gov/wp-content/uploads/sites/96/2024/08/ATPESC-2024-Track-2-Talk-2-Holmen-Frontier-Exascale-Architecture-AMD-MI250x-and-HPE-Slingshot.pdf  
-→ Documents Frontier's Slingshot-11 dragonfly structural parameters: 80 groups (74 compute + 5 I/O + 1 management), three-hop minimal routing, and the global-to-injection bandwidth ratio of 57% (total global 270+270 TB/s). Structural calibration source for the dragonfly L2 tier; consumed by `switching.md §9` (cost form) and `collectives.md §7.3` (per-tier $\eta_\beta$ structural cap pattern).
+→ Documents Frontier's Slingshot-11 dragonfly structural parameters: 80 groups (74 compute + 5 I/O + 1 management), three-hop minimal routing, and the global-to-injection bandwidth ratio of 57% (total global 270+270 TB/s). Structural calibration reference for the per-tier $\eta_\beta$ cap pattern in `collectives.md §7.3`.
 
 ---
 
