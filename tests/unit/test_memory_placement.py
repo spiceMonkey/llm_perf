@@ -15,7 +15,10 @@ Pins down:
 
 Usage:  PYTHONPATH=. python tests/unit/test_memory_placement.py
 """
+import json
 import sys
+import tempfile
+from pathlib import Path
 
 from llm_perf import MemoryTierSpec
 from llm_perf.core.memory_placement import (
@@ -24,6 +27,7 @@ from llm_perf.core.memory_placement import (
     resolve_placement,
     t_mem_from_placement,
 )
+from llm_perf.io.tuner_loaders import load_tuning_spec
 from llm_perf.specs.tuner_spec import MemoryPlacementSpec
 from llm_perf.utils import GB_TO_BYTES
 
@@ -223,6 +227,62 @@ def test_two_tier_crossover_matches_closed_form():
 
 
 # ────────────────────────────────────────────────────────────
+# Tuner JSON loader (PR3): parses optional `placement` block
+# ────────────────────────────────────────────────────────────
+
+def _load_temp_tuner(cfg: dict):
+    """Inject the required collective-count fields if absent so each test
+    can stay focused on the placement block."""
+    cfg.setdefault("n_TP_collectives", 2)
+    cfg.setdefault("n_EP_collectives", 1)
+    cfg.setdefault("n_SP_collectives", 1)
+    cfg.setdefault("overlap_factor", 0.0)
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        json.dump(cfg, f)
+        path = f.name
+    try:
+        return load_tuning_spec(path)
+    finally:
+        Path(path).unlink(missing_ok=True)
+
+
+def test_tuner_loader_default_placement_is_auto_auto():
+    """A tuner JSON with no placement block defaults to MemoryPlacementSpec()."""
+    spec = _load_temp_tuner({
+        "schema": "llm_perf.tuner",
+        "name": "no-placement",
+        "S_decode": 2048,
+    })
+    _check("default weights_tier=auto", spec.placement.weights_tier == "auto")
+    _check("default kv_tier=auto", spec.placement.kv_tier == "auto")
+
+
+def test_tuner_loader_placement_block_round_trips():
+    """Capacity Mode shape: weights pinned to 'hbm', KV on 'sram'."""
+    spec = _load_temp_tuner({
+        "schema": "llm_perf.tuner",
+        "name": "capacity-mode",
+        "S_decode": 8192,
+        "placement": {"weights_tier": "hbm", "kv_tier": "sram"},
+    })
+    _check("loader weights_tier='hbm'", spec.placement.weights_tier == "hbm")
+    _check("loader kv_tier='sram'", spec.placement.kv_tier == "sram")
+
+
+def test_tuner_loader_rejects_non_dict_placement():
+    try:
+        _load_temp_tuner({
+            "schema": "llm_perf.tuner",
+            "name": "bad-placement",
+            "S_decode": 2048,
+            "placement": "auto",  # must be an object, not a string
+        })
+        _check("non-dict placement raises", False, "no exception")
+    except ValueError:
+        _check("non-dict placement raises ValueError", True)
+
+
+# ────────────────────────────────────────────────────────────
 # Main
 # ────────────────────────────────────────────────────────────
 
@@ -236,6 +296,9 @@ def main() -> int:
     test_pinned_overflow_raises()
     test_pin_unknown_tier_raises()
     test_two_tier_crossover_matches_closed_form()
+    test_tuner_loader_default_placement_is_auto_auto()
+    test_tuner_loader_placement_block_round_trips()
+    test_tuner_loader_rejects_non_dict_placement()
     if _failures:
         print(f"\n{len(_failures)} FAILURES:")
         for f in _failures:

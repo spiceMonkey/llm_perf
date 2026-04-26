@@ -54,6 +54,52 @@ def test_legacy_shim_materializes_single_tier():
     _check("legacy shim eta_beta = 1.0 (preserves regression)", t0.eta_beta, 1.0)
 
 
+def test_sram_fields_materialize_two_tier_shim():
+    """sram_capacity_MB + sram_bandwidth_TBps populated → get_tiers()
+    returns [SRAM tier (fastest, units converted), HBM tier (legacy fields)].
+    Mirrors the d-Matrix Corsair JSON convention (PR3)."""
+    d = DeviceSpec(
+        name="dmatrix-like",
+        hbm_capacity_GB=256.0, hbm_bandwidth_GBps=400.0, peak_flops_TF=2400.0,
+        sram_capacity_MB=2000.0, sram_bandwidth_TBps=150.0,
+    )
+    tiers = d.get_tiers()
+    _check("sram+hbm shim → 2 tiers", len(tiers), 2)
+    _check("tier 0 named sram", tiers[0].name, "sram")
+    _check_close("tier 0 capacity converted MB→GB", tiers[0].capacity_GB, 2.0)
+    _check_close("tier 0 bandwidth converted TB/s→GB/s",
+                 tiers[0].bandwidth_GBps, 150_000.0)
+    _check("tier 0 eta_beta=1.0 (shim)", tiers[0].eta_beta, 1.0)
+    _check("tier 1 named hbm", tiers[1].name, "hbm")
+    _check_close("tier 1 carries hbm_capacity", tiers[1].capacity_GB, 256.0)
+    _check_close("tier 1 carries hbm_bandwidth", tiers[1].bandwidth_GBps, 400.0)
+    _check("tier 1 eta_beta=1.0 (shim)", tiers[1].eta_beta, 1.0)
+
+
+def test_sram_fields_must_appear_together():
+    """Loader rejects setting only one of sram_capacity_MB / sram_bandwidth_TBps."""
+    cfg = _minimal_system_json({"sram_capacity_MB": 2000.0})  # missing BW
+    try:
+        _load_temp_system(cfg)
+        _failures.append("half sram_* fields should raise")
+        print("FAIL: loader allowed sram_capacity_MB without sram_bandwidth_TBps")
+    except ValueError as e:
+        print(f"OK: half sram_* fields raise: {e!s}")
+
+
+def test_loader_sram_fields_round_trip():
+    """End-to-end: JSON with sram_* fields → DeviceSpec → get_tiers() shim."""
+    cfg = _minimal_system_json({
+        "sram_capacity_MB": 2000.0, "sram_bandwidth_TBps": 150.0,
+    })
+    sys_obj = _load_temp_system(cfg)
+    tiers = sys_obj.device.get_tiers()
+    _check("loader sram_*: 2 tiers", len(tiers), 2)
+    _check("loader sram_*: tier 0 SRAM", tiers[0].name, "sram")
+    _check_close("loader sram_*: tier 0 BW = 150 TB/s",
+                 tiers[0].bandwidth_GBps, 150_000.0)
+
+
 def test_explicit_tiers_pass_through():
     sram = MemoryTierSpec(
         name="sram", capacity_GB=2.0, bandwidth_GBps=150_000.0, eta_beta=1.0,
@@ -213,6 +259,9 @@ def test_loader_rejects_negative_capacity():
 
 def main() -> int:
     test_legacy_shim_materializes_single_tier()
+    test_sram_fields_materialize_two_tier_shim()
+    test_sram_fields_must_appear_together()
+    test_loader_sram_fields_round_trip()
     test_explicit_tiers_pass_through()
     test_loader_no_tiers_block_keeps_legacy_path()
     test_loader_tiers_block_parses_two_tiers()
