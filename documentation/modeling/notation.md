@@ -376,3 +376,37 @@ Derived:
 Latency:
 - $k_{\text{interconnect}}$ — Latency reduction factor vs. standard HBM bump interconnect.
 - $\ell_{3D}$ — Estimated 3D DRAM read latency: $\ell_{\text{HBM}} / k_{\text{interconnect}}$ (ns).
+
+---
+
+## 16. SRAM-Centric Memory Hierarchy
+_(→ sram.md)_
+
+Tier list (ordered, fastest first):
+- $n$ — Number of memory tiers exposed by a device.
+- $i$ — Tier index, $0 \le i < n$, ordered fastest first.
+
+Per-tier physical parameters:
+- $C_i$ — Tier $i$ capacity per device (bytes).
+- $BW_i$ — Tier $i$ peak read bandwidth from compute (bytes/s).
+- $\alpha_i$ — Tier $i$ first-byte latency floor (seconds); does not enter steady-state decode timing.
+- $\eta_{\beta,i}$ — Tier $i$ sustained-bandwidth deflator ($\in (0, 1]$). Defaults: SRAM $\approx 1.0$, HBM $\approx 0.92$, LPDDR5 $\approx 0.85$ (sram.md §1.2).
+
+Derived:
+- $BW_{\text{eff},i} = BW_i \cdot \eta_{\beta,i}$ — Effective tier $i$ bandwidth (bytes/s).
+
+Placement:
+- $\pi$ — Placement assigning each data class to one or more tiers.
+- $T_{\theta,i}$ — Weight bytes residing on tier $i$; $\sum_i T_{\theta,i} = T_{\theta,\text{device}}$.
+- $T_{\text{KV},i}$ — Per-request KV bytes residing on tier $i$; $\sum_i T_{\text{KV},i} = T_{\text{KV,device}}$.
+- Capacity constraint per tier: $T_{\theta,i} + B \cdot T_{\text{KV},i} \le C_i$ (sram.md §1.3; uses the per-device, per-request $T_{\text{KV,device}}$ from `decode.md §2.3`, which already bakes in $TP \cdot SP$ and the context length $S$).
+
+Multi-tier roofline (sram.md §2.1) — full $\alpha$–$\beta$ form:
+$$t_{\text{mem}}(B) = \sum_i \left[\, \alpha_i + \frac{T_{\theta,i} + B \cdot T_{\text{KV},i}}{BW_{\text{eff},i}} \,\right]$$
+- Dropped-$\alpha$ form (used for device-level decode roofline; sram.md §2.1 justifies on magnitude grounds, $\alpha < 0.1\%$ of $t_{\text{mem}}$):
+$$t_{\text{mem}}(B) = \sum_i \frac{T_{\theta,i} + B \cdot T_{\text{KV},i}}{BW_{\text{eff},i}}$$
+- Single-tier reduction ($n=1$) recovers `decode.md §4.3` exactly with $BW_{\text{mem}} \equiv BW_{\text{eff},0}$.
+
+Two-tier crossover (sram.md §2.2; weights pinned to tier $W$, KV to tier $K$):
+$$B^*_{W,K} = \frac{R_{\text{GPU}} \cdot T_{\theta,\text{device}} / BW_{\text{eff},W}}{F_{\text{token,device}} - R_{\text{GPU}} \cdot T_{\text{KV,device}} / BW_{\text{eff},K}}$$
+- Reduces to the single-tier $B^\star$ of §10 when $W = K$.

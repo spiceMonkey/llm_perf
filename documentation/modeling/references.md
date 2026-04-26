@@ -325,6 +325,57 @@ https://github.com/NVIDIA/TensorRT-LLM
 
 ---
 
+## SRAM-Centric Memory Hierarchy
+
+**[GROQ-LPU]**  
+Groq, Inc. (2024).  
+*LPU Architecture Overview.*  
+https://groq.com/lpu-architecture  
+→ SRAM-only inference accelerator: **230 MB on-die SRAM at 80 TB/s per chip**, deterministic compiler-scheduled execution. Anchor for the §1.1 motivation and §3.4 numerical example in `sram.md`.
+
+**[GROQ-DEEPDIVE]**  
+He, K. (2024).  
+*Inside the Groq LPU.*  
+https://01.me/en/2024/02/groq/  
+→ Llama-2-70B chip-count derivation: 305+ chips for INT8 weights, 576+ once KV cache is included. Used for `sram.md §3.4` deployment math.
+
+**[DMATRIX-HC25]**  
+Kennedy, P. / ServeTheHome (2025).  
+*d-Matrix Corsair In-Memory Computing For AI Inference at Hot Chips 2025.*  
+https://www.servethehome.com/d-matrix-corsair-in-memory-computing-for-ai-inference-at-hot-chips-2025/  
+→ Per-card spec: **2 GB SRAM at 150 TB/s + 256 GB LPDDR5 at 400 GB/s**; 8 chiplets per card with 64×64 INT8 (or 64×128 INT4) DIMC matmul tiles; 60k tokens/s @ 1 ms/token on Llama-3-8B (8-card server) and 30k tokens/s @ 2 ms/token on Llama-3-70B (16-card / 128-chiplet rack); two operating modes ("Performance" / "Capacity") via Aviator runtime. Anchor for `sram.md` §1.1, §1.3, §2.2, §3.2–§3.3.
+
+**[CHIPSANDCHEESE-DM]**  
+Wong, C. (2024).  
+*d-Matrix Corsair: 256GB of LPDDR for AI Models.*  
+Chips and Cheese. https://chipsandcheese.com/p/d-matrix-corsair-256gb-of-lpddr-for  
+→ Independent walk-through of the per-package SRAM/LPDDR split and Performance/Capacity mode toggle. Cross-confirms the per-card numbers used in `sram.md §3.2–§3.3`.
+
+**[VIKS-SRAM]**  
+Bhardwaj, V. (2024).  
+*A Close Look at SRAM for Inference in the Age of HBM Supremacy.*  
+Vik's Newsletter. https://www.viksnewsletter.com/p/a-close-look-at-sram-for-inference  
+→ HBM refresh + bank-conflict overhead (~8% of theoretical peak) versus SRAM at near-peak. Source for the default $\eta_{\beta,\text{HBM}} \approx 0.92$ and $\eta_{\beta,\text{SRAM}} \approx 1.0$ in `sram.md §1.2`.
+
+**[LIMINAL]**  
+Diamantopoulos, D., Pothineni, N., et al. (2025).  
+*Efficient LLM Inference: Bandwidth, Compute, Synchronization, and Capacity are all you need.*  
+arXiv:2507.14397.  
+→ Per-token decode roofline $T_{\text{Mem}} = (\text{Batch\_KV\_Bytes} + \text{Model\_Bytes}) / \text{System\_Aggregate\_Bandwidth}$, mean absolute error 7.6% against measured hardware. The multi-tier $t_{\text{mem}}(B)$ in `sram.md §2.1` is a per-tier opening of LIMINAL Eq. 1; single-tier reduction is exact.
+
+**[MIND-GAP]**  
+*Mind the Memory Gap: Unveiling GPU Bottlenecks in Large-Batch LLM Inference* (2025).  
+arXiv:2503.08311.  
+→ Empirical demonstration that large-batch inference remains memory-bound: attention arithmetic intensity stays nearly constant across batch sizes because KV traffic scales linearly with $B$. Used in `sram.md §2.1` to justify the "weights amortize, KV does not" claim.
+
+**[LLM-FLASH]**  
+Alizadeh, K., Mirzadeh, I., et al. (2024).  
+*LLM in a flash: Efficient Large Language Model Inference with Limited Memory.*  
+arXiv:2312.11514.  
+→ Three-tier flash → DRAM → compute hierarchy; first-byte latency amortization across larger chunks; sliding-window weight cache. Justifies retaining $\alpha_i$ in the tier spec for small-read regimes (`sram.md §1.2`).
+
+---
+
 ## Original Modeling Contributions
 
 The following constants and models are **original to this document suite** and are not derived from a published paper. They should be marked as such in inline citations:
