@@ -16,9 +16,11 @@ import math
 import random
 import sys
 import warnings
+from dataclasses import replace
 
 from llm_perf.core.primitives import (
     cost_collective,
+    enumerate_options,
     inc_a2a,
     inc_all_gather,
     inc_all_reduce,
@@ -27,11 +29,12 @@ from llm_perf.core.primitives import (
     ring_all_gather,
     ring_all_reduce,
     ring_moe_all_to_all,
+    ring_reduce_scatter,
     torus_all_reduce,
     tree_all_reduce,
     tree_moe_all_to_all,
 )
-from llm_perf.specs.system_spec import CrossbarTier, TorusTier, span_tiers
+from llm_perf.specs.system_spec import CrossbarTier, MeshTier, TorusTier, span_tiers
 from llm_perf.utils import GB_TO_BYTES, US_TO_SECONDS
 
 
@@ -47,9 +50,34 @@ def _check(label: str, got: float, want: float) -> None:
 
 
 def _old_path(op: str, tiers, M: float, G: int, algorithm: str) -> float:
-    """Pre-refactor flatten-then-apply reference path."""
+    """Reference path mirroring the dispatcher.
+
+    Single-tier or non-AR/AG: flat path (innermost tier α-sum + BW-min, then
+    a single primitive call). Multi-tier crossbar AR/AG: hierarchical RS →
+    sub-AR → AG (or inner+outer cascade for AG) per collectives.md §3.3 / §4.3
+    — landed in PR2.2.
+    """
     if G <= 1 or not tiers:
         return 0.0
+
+    # Identify crossed tiers (innermost first; stop at cumulative reach >= G).
+    crossed = []
+    reach = 1
+    for t in tiers:
+        reach *= max(1, t.ports)
+        crossed.append(t)
+        if reach >= G:
+            break
+
+    # Multi-tier crossbar AR/AG → hierarchical reference.
+    all_crossbar = all(t.topology == "crossbar" for t in crossed)
+    if len(crossed) > 1 and all_crossbar and op in ("all_reduce", "all_gather"):
+        return _hier_ref(op, M, G, crossed, algorithm)
+    # Multi-tier crossbar MoE A2A → per-destination-class reference.
+    if len(crossed) > 1 and all_crossbar and op == "moe_a2a":
+        return _hier_a2a_ref(M, G, crossed)
+
+    # Else flat reference.
     alpha_us, bw_GBps, _ = span_tiers(tiers, G)
     alpha_s = alpha_us * US_TO_SECONDS
     bw_Bps = bw_GBps * GB_TO_BYTES
@@ -68,6 +96,67 @@ def _old_path(op: str, tiers, M: float, G: int, algorithm: str) -> float:
         if algorithm == "tree":
             return tree_moe_all_to_all(M, G, alpha_s, bw_Bps)
     raise ValueError(f"bad op/algorithm: {op!r}/{algorithm!r}")
+
+
+def _hier_ref(op: str, M: float, G: int, crossed, outer_alg: str) -> float:
+    """Hierarchical reference path for multi-tier crossbar AR/AG.
+
+    Composed from `ring_reduce_scatter` / `ring_all_gather` / `ring_all_reduce`
+    / `tree_all_reduce` — same as `_hierarchical_crossbar_cost` but inlined
+    here so the test stays an independent oracle.
+    """
+    inner = crossed[0]
+    outer_tiers = crossed[1:]
+    G_inner = max(1, inner.ports)
+    L = max(1, G // G_inner)
+
+    alpha_inner_s = inner.alpha_us * inner.eta_alpha * US_TO_SECONDS
+    bw_inner_Bps = inner.bw_per_port_GBps * inner.eta_beta * GB_TO_BYTES
+    alpha_outer_s = sum(t.alpha_us * t.eta_alpha for t in outer_tiers) * US_TO_SECONDS
+    bw_outer_Bps = (
+        min(t.bw_per_port_GBps * t.eta_beta for t in outer_tiers) * GB_TO_BYTES
+    )
+
+    if op == "all_reduce":
+        M_shard = M / G_inner
+        t_rs = ring_reduce_scatter(M_shard, G_inner, alpha_inner_s, bw_inner_Bps)
+        t_outer = (
+            ring_all_reduce(M_shard, L, alpha_outer_s, bw_outer_Bps)
+            if outer_alg == "ring"
+            else tree_all_reduce(M_shard, L, alpha_outer_s, bw_outer_Bps)
+        )
+        t_ag = ring_all_gather(M_shard, G_inner, alpha_inner_s, bw_inner_Bps)
+        return t_rs + t_outer + t_ag
+    if op == "all_gather":
+        return (
+            ring_all_gather(M, G_inner, alpha_inner_s, bw_inner_Bps)
+            + ring_all_gather(G_inner * M, L, alpha_outer_s, bw_outer_Bps)
+        )
+    raise ValueError(f"_hier_ref: unsupported op={op!r}")
+
+
+def _hier_a2a_ref(M: float, G: int, crossed) -> float:
+    """Hierarchical A2A reference (collectives.md §5.3 per-destination-class)."""
+    inner = crossed[0]
+    outer_tiers = crossed[1:]
+    G_inner = max(1, inner.ports)
+
+    alpha_inner_s = inner.alpha_us * inner.eta_alpha * US_TO_SECONDS
+    bw_inner_Bps = inner.bw_per_port_GBps * inner.eta_beta * GB_TO_BYTES
+    alpha_outer_s = sum(t.alpha_us * t.eta_alpha for t in outer_tiers) * US_TO_SECONDS
+    bw_outer_Bps = (
+        min(t.bw_per_port_GBps * t.eta_beta for t in outer_tiers) * GB_TO_BYTES
+    )
+
+    chunk = M / G if G > 0 else 0.0
+    n_intra = max(0, G_inner - 1)
+    n_outer = max(0, G - G_inner)
+    t_intra = n_intra * (alpha_inner_s + chunk / bw_inner_Bps) if bw_inner_Bps > 0 else 0
+    t_outer = (
+        n_outer * (alpha_outer_s + chunk / bw_outer_Bps)
+        if (n_outer > 0 and bw_outer_Bps > 0) else 0
+    )
+    return 2 * (t_intra + t_outer)
 
 
 # ────────────────────────────────────────────────────────────
@@ -328,13 +417,12 @@ def test_T6_inc_dispatch():
     _check("AR G=64 hw_a2a tier → inc_all_reduce", got, want)
 
     # (m) Mixed sharp_class + hw_a2a chain for A2A: gating requires *every* tier
-    # to be hw_a2a, so this falls back to software.
-    got = cost_collective([sharp_tier, hw_a2a_tier], "moe_a2a", M, 4096, algorithm="ring")
-    # G=4096 forces walk into both tiers. _is_hw_a2a fails on sharp_tier → fallback.
-    alpha_total_s = (alpha_endpoint + alpha_endpoint) * US_TO_SECONDS
-    bw_min_Bps = bw * GB_TO_BYTES
-    want = pairwise_a2a(M, 4096, alpha_total_s, bw_min_Bps)
-    _check("A2A mixed sharp+hw_a2a → software", got, want)
+    # to be hw_a2a, so this falls back to software. Multi-tier crossbar A2A
+    # uses the hierarchical per-destination-class path (PR2.3).
+    chain_mix = [sharp_tier, hw_a2a_tier]
+    got = cost_collective(chain_mix, "moe_a2a", M, 4096, algorithm="ring")
+    want = _hier_a2a_ref(M, 4096, chain_mix)
+    _check("A2A mixed sharp+hw_a2a → hierarchical SW (no inc_a2a)", got, want)
 
     # (n) inc_enabled=False forces software fallback even on hw_a2a tier.
     got = cost_collective([hw_a2a_tier], "moe_a2a", M, 64, inc_enabled=False, algorithm="ring")
@@ -451,6 +539,656 @@ def test_T7_loader_inc_and_oversub():
 
 
 # ────────────────────────────────────────────────────────────
+# T8 — enumerate_options: optimizer surface for PR2.5
+# ────────────────────────────────────────────────────────────
+
+def test_T8_enumerate_options():
+    print("T8 enumerate_options:")
+    M = 1_000_000.0
+    alpha = 0.5    # μs
+    alpha_switch = 0.2
+    bw = 900.0     # GB/s
+
+    star_tier = CrossbarTier(name="star", ports=64, bw_per_port_GBps=bw, alpha_us=alpha)
+    inc_tier = CrossbarTier(
+        name="nvls", ports=64, bw_per_port_GBps=bw, alpha_us=alpha,
+        inc="sharp_class", inc_alpha_us=alpha_switch,
+    )
+    hw_a2a_tier = CrossbarTier(
+        name="th-ultra", ports=64, bw_per_port_GBps=bw, alpha_us=alpha,
+        inc="hw_a2a", inc_alpha_us=alpha_switch,
+    )
+    torus_tier = TorusTier(name="ici", dims=(8, 8), bw_per_port_GBps=bw, alpha_us=alpha)
+
+    def _names(opts):
+        return [n for n, _ in opts]
+
+    # (a) Star single-tier AR: ring + tree, no INC (plain tier).
+    opts = enumerate_options([star_tier], "all_reduce", M, 64)
+    if _names(opts) != ["ring", "tree"]:
+        _failures.append(f"T8a: expected ['ring','tree'], got {_names(opts)}")
+    else:
+        print("  PASS  star AR: [ring, tree]")
+
+    # (b) Star single-tier AG: ring only.
+    opts = enumerate_options([star_tier], "all_gather", M, 64)
+    if _names(opts) != ["ring"]:
+        _failures.append(f"T8b: expected ['ring'], got {_names(opts)}")
+    else:
+        print("  PASS  star AG: [ring]")
+
+    # (c) Star single-tier MoE A2A: ring only (tree deprecated, not enumerated).
+    opts = enumerate_options([star_tier], "moe_a2a", M, 64)
+    if _names(opts) != ["ring"]:
+        _failures.append(f"T8c: expected ['ring'], got {_names(opts)}")
+    else:
+        print("  PASS  star A2A: [ring] (no deprecated tree)")
+
+    # (d) Star + sharp_class AR: ring + tree + inc.
+    opts = enumerate_options([inc_tier], "all_reduce", M, 64)
+    if _names(opts) != ["ring", "tree", "inc"]:
+        _failures.append(f"T8d: expected ['ring','tree','inc'], got {_names(opts)}")
+    else:
+        print("  PASS  star+sharp_class AR: [ring, tree, inc]")
+
+    # (e) Star + sharp_class AG: ring + inc.
+    opts = enumerate_options([inc_tier], "all_gather", M, 64)
+    if _names(opts) != ["ring", "inc"]:
+        _failures.append(f"T8e: expected ['ring','inc'], got {_names(opts)}")
+    else:
+        print("  PASS  star+sharp_class AG: [ring, inc]")
+
+    # (f) Star + sharp_class MoE A2A: ring only (sharp_class doesn't accelerate A2A).
+    opts = enumerate_options([inc_tier], "moe_a2a", M, 64)
+    if _names(opts) != ["ring"]:
+        _failures.append(f"T8f: expected ['ring'] (sharp_class no A2A), got {_names(opts)}")
+    else:
+        print("  PASS  star+sharp_class A2A: [ring] (no inc — sharp_class excludes A2A)")
+
+    # (g) Star + hw_a2a MoE A2A: ring + inc (hw_a2a accelerates A2A).
+    opts = enumerate_options([hw_a2a_tier], "moe_a2a", M, 64)
+    if _names(opts) != ["ring", "inc"]:
+        _failures.append(f"T8g: expected ['ring','inc'], got {_names(opts)}")
+    else:
+        print("  PASS  star+hw_a2a A2A: [ring, inc]")
+
+    # (h) inc_enabled=False removes INC entries on the same tier.
+    opts = enumerate_options([inc_tier], "all_reduce", M, 64, inc_enabled=False)
+    if _names(opts) != ["ring", "tree"]:
+        _failures.append(f"T8h: expected ['ring','tree'] when inc_enabled=False, got {_names(opts)}")
+    else:
+        print("  PASS  inc_enabled=False suppresses inc")
+
+    # (i) **Critical invariant**: INC structurally absent on torus for every op.
+    # TorusTier has no inc field; dispatcher gates INC inside the crossbar branch.
+    for op in ("all_reduce", "all_gather", "moe_a2a"):
+        opts = enumerate_options([torus_tier], op, M, 64)
+        if "inc" in _names(opts):
+            _failures.append(f"T8i: torus enumerated 'inc' for op={op!r}: {_names(opts)}")
+        elif _names(opts) != ["torus-dim-ring"]:
+            _failures.append(
+                f"T8i: torus expected ['torus-dim-ring'] for op={op!r}, got {_names(opts)}"
+            )
+    if all("torus-dim-ring" in _names(enumerate_options([torus_tier], op, M, 64))
+           and "inc" not in _names(enumerate_options([torus_tier], op, M, 64))
+           for op in ("all_reduce", "all_gather", "moe_a2a")):
+        print("  PASS  torus: INC structurally absent across AR / AG / A2A")
+
+    # (j) p2p: single option on any topology.
+    opts = enumerate_options([star_tier], "p2p", M, 2)
+    if _names(opts) != ["p2p"]:
+        _failures.append(f"T8j: star p2p expected ['p2p'], got {_names(opts)}")
+    opts = enumerate_options([torus_tier], "p2p", M, 2)
+    if _names(opts) != ["p2p"]:
+        _failures.append(f"T8j: torus p2p expected ['p2p'], got {_names(opts)}")
+    print("  PASS  p2p: single option on star + torus")
+
+    # (k) Costs match the corresponding cost_collective values.
+    opts = enumerate_options([inc_tier], "all_reduce", M, 64)
+    for name, cost in opts:
+        want = cost_collective([inc_tier], "all_reduce", M, 64,
+                               algorithm=("ring" if name == "inc" else name),
+                               inc_enabled=(name == "inc"))
+        if name != "inc" and abs(cost - want) > 0:
+            _failures.append(
+                f"T8k: enumerate cost({name})={cost} != cost_collective={want}"
+            )
+    print("  PASS  enumerate costs match cost_collective at the same algorithm")
+
+    # (l) G=1 returns empty list (no work to enumerate).
+    opts = enumerate_options([star_tier], "all_reduce", M, 1)
+    if opts != []:
+        _failures.append(f"T8l: G=1 expected [], got {opts}")
+    else:
+        print("  PASS  G=1: empty list")
+
+    # (m) Empty tier list returns empty list.
+    opts = enumerate_options([], "all_reduce", M, 64)
+    if opts != []:
+        _failures.append(f"T8m: empty tiers expected [], got {opts}")
+    else:
+        print("  PASS  empty tiers: empty list")
+
+    # (n) Mixed crossbar/torus chain: returns crossbar-flat options (mirrors
+    # cost_collective's fallback path; no warning here — that fires at
+    # cost_collective time).
+    mixed = [star_tier, torus_tier]
+    opts = enumerate_options(mixed, "all_reduce", M, 4096)
+    # Should be flat-ring/tree (mirrors cost_collective's flat-fallback for
+    # mixed); no INC since one tier is torus.
+    if "inc" in _names(opts):
+        _failures.append(f"T8n: mixed chain enumerated 'inc': {_names(opts)}")
+    elif set(_names(opts)) != {"ring", "tree"}:
+        _failures.append(f"T8n: mixed chain expected {{ring,tree}}, got {_names(opts)}")
+    else:
+        print("  PASS  mixed crossbar+torus AR: [ring, tree], no INC")
+
+
+# ────────────────────────────────────────────────────────────
+# T9 — hierarchical AR / AG / RS on multi-tier crossbar (PR2.2)
+# ────────────────────────────────────────────────────────────
+
+def test_T9_hierarchical_crossbar():
+    print("T9 hierarchical crossbar:")
+    M = 16 * 2**20  # 16 MiB
+    inner = CrossbarTier(name="inner", ports=72,
+                          bw_per_port_GBps=900.0, alpha_us=0.5)
+    outer = CrossbarTier(name="outer", ports=8,
+                          bw_per_port_GBps=400.0, alpha_us=2.5)
+    chain = [inner, outer]
+
+    G_inner = 72
+    L = 2          # G=144 → 2 outer ranks
+    G = G_inner * L  # = 144
+    alpha_inner_s = 0.5e-6
+    bw_inner_Bps = 900e9
+    alpha_outer_s = 2.5e-6
+    bw_outer_Bps = 400e9
+
+    # ─── (a) Hierarchical AR cell-level: matches ring_RS + ring_AR + ring_AG.
+    expected_ar = (
+        ring_reduce_scatter(M / G_inner, G_inner, alpha_inner_s, bw_inner_Bps)
+        + ring_all_reduce(M / G_inner, L, alpha_outer_s, bw_outer_Bps)
+        + ring_all_gather(M / G_inner, G_inner, alpha_inner_s, bw_inner_Bps)
+    )
+    got = cost_collective(chain, "all_reduce", M, G, algorithm="ring")
+    _check("hier-AR ring composition", got, expected_ar)
+
+    # ─── (b) Hierarchical AR with outer=tree.
+    expected_ar_tree = (
+        ring_reduce_scatter(M / G_inner, G_inner, alpha_inner_s, bw_inner_Bps)
+        + tree_all_reduce(M / G_inner, L, alpha_outer_s, bw_outer_Bps)
+        + ring_all_gather(M / G_inner, G_inner, alpha_inner_s, bw_inner_Bps)
+    )
+    got = cost_collective(chain, "all_reduce", M, G, algorithm="tree")
+    _check("hier-AR tree composition", got, expected_ar_tree)
+
+    # ─── (c) α-side: matches collectives.md §3.3 closed form
+    # 2(G_inner − 1)·α_inner + 2(L − 1)·α_outer for ring-on-ring.
+    # Isolate α with M=0.
+    got_alpha = cost_collective(chain, "all_reduce", 0.0, G, algorithm="ring")
+    expected_alpha = 2 * (G_inner - 1) * alpha_inner_s + 2 * (L - 1) * alpha_outer_s
+    _check("hier-AR α closed form (M=0)", got_alpha, expected_alpha)
+
+    # ─── (d) β-side telescoping: at uniform BW the hierarchical β term equals
+    # the flat-ring β coefficient 2(N-1)/N · M/BW. Use a chain where
+    # BW_inner = BW_outer to avoid bottleneck mixing.
+    uniform_outer = CrossbarTier(name="outer_u", ports=8,
+                                  bw_per_port_GBps=900.0, alpha_us=0.0)
+    uniform_chain = [
+        CrossbarTier(name="inner_u", ports=72,
+                     bw_per_port_GBps=900.0, alpha_us=0.0),
+        uniform_outer,
+    ]
+    got_beta = cost_collective(uniform_chain, "all_reduce", M, G, algorithm="ring")
+    expected_beta = 2 * (G - 1) / G * M / 900e9
+    if not math.isclose(got_beta, expected_beta, rel_tol=1e-12):
+        _failures.append(
+            f"T9d β-telescoping: got {got_beta:.6e}, expected {expected_beta:.6e}"
+        )
+    else:
+        print(f"  PASS  hier-AR β telescopes to flat 2(N-1)/N at uniform BW")
+
+    # ─── (e) Hierarchical AG: inner AG + outer AG cascade.
+    expected_ag = (
+        ring_all_gather(M, G_inner, alpha_inner_s, bw_inner_Bps)
+        + ring_all_gather(G_inner * M, L, alpha_outer_s, bw_outer_Bps)
+    )
+    got = cost_collective(chain, "all_gather", M, G, algorithm="ring")
+    _check("hier-AG inner+outer cascade", got, expected_ag)
+
+    # ─── (f) Single-tier crossbar AR is unchanged (flat ring/tree).
+    single = [inner]
+    got = cost_collective(single, "all_reduce", M, 64, algorithm="ring")
+    expected_flat = ring_all_reduce(M, 64, alpha_inner_s, bw_inner_Bps)
+    _check("single-tier AR flat (regression)", got, expected_flat)
+
+    # ─── (g) MoE A2A on multi-tier uses per-destination-class accounting (§5.3).
+    # See T10 for the cell-level formula check; here just confirm the dispatcher
+    # routes to the hierarchical-A2A path (cost ≠ flat pairwise).
+    got = cost_collective(chain, "moe_a2a", M, G, algorithm="ring")
+    alpha_total_s = alpha_inner_s + alpha_outer_s
+    bw_min_Bps = min(bw_inner_Bps, bw_outer_Bps)
+    flat_a2a = pairwise_a2a(M, G, alpha_total_s, bw_min_Bps)
+    if got == flat_a2a:
+        _failures.append(
+            f"T9g: multi-tier A2A should use hierarchical path, got flat ({got!r})"
+        )
+    else:
+        print("  PASS  multi-tier MoE A2A uses hierarchical (≠ flat pairwise)")
+
+    # ─── (h) enumerate_options on multi-tier surfaces hierarchical costs.
+    opts = enumerate_options(chain, "all_reduce", M, G)
+    names = [n for n, _ in opts]
+    if names != ["ring", "tree"]:
+        _failures.append(
+            f"T9h: multi-tier AR enumerate names: expected ['ring','tree'], got {names}"
+        )
+    else:
+        # Check costs match hierarchical cell.
+        cost_ring = dict(opts)["ring"]
+        cost_tree = dict(opts)["tree"]
+        if not math.isclose(cost_ring, expected_ar, rel_tol=1e-12):
+            _failures.append(f"T9h: enumerate ring != hier-AR cost")
+        elif not math.isclose(cost_tree, expected_ar_tree, rel_tol=1e-12):
+            _failures.append(f"T9h: enumerate tree != hier-AR-tree cost")
+        else:
+            print("  PASS  enumerate_options multi-tier AR returns hierarchical costs")
+
+    # ─── (i) INC on a multi-tier hierarchical chain: still routes via flat
+    # scale-out INC (n_α = 2k·α_switch). When all tiers eligible, optimizer's
+    # `inc` option short-circuits the SW comparison.
+    inc_in = CrossbarTier(name="inc_in", ports=72, bw_per_port_GBps=900.0,
+                           alpha_us=0.5, inc="sharp_class", inc_alpha_us=0.2)
+    inc_out = CrossbarTier(name="inc_out", ports=8, bw_per_port_GBps=400.0,
+                            alpha_us=2.5, inc="sharp_class", inc_alpha_us=0.4)
+    inc_chain = [inc_in, inc_out]
+    got = cost_collective(inc_chain, "all_reduce", M, G)
+    expected_inc = inc_all_reduce(M, (0.2 + 0.4) * 1e-6, 400e9)
+    _check("multi-tier INC AR (scale-out)", got, expected_inc)
+
+
+# ────────────────────────────────────────────────────────────
+# T10 — hierarchical A2A per-destination-class on multi-tier crossbar (PR2.3)
+# ────────────────────────────────────────────────────────────
+
+def test_T12_optimizer():
+    print("T12 collective_algo_opt:")
+    from llm_perf.core.collective_algo_opt import optimize_collective_algorithms
+    from llm_perf.specs.model_spec import LlmModelSpec, MoESpec
+    from llm_perf.specs.partition_spec import PartitionSpec
+    from llm_perf.specs.system_spec import (
+        DeviceSpec, FabricSpec, SystemSpec,
+    )
+    from llm_perf.specs.tuner_spec import TuningSpec
+
+    # Tiny dense model and tiny MoE model.
+    dense_model = LlmModelSpec(
+        name="t-dense", L=2, H=4096, n_q=8, n_kv=8, I_dense=8,
+        vocab_size=100, max_seq_len=1024, bytes_per_param=2.0,
+    )
+    moe_model = LlmModelSpec(
+        name="t-moe", L=2, H=4096, n_q=8, n_kv=8, I_dense=8,
+        vocab_size=100, max_seq_len=1024, bytes_per_param=2.0,
+        moe=MoESpec(n_experts=8, k_active=2, I_moe=8),
+    )
+    device = DeviceSpec(name="x", hbm_capacity_GB=80.0,
+                        hbm_bandwidth_GBps=3000.0, peak_flops_TF=1000.0)
+
+    # ─── (a) auto resolves on a single-tier star with sharp_class INC.
+    # At small M (decode H=4096, b=2 → 8 KB), DBT should beat ring; INC even better.
+    inc_tier = CrossbarTier(name="t0", ports=64, bw_per_port_GBps=900.0,
+                             alpha_us=0.5, inc="sharp_class", inc_alpha_us=0.2)
+    fab = FabricSpec(name="f", tiers=[inc_tier])
+    sys = SystemSpec(name="s", device=device, num_devices=64,
+                     fabrics={"f": fab},
+                     collective_fabrics={"TP": ["f"], "EP": ["f"], "SP": ["f"], "PP": ["f"]})
+    part = PartitionSpec(PP=1, TP=8, EP=1, SP=1)
+    tuner = TuningSpec(
+        S_decode=2048, B_decode=1, B_prefill=1, S_input=4096,
+        tp_algorithm_decode="auto",
+        tp_algorithm_prefill="auto",
+        ep_algorithm_decode="auto",
+        ep_algorithm_prefill="auto",
+        inc_enabled=True,
+    )
+    resolved = optimize_collective_algorithms(dense_model, part, sys, tuner)
+    if resolved.tp_algorithm_decode != "inc":
+        _failures.append(
+            f"T12a: decode TP with INC available should pick 'inc', got "
+            f"{resolved.tp_algorithm_decode!r}"
+        )
+    else:
+        print("  PASS  decode TP AR with sharp_class → 'inc'")
+    if resolved.tp_algorithm_prefill != "inc":
+        _failures.append(f"T12a: prefill TP should pick 'inc', got {resolved.tp_algorithm_prefill!r}")
+    else:
+        print("  PASS  prefill TP AR with sharp_class → 'inc'")
+
+    # ─── (b) inc_enabled=False forces SW choice; small M → DBT (tree).
+    tuner_noinc = replace(tuner, inc_enabled=False)
+    resolved2 = optimize_collective_algorithms(dense_model, part, sys, tuner_noinc)
+    if resolved2.tp_algorithm_decode not in ("ring", "tree"):
+        _failures.append(f"T12b: SW-only should pick ring or tree, got {resolved2.tp_algorithm_decode!r}")
+    elif resolved2.tp_algorithm_decode != "tree":
+        # At small M, DBT should win over ring.
+        _failures.append(f"T12b: small-M should pick 'tree', got {resolved2.tp_algorithm_decode!r}")
+    else:
+        print("  PASS  inc_enabled=False forces SW; small-M → 'tree' (DBT)")
+
+    # ─── (c) Large prefill M → ring beats tree (ring is BW-optimal at large M
+    # in practice per [DEMYST-NCCL]; but in the pure α-β model ring and DBT
+    # have identical BW terms, so it's α-driven). Verify the optimizer just
+    # picks min consistently — the exact answer depends on (α, BW, M).
+    # Smoke test: resolution succeeds and yields a valid name.
+    resolved3 = optimize_collective_algorithms(dense_model, part, sys, tuner_noinc)
+    if resolved3.tp_algorithm_prefill not in ("ring", "tree"):
+        _failures.append(f"T12c: prefill SW choice invalid: {resolved3.tp_algorithm_prefill!r}")
+    else:
+        print(f"  PASS  prefill SW resolves to {resolved3.tp_algorithm_prefill!r}")
+
+    # ─── (d) MoE A2A on a hw_a2a tier picks 'inc'.
+    hw_tier = CrossbarTier(name="th", ports=64, bw_per_port_GBps=900.0,
+                            alpha_us=0.5, inc="hw_a2a", inc_alpha_us=0.2)
+    fab_hw = FabricSpec(name="f", tiers=[hw_tier])
+    sys_hw = SystemSpec(name="s", device=device, num_devices=64,
+                         fabrics={"f": fab_hw},
+                         collective_fabrics={"TP": ["f"], "EP": ["f"], "SP": ["f"], "PP": ["f"]})
+    part_moe = PartitionSpec(PP=1, TP=1, EP=8, SP=1)
+    tuner_moe = replace(tuner, tp_algorithm_decode="ring", tp_algorithm_prefill="ring",
+                         ep_algorithm_decode="auto", ep_algorithm_prefill="auto")
+    resolved4 = optimize_collective_algorithms(moe_model, part_moe, sys_hw, tuner_moe)
+    if resolved4.ep_algorithm_decode != "inc":
+        _failures.append(f"T12d: hw_a2a EP A2A should pick 'inc', got {resolved4.ep_algorithm_decode!r}")
+    else:
+        print("  PASS  EP A2A with hw_a2a → 'inc'")
+
+    # ─── (e) sharp_class tier: EP A2A doesn't get INC (sharp_class doesn't
+    # accelerate A2A). Optimizer falls back to ring.
+    sharp_tier = CrossbarTier(name="ts", ports=64, bw_per_port_GBps=900.0,
+                               alpha_us=0.5, inc="sharp_class", inc_alpha_us=0.2)
+    fab_sc = FabricSpec(name="f", tiers=[sharp_tier])
+    sys_sc = SystemSpec(name="s", device=device, num_devices=64,
+                         fabrics={"f": fab_sc},
+                         collective_fabrics={"TP": ["f"], "EP": ["f"], "SP": ["f"], "PP": ["f"]})
+    resolved5 = optimize_collective_algorithms(moe_model, part_moe, sys_sc, tuner_moe)
+    if resolved5.ep_algorithm_decode != "ring":
+        _failures.append(
+            f"T12e: sharp_class doesn't accelerate A2A; should pick 'ring', got "
+            f"{resolved5.ep_algorithm_decode!r}"
+        )
+    else:
+        print("  PASS  EP A2A with sharp_class → 'ring' (no INC for A2A)")
+
+    # ─── (f) Non-auto fields pass through unchanged.
+    tuner_pinned = replace(tuner, tp_algorithm_decode="ring", tp_algorithm_prefill="ring",
+                            ep_algorithm_decode="ring", ep_algorithm_prefill="ring")
+    resolved6 = optimize_collective_algorithms(dense_model, part, sys, tuner_pinned)
+    if (resolved6.tp_algorithm_decode != "ring" or
+        resolved6.tp_algorithm_prefill != "ring"):
+        _failures.append(f"T12f: non-auto fields should pass through unchanged: {resolved6}")
+    else:
+        print("  PASS  non-auto fields pass through")
+
+    # ─── (g) After resolving, the calculator runs without error (no auto
+    # remaining to trigger the dispatcher's "auto must be resolved" check).
+    from llm_perf.core import decode_model as dm
+    # Smoke check: decode_model can read the resolved tuner without raising.
+    try:
+        # Fabricated minimal call: avoid running the full calculator; just
+        # confirm the early auto-check doesn't fire.
+        if "auto" in (resolved.tp_algorithm_decode, resolved.ep_algorithm_decode):
+            _failures.append("T12g: resolved tuner still has 'auto'")
+        else:
+            print("  PASS  resolved tuner has no 'auto' remaining")
+    except Exception as e:
+        _failures.append(f"T12g: unexpected error: {e}")
+
+
+def test_T11_per_phase_tuner():
+    print("T11 per-phase × per-collective tuner:")
+    from llm_perf.io.tuner_loaders import tuning_spec_from_json_dict
+
+    base = {
+        "schema": "llm_perf.tuner",
+        "S_decode": 2048,
+        "n_TP_collectives": 2,
+        "n_EP_collectives": 1,
+        "n_SP_collectives": 1,
+        "overlap_factor": 0.0,
+    }
+
+    # (a) Defaults: all four per-phase fields default to "ring".
+    t = tuning_spec_from_json_dict(base)
+    if (t.tp_algorithm_decode, t.tp_algorithm_prefill,
+        t.ep_algorithm_decode, t.ep_algorithm_prefill) != ("ring",) * 4:
+        _failures.append(f"T11a: defaults wrong: {t}")
+    else:
+        print("  PASS  defaults: tp/ep_algorithm_{decode,prefill} all 'ring'")
+
+    # (b) Legacy single-knob propagates to both phases.
+    cfg = {**base, "tp_algorithm": "tree", "ep_algorithm": "ring"}
+    t = tuning_spec_from_json_dict(cfg)
+    if (t.tp_algorithm_decode, t.tp_algorithm_prefill) != ("tree", "tree"):
+        _failures.append(f"T11b: legacy tp_algorithm should propagate to both phases: {t}")
+    else:
+        print("  PASS  legacy tp_algorithm='tree' propagates to both decode and prefill")
+
+    # (c) Per-phase override takes precedence over legacy.
+    cfg = {
+        **base,
+        "tp_algorithm": "ring",
+        "tp_algorithm_decode": "tree",
+        "tp_algorithm_prefill": "ring",
+    }
+    t = tuning_spec_from_json_dict(cfg)
+    if (t.tp_algorithm_decode, t.tp_algorithm_prefill) != ("tree", "ring"):
+        _failures.append(f"T11c: per-phase override failed: {t}")
+    else:
+        print("  PASS  per-phase override: decode='tree', prefill='ring'")
+
+    # (d) "auto" parses through (resolved later by the optimizer).
+    cfg = {**base, "tp_algorithm_decode": "auto", "ep_algorithm_prefill": "auto"}
+    t = tuning_spec_from_json_dict(cfg)
+    if t.tp_algorithm_decode != "auto" or t.ep_algorithm_prefill != "auto":
+        _failures.append(f"T11d: 'auto' didn't parse through: {t}")
+    else:
+        print("  PASS  'auto' parses through TuningSpec")
+
+    # (e) Invalid value rejected.
+    cfg = {**base, "tp_algorithm_decode": "bogus"}
+    try:
+        tuning_spec_from_json_dict(cfg)
+        _failures.append("T11e: expected ValueError for tp_algorithm_decode='bogus'")
+    except ValueError:
+        print("  PASS  invalid algorithm rejected")
+
+
+def test_T10_hierarchical_a2a():
+    print("T10 hierarchical A2A:")
+    M = 16 * 2**20  # 16 MiB
+    inner = CrossbarTier(name="inner", ports=72, bw_per_port_GBps=900.0, alpha_us=0.5)
+    outer = CrossbarTier(name="outer", ports=8, bw_per_port_GBps=400.0, alpha_us=2.5)
+    chain = [inner, outer]
+
+    G_inner = 72
+    G = 144
+    alpha_inner_s = 0.5e-6
+    bw_inner_Bps = 900e9
+    alpha_outer_s = 2.5e-6
+    bw_outer_Bps = 400e9
+
+    # ─── (a) Per-destination-class formula:
+    #   2 · [ (G_inner−1)·(α_inner + (M/G)/BW_inner)
+    #       + (G−G_inner)·(α_outer + (M/G)/BW_outer) ]
+    chunk = M / G
+    n_intra = G_inner - 1
+    n_outer = G - G_inner
+    expected = 2 * (
+        n_intra * (alpha_inner_s + chunk / bw_inner_Bps)
+        + n_outer * (alpha_outer_s + chunk / bw_outer_Bps)
+    )
+    got = cost_collective(chain, "moe_a2a", M, G, algorithm="ring")
+    _check("hier-A2A 2-tier per-class", got, expected)
+
+    # ─── (b) When G ≤ G_inner (stays within pod), n_outer=0; should match
+    # single-tier flat pairwise. The dispatcher routes single-tier to flat,
+    # so exercising on a single-tier chain confirms parity.
+    intra_only = pairwise_a2a(M, 64, alpha_inner_s, bw_inner_Bps)
+    got = cost_collective([inner], "moe_a2a", M, 64, algorithm="ring")
+    _check("intra-pod A2A G=64 stays flat (single-tier)", got, intra_only)
+
+    # ─── (c) α-side closed form (M=0): 2·[(G_inner−1)·α_inner + (G−G_inner)·α_outer].
+    got_alpha = cost_collective(chain, "moe_a2a", 0.0, G, algorithm="ring")
+    expected_alpha = 2 * (n_intra * alpha_inner_s + n_outer * alpha_outer_s)
+    if not math.isclose(got_alpha, expected_alpha, rel_tol=1e-12):
+        _failures.append(
+            f"T10c α closed form: got {got_alpha:.6e}, expected {expected_alpha:.6e}"
+        )
+    else:
+        print("  PASS  hier-A2A α closed form (M=0)")
+
+    # ─── (d) BW-side at uniform BW: n_intra·chunk/BW_inner + n_outer·chunk/BW_outer
+    # collapses to (G−1)·chunk/BW = (G−1)/G · M/BW, matching flat pairwise's β
+    # coefficient — confirms the per-destination sum reduces correctly.
+    uniform = [
+        CrossbarTier(name="ui", ports=72, bw_per_port_GBps=900.0, alpha_us=0.0),
+        CrossbarTier(name="uo", ports=8, bw_per_port_GBps=900.0, alpha_us=0.0),
+    ]
+    got_beta = cost_collective(uniform, "moe_a2a", M, G, algorithm="ring")
+    # 2 · (G-1) · (M/G) / BW
+    expected_beta = 2 * (G - 1) * (M / G) / 900e9
+    if not math.isclose(got_beta, expected_beta, rel_tol=1e-12):
+        _failures.append(
+            f"T10d β-uniform: got {got_beta:.6e}, expected {expected_beta:.6e}"
+        )
+    else:
+        print("  PASS  hier-A2A β at uniform BW reduces to flat 2(G-1)/G·M/BW")
+
+    # ─── (e) enumerate_options surfaces hierarchical A2A.
+    opts = enumerate_options(chain, "moe_a2a", M, G)
+    if [n for n, _ in opts] != ["ring"]:
+        _failures.append(f"T10e: expected ['ring'], got {[n for n,_ in opts]}")
+    elif not math.isclose(dict(opts)["ring"], expected, rel_tol=1e-12):
+        _failures.append(f"T10e: enumerated cost != hierarchical cell")
+    else:
+        print("  PASS  enumerate_options multi-tier A2A returns hierarchical cost")
+
+    # ─── (f) HW A2A on hw_a2a chain bypasses hierarchical (INC scale-out form).
+    hw_in = CrossbarTier(name="hw_in", ports=72, bw_per_port_GBps=900.0,
+                          alpha_us=0.5, inc="hw_a2a", inc_alpha_us=0.2)
+    hw_out = CrossbarTier(name="hw_out", ports=8, bw_per_port_GBps=400.0,
+                           alpha_us=2.5, inc="hw_a2a", inc_alpha_us=0.4)
+    got = cost_collective([hw_in, hw_out], "moe_a2a", M, G, algorithm="ring")
+    expected_inc = inc_a2a(M, G, (0.2 + 0.4) * 1e-6, 400e9)
+    _check("hw_a2a multi-tier A2A → inc_a2a (bypasses hierarchical)",
+           got, expected_inc)
+
+
+# ────────────────────────────────────────────────────────────
+# T13 — MeshTier (full mesh + k-D mesh) routing and cost (PR2.7)
+# ────────────────────────────────────────────────────────────
+
+def test_T13_mesh():
+    print("T13 mesh tier:")
+    M = 1_000_000.0
+    alpha = 0.5  # μs
+    bw = 900.0   # GB/s
+    alpha_s = alpha * 1e-6
+    bw_Bps = bw * 1e9
+
+    # ─── Full mesh: dims=(N,), full=True. Cost identical to single-tier crossbar.
+    fmesh = MeshTier(name="full", dims=(8,), bw_per_port_GBps=bw,
+                      alpha_us=alpha, full=True)
+    star = CrossbarTier(name="star", ports=8, bw_per_port_GBps=bw, alpha_us=alpha)
+
+    for op, alg in [("all_reduce", "ring"), ("all_reduce", "tree"),
+                     ("all_gather", "ring"), ("moe_a2a", "ring"),
+                     ("p2p", "ring")]:
+        G = 8 if op != "p2p" else 2
+        got = cost_collective([fmesh], op, M, G, algorithm=alg)
+        want = cost_collective([star], op, M, G, algorithm=alg)
+        _check(f"full-mesh == star: {op}/{alg}", got, want)
+
+    # ─── k-D mesh: dims=(D_1,…,D_k), full=False. Routes through torus primitives.
+    kdm = MeshTier(name="kd", dims=(8, 8), bw_per_port_GBps=bw,
+                    alpha_us=alpha, full=False)
+    torus = TorusTier(name="torus", dims=(8, 8), bw_per_port_GBps=bw, alpha_us=alpha)
+
+    # AR / AG identical to torus (open-line still BW-optimal).
+    for op in ("all_reduce", "all_gather"):
+        got = cost_collective([kdm], op, M, 64, algorithm="ring")
+        want = cost_collective([torus], op, M, 64, algorithm="ring")
+        _check(f"k-D mesh == torus: {op}", got, want)
+
+    # A2A: k-D mesh pays 2× the BW penalty (D_max/4 vs D_max/8).
+    got_a2a_kdm = cost_collective([kdm], "moe_a2a", M, 64, algorithm="ring")
+    got_a2a_torus = cost_collective([torus], "moe_a2a", M, 64, algorithm="ring")
+    diam = sum(d // 2 for d in (8, 8))
+    d_max = 8
+    expected_kdm = diam * alpha_s + d_max * M / (4 * bw_Bps)
+    expected_torus = diam * alpha_s + d_max * M / (8 * bw_Bps)
+    if not math.isclose(got_a2a_kdm, expected_kdm, rel_tol=1e-12):
+        _failures.append(f"T13 k-D mesh A2A: got {got_a2a_kdm}, expected {expected_kdm}")
+    elif not math.isclose(got_a2a_torus, expected_torus, rel_tol=1e-12):
+        _failures.append(f"T13 torus A2A: got {got_a2a_torus}, expected {expected_torus}")
+    else:
+        # And k-D mesh must be exactly 2× torus on the BW term (α terms identical).
+        bw_term_kdm = got_a2a_kdm - diam * alpha_s
+        bw_term_torus = got_a2a_torus - diam * alpha_s
+        if not math.isclose(bw_term_kdm, 2.0 * bw_term_torus, rel_tol=1e-12):
+            _failures.append(
+                f"T13: k-D mesh A2A BW should be 2× torus, got "
+                f"{bw_term_kdm} vs 2× {bw_term_torus}"
+            )
+        else:
+            print("  PASS  k-D mesh A2A BW term = 2× torus (D_max/4 vs D_max/8)")
+
+    # ─── INC structurally absent on mesh (no inc field).
+    for kind, tier in [("full mesh", fmesh), ("k-D mesh", kdm)]:
+        for op in ("all_reduce", "all_gather", "moe_a2a"):
+            G = 64 if tier is kdm else 8
+            opts = enumerate_options([tier], op, M, G)
+            names = [n for n, _ in opts]
+            if "inc" in names:
+                _failures.append(f"T13: {kind} enumerate('inc'): {names}")
+    print("  PASS  INC structurally absent on mesh (full + k-D) for AR / AG / A2A")
+
+    # ─── Loader: full mesh JSON parses and the dispatcher routes correctly.
+    from llm_perf.io.system_loaders import system_spec_from_json_dict
+    cfg = {
+        "schema": "llm_perf.system",
+        "name": "mesh_test",
+        "num_devices": 16,
+        "device": {"name": "x", "hbm_capacity_GB": 80.0,
+                   "hbm_bandwidth_GBps": 3000.0, "peak_flops_TF": 1000.0},
+        "fabrics": {
+            "f": {"tiers": [
+                {"name": "ucie", "topology": "mesh", "dims": [16],
+                 "full": True, "bw_per_port_GBps": 100.0, "alpha_us": 0.05},
+            ]},
+        },
+        "collective_fabrics": {"TP": "f", "EP": "f", "SP": "f", "PP": "f"},
+    }
+    sys_full = system_spec_from_json_dict(cfg)
+    tier = sys_full.fabrics["f"].tiers[0]
+    if not (isinstance(tier, MeshTier) and tier.full and tier.dims == (16,)):
+        _failures.append(f"T13 full-mesh load: unexpected tier {tier!r}")
+    else:
+        print("  PASS  full-mesh JSON: topology='mesh', full=true → MeshTier")
+
+    # Loader: full=true + non-1 dims rejected.
+    import copy
+    bad_cfg = copy.deepcopy(cfg)
+    bad_cfg["fabrics"]["f"]["tiers"][0]["dims"] = [4, 4]  # full mesh expects (N,)
+    try:
+        system_spec_from_json_dict(bad_cfg)
+        _failures.append("T13: full=True + dims=(4,4) should reject")
+    except ValueError:
+        print("  PASS  full=True + multi-dim rejected by loader")
+
+
+# ────────────────────────────────────────────────────────────
 
 def main() -> int:
     test_T1_single_tier()
@@ -460,6 +1198,12 @@ def main() -> int:
     test_T5_torus_k1_continuity()
     test_T6_inc_dispatch()
     test_T7_loader_inc_and_oversub()
+    test_T8_enumerate_options()
+    test_T9_hierarchical_crossbar()
+    test_T10_hierarchical_a2a()
+    test_T11_per_phase_tuner()
+    test_T12_optimizer()
+    test_T13_mesh()
     if _failures:
         print(f"\n{len(_failures)} FAILURES:")
         for f in _failures:

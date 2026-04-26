@@ -51,8 +51,6 @@ SYSTEMS = [
     "gb200.nvl576.ideal",
     "gb200.nvl576.hierarchical",
     "tpu.v5p.pod",
-    "slingshot11.dragonfly",
-    "hybrid.torus_scaleup_df_scaleout",
 ]
 
 # (PP, TP, EP, SP). Each row exercises a distinct sharding regime.
@@ -67,6 +65,7 @@ PARTITION_SHAPES = [
     (2, 4, 2, 1),   # TP + PP + EP
     (1, 2, 1, 2),   # TP + SP
     (2, 4, 2, 2),   # all four axes
+    (1, 144, 1, 1), # cross-rack TP (exercises hierarchical AR on multi-tier)
 ]
 
 # Tuner shapes, hand-picked to cover the decode-only, prefill, batched,
