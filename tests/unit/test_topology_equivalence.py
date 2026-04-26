@@ -944,6 +944,48 @@ def test_T12_optimizer():
     except Exception as e:
         _failures.append(f"T12g: unexpected error: {e}")
 
+    # ─── (h) Policy: INC short-circuits even when SW would be cheaper.
+    # Set inc_alpha_us extremely high so INC's α-term dominates and exceeds
+    # both ring and tree, then confirm the optimizer still picks 'inc'.
+    # INC is a hardware deployment decision; SW comparison only applies
+    # when INC is unavailable. (η_α / η_β can't differentiate INC vs SW —
+    # they apply to the same tier — so the only way to make INC look bad
+    # in the cost model is via the inc_alpha_us override.)
+    bad_inc_tier = CrossbarTier(
+        name="bad-inc", ports=64, bw_per_port_GBps=900.0, alpha_us=0.5,
+        inc="sharp_class", inc_alpha_us=100.0,  # 100 μs INC switch α: way > DBT's 3 μs at G=8
+    )
+    fab_bad = FabricSpec(name="f", tiers=[bad_inc_tier])
+    sys_bad = SystemSpec(name="s", device=device, num_devices=64,
+                         fabrics={"f": fab_bad},
+                         collective_fabrics={"TP": ["f"], "EP": ["f"], "SP": ["f"], "PP": ["f"]})
+    tuner_bad_inc = replace(tuner, inc_enabled=True)
+    # Sanity check the cost ordering really is bad-INC > ring on this fabric
+    # (otherwise the test is a tautology, not a policy check).
+    from llm_perf.core.primitives import enumerate_options as _enum
+    chain = sys_bad.get_tier_chain("TP")
+    M_decode = dense_model.H * dense_model.bytes_per_param  # B_decode=1
+    opts_check = dict(_enum(chain, "all_reduce", M_decode, 8))
+    if "inc" not in opts_check or opts_check.get("ring", 0) >= opts_check["inc"]:
+        _failures.append(
+            f"T12h setup: needed bad-INC (cost > ring) for the test to be meaningful, "
+            f"got {opts_check}"
+        )
+    else:
+        resolved_bad = optimize_collective_algorithms(dense_model, part, sys_bad, tuner_bad_inc)
+        if resolved_bad.tp_algorithm_decode != "inc":
+            _failures.append(
+                f"T12h: INC must be picked when available even if SW is cheaper "
+                f"per the policy, got {resolved_bad.tp_algorithm_decode!r} "
+                f"(costs: {opts_check})"
+            )
+        else:
+            print(
+                f"  PASS  INC short-circuits even when SW cheaper "
+                f"(ring={opts_check['ring']*1e6:.1f}μs < inc={opts_check['inc']*1e6:.1f}μs, "
+                f"optimizer picked 'inc')"
+            )
+
 
 def test_T11_per_phase_tuner():
     print("T11 per-phase × per-collective tuner:")
