@@ -303,6 +303,8 @@ Now both factors bite: per-port rate dropped to 506 GB/s from the silicon budget
 
 Sections 1–6 assume a single crossbar tier. Real systems beyond one rack add a second (or higher) tier stitching racks together — e.g. a hypothetical NVL576 built from 8× NVL72 racks plus an inter-rack scale-out layer. This section defines the topology-agnostic walk that composes tiers into named fabrics, and named fabrics into a per-collective chain. Tier-level cost is pluggable: crossbar tiers use §3's flat $(\alpha, BW)$ pair, torus tiers use §8's dim-by-dim formulas, and dragonfly tiers use §9's three-tier decomposition. §10 shows how the three compose under one walk. A one-tier, one-fabric crossbar collective is a trivial case of the general chain and produces identical numbers to §3.
 
+**Downstream consumers.** `decode.md §5` and `prefill.md §3.2` do not re-derive collective costs; they call the shipped-primitive formulas catalogued in `collectives.md §3–§6` (ring / DBT AR, ring AG / RS, pairwise A2A on star; dim-decomposed ring and bisection-bound A2A on torus; hierarchical RS → sub-AR → AG; in-network reduction via NVLS / Quantum SHARP / Tomahawk Ultra) with the fabric-chain span quantities from this section, and apply per-tier $(\eta_\alpha, \eta_\beta)$ contention coefficients per `collectives.md §7`. The manual `tuner.ar_algorithm` knob selects star AR between ring and DBT (`collectives.md §3.1`); torus AR ships only as dim-decomposed ring (§8).
+
 ### 7.1 Fabrics and tier descriptors
 
 The system model names physical networks as **fabrics**. Each `FabricSpec` is an ordered list of switching tiers, innermost first. A tier $i \in \{0, 1, \ldots\}$ inside a fabric is a triple:
@@ -444,21 +446,21 @@ $M$ is the per-rank shard; the gathered volume at each rank is $N \cdot M$. This
 
 ### 8.5 All-to-all — bisection-limited
 
-A uniform-mixing A2A moves $N M / 2$ aggregate bytes through the min bisection (by symmetry, half of each rank's $M$-byte payload crosses). With $BW_\mathrm{bisect}^\mathrm{min} = 2 N BW_\mathrm{link} / D_\mathrm{max}$:
+Track per-link bytes in one direction directly. With $N$ ranks split by the min-bisection cut into halves $L$ and $R$ ($|L| = |R| = N/2$), each rank in $L$ holds $N$ chunks of size $M/N$ and sends $|R| = N/2$ of them across the cut. So $L \to R$ traffic is $(N/2) \cdot (N/2) \cdot (M/N) = NM/4$ bytes in one direction. The min-bisection severs $2N / D_\mathrm{max}$ links (wraparound torus), so each cut link carries $(NM/4) / (2N/D_\mathrm{max}) = D_\mathrm{max} M / 8$ bytes in one direction. Dividing by per-link single-direction $BW_\mathrm{link}$:
 
-$$t_{A2A}^\mathrm{torus}(M, (D_1, \ldots, D_k), \alpha, BW) \;\approx\; \mathrm{diam}\cdot\alpha \;+\; \frac{D_\mathrm{max}\,M}{4\,BW_\mathrm{link}}$$
+$$t_{A2A}^\mathrm{torus}(M, (D_1, \ldots, D_k), \alpha, BW) \;\approx\; \mathrm{diam}\cdot\alpha \;+\; \frac{D_\mathrm{max}\,M}{8\,BW_\mathrm{link}}$$
 
-The bandwidth term depends on $D_\mathrm{max}$ alone, not on $N$. Two layouts with the same node count can differ by orders of magnitude in A2A cost — this is the core argument for cubic pod layouts, and the reason TPU v4's optical circuit switch carves balanced 3D slices rather than arbitrary rectangles [TPU-V4 §V].
+The bandwidth term depends on $D_\mathrm{max}$ alone, not on $N$. Two layouts with the same node count can differ by orders of magnitude in A2A cost — this is the core argument for cubic pod layouts, and the reason TPU v4's optical circuit switch carves balanced 3D slices rather than arbitrary rectangles [TPU-V4 §V]. At a cubic shape ($D_i = N^{1/k}$) the BW term equals $M / \mathrm{BW}_\mathrm{link}$ — torus matches star pairwise A2A's per-rank BW exactly; asymmetric layouts pay a $D_\mathrm{max}/N^{1/k}$ multiplier on top.
 
 **Layout sensitivity at $N = 512$:**
 
 | Layout | $D_\mathrm{max}$ | $BW_\mathrm{bisect}^\mathrm{min}$ | A2A BW term relative |
 |---|---|---|---|
 | 8×8×8 (balanced cubic) | 8 | $128 \cdot BW_\mathrm{link}$ | 1.00× |
-| 4×4×32 (asymmetric) | 32 | $32 \cdot BW_\mathrm{link}$ | 0.25× |
-| 2×2×128 (extreme pencil) | 128 | $8 \cdot BW_\mathrm{link}$ | 0.0625× |
+| 4×4×32 (asymmetric) | 32 | $32 \cdot BW_\mathrm{link}$ | 4.00× |
+| 2×2×128 (extreme pencil) | 128 | $8 \cdot BW_\mathrm{link}$ | 16.00× |
 
-For MoE-heavy inference where EP collectives are A2A-dominated, a 4× BW hit from an asymmetric torus slice reads directly onto TPOT. The model picks $D_\mathrm{max}$ automatically from the tier's `dims` tuple; there is no layout-selection knob. For MoE A2A specifically, bake Dispatch+Combine into the caller's $M$ (matching the ring A2A convention in §5).
+For MoE-heavy inference where EP collectives are A2A-dominated, a 4× BW hit from an asymmetric torus slice reads directly onto TPOT. The model picks $D_\mathrm{max}$ automatically from the tier's `dims` tuple; there is no layout-selection knob. For MoE A2A specifically, bake Dispatch+Combine into the caller's $M$ (matching the ring A2A convention in §5). Derivation matches `documentation/explaining/collectives/02_topology_mapping.md` Appendix D.3.
 
 ### 8.6 Worked example — TPU v5p pod
 

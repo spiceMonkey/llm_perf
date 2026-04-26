@@ -1195,6 +1195,8 @@ where $\alpha$ is the collective or hop latency, and $B_{\text{eff}}$ is the sus
 
 The parameters $\alpha$ and $B_{\text{eff}}$ in this model are not abstract: they are **topology-dependent physical properties** of the underlying interconnect. Different parallelism domains—TP, EP, SP, and PP—may be mapped to **different network fabrics** or different portions of the same physical topology (e.g., NVSwitch star within a node, 2D/3D torus across nodes, or hybrid switch-plus-fabric designs). Consequently, each collective type sees its own communication characteristics, with potentially different latency constants and effective bandwidths. To keep the analysis general, we denote these as $\alpha_{XP}$ and $B_{\text{eff},XP}$ for TP, EP, SP, and PP respectively. Their actual numerical values depend on the system’s physical layout, routing scheme, and bisection bandwidth properties (e.g., constant-hop NVSwitch vs. hop-scaling torus fabrics). The following sections therefore use $\alpha_{XP}$ and $B_{\text{eff},XP}$ as **collective-specific, topology-aware** parameters, to be instantiated according to the actual deployment mapping.
 
+**Delegation to `collectives.md`.** The shipped collective primitives (ring AR, double binary tree AR, ring AG / RS, pairwise A2A on star; dim-decomposed ring and bisection-bound A2A on torus; hierarchical RS → sub-AR → AG; in-network reduction via NVLS / Quantum SHARP / Tomahawk Ultra) are cost-modeled in `collectives.md §3–§6`, with contention coefficients $(\eta_\alpha, \eta_\beta)$ in `collectives.md §7`. This section instantiates those primitives with the decode-scale per-rank message sizes defined below; derivations and the $(\alpha_\mathrm{sum}, BW_\min)$ tier-chain accumulation live there. The $\alpha_{XP}$ and $BW_{XP}$ values used below are the fabric-chain span quantities from `notation.md §7`.
+
 ### Message sizes and their shard structure
 
 To remain consistent with the compute and memory models, we strictly define the payload size for each collective type. Note the distinction between *storage size* (sharded) and *communication payload* (often full-width). Each shape below is given per token; for a decode step of batch size $B$ the payload scales linearly as $B \times (\text{per-token shape})$ because activation bytes scale with the number of sequences in the step. KV-gather (SP) scales with the number of sequences whose KV must be gathered, i.e., also $\propto B$.
@@ -1241,140 +1243,57 @@ This shard-preserving PP design avoids the extra TP collectives that would be re
 
 ## 5.2 Expert Parallel (EP) All-to-All (MoE Dispatch and Combine)
 
-MoE layers require exchanging token activations across the expert-parallel (EP) dimension via all-to-all routing [DEEPSPEED-MOE]. In contrast to TP collectives (which perform a reduce-then-broadcast) or PP hops (which are unidirectional), EP communication follows a **bidirectional dispatch-and-combine pattern**:
+MoE layers require exchanging token activations across the expert-parallel (EP) dimension via all-to-all routing [DEEPSPEED-MOE]. EP communication follows a **bidirectional dispatch-and-combine pattern**: token activations are routed from the source rank to the rank holding the selected expert (top-$k$), and the expert's output is then sent back to the source rank to be added to the residual stream. Because each token traverses the link twice, the collective cost is $2 \times$ a single-direction A2A.
 
-1. **Dispatch:** Token activations are routed from the source rank to the rank holding the selected expert (top-$k$ routing).
-2. **Combine:** The expert's output must be sent **back** to the source rank to be added to the residual stream.
+Let $k$ denote the number of active experts per token. The per-direction message is $k H b$ bytes; the full Dispatch + Combine pair contributes $2 k H b$ bytes per device per token.
 
-Because the token must traverse the link twice (once to the expert, once back), the network traffic is double that of a simplex transfer.
-
-Let $k$ denote the number of active experts per token. Each device transmits approximately $k H b$ bytes per token during Dispatch and receives $k H b$ bytes during Combine.
-
----
-
-### 5.2.1 Ring-Style EP All-to-All
-
-A ring all-to-all across $EP$ devices performs $(EP - 1)$ exchange rounds.
-Including the factor of 2 for the round-trip nature of MoE routing, the **per-token, per-layer** latency model is:
+The shipped A2A primitive is pairwise direct-send (NCCL on star; bisection-bound pairwise on torus). Bruck / log-hop A2A does **not** ship and does not appear in the cost — see `collectives.md §5` for the primitive derivations. On a star topology, the per-token, per-layer EP A2A cost is:
 
 $$
-t_{EP}^{\text{ring}} =
-2(EP - 1)\alpha_{EP}
-+
-2(EP - 1)
-\frac{k H \, b}{EP \cdot BW_{\text{EP}}}
+t_{EP} \;=\; 2(EP - 1)\,\alpha_{EP} \;+\; 2 \cdot \frac{EP - 1}{EP} \cdot \frac{k H \, b}{BW_{\text{EP}}}
 $$
 
-Interpretation:
-
-- The factor of **2** accounts for the full round trip (Dispatch + Combine).
-- Communication depth grows linearly with $(EP - 1)$.
-- Each device sends the equivalent of $2 k H b$ bytes total per token.
-
----
-
-### 5.2.2 Log-Style (Tree/Recursive) EP All-to-All
-
-Optimized implementations can reduce collective depth via recursive-doubling or tree-style schedules. The **per-token, per-layer** latency can be modeled as:
-
-$$
-t_{EP}^{\text{tree}}
-\approx
-2\lceil \log_2(EP)\rceil \alpha_{EP}
-+
-2\frac{k H \, b}{BW_{\text{EP}}}
-$$
-
-Here:
-
-- The exchange requires only $\lceil\log_2(EP)\rceil$ rounds per direction.
-- The per-device payload remains $2 k H b$ (Dispatch + Combine).
-
-For dense models ($EP = 1$), we have $t_{EP} = 0$.
+The factor of $2$ absorbs Dispatch + Combine; the primitive itself is pairwise direct-send per `collectives.md §5.1`. For torus EP fabrics, substitute the bisection-bound form of `collectives.md §5.2` with $M = k H b$. For dense models ($EP = 1$), $t_{EP} = 0$.
 
 ---
 
 ## 5.3 Tensor Parallel (TP) Communication
 
-TP groups compute each layer in parallel across $TP$ devices using column- and row-parallel linear layers [MEGATRON]. The most common operation is the **All-Reduce** required at the end of the MLP (Row Parallel) and Attention (Output) blocks to sum the partial results across ranks.
+TP groups compute each layer in parallel across $TP$ devices using column- and row-parallel linear layers [MEGATRON]. The dominant collective is an **All-Reduce** at the end of the MLP (Row Parallel) and Attention (Output) blocks to sum partial results across ranks.
 
-**Critical Note on Message Size:**
-Unlike PP (which sends a shard), the TP All-Reduce operates on the **full hidden state vector** ($H$). Although each device only "owns" a shard of the weights, the partial output computed by Row Parallelism is a vector of size $H$ (containing partial sums). These must be reduced globally.
+**Critical Note on Message Size:** unlike PP (which sends a shard), the TP All-Reduce operates on the **full hidden state vector** ($H$). Each device owns only a shard of the weights, but the partial output from Row Parallelism is a vector of size $H$ that must be reduced globally; the payload is $H b$ bytes per token, not $(H/TP) b$.
 
----
-
-### 5.3.1 TP Ring All-Reduce
-
-For a ring all-reduce, the **per-token, per-layer** latency is:
+NCCL ships two AR algorithms on a star fabric — ring (large-$M$) and double binary tree (DBT, small-$M$). Selection is a manual tuner knob (`tuner.ar_algorithm`, default `"ring"`; see `collectives.md §3.1`). Both are pipelined and bandwidth-optimal; only the $n_\alpha$ coefficient differs. For the decode payload $M = H b$, the per-token, per-layer cost is:
 
 $$
-t_{TP}^{\text{ring}} =
-2(TP - 1)\alpha_{TP}
-+
-2\frac{TP - 1}{TP}
-\cdot
-\frac{H \, b}{BW_{\text{TP}}}
+t_{TP}^{\text{ring}} \;=\; 2(TP - 1)\,\alpha_{TP} \;+\; 2 \cdot \frac{TP - 1}{TP} \cdot \frac{H b}{BW_{\text{TP}}}
 $$
 
-Interpretation:
-
-- The factor of **2** comes from the two phases of All-Reduce: **Reduce-Scatter** + **All-Gather**.
-- The payload is the **full** hidden size $H$, not the shard size $H/TP$.
-- Each device sends and receives approximately $2H$ bytes per collective (for large $TP$).
-
----
-
-### 5.3.2 TP Tree All-Reduce
-
-For a tree algorithm:
-
 $$
-t_{TP}^{\text{tree}}
-\approx
-2\lceil \log_2(TP)\rceil \alpha_{TP}
-+
-2\frac{H \, b}{BW_{\text{TP}}}
+t_{TP}^{\text{DBT}} \;=\; 2\,\lceil \log_2 TP \rceil \cdot \alpha_{TP} \;+\; 2 \cdot \frac{TP - 1}{TP} \cdot \frac{H b}{BW_{\text{TP}}}
 $$
 
-Tree algorithms reduce the latency term (logarithmic steps) but often utilize the same bandwidth (sending the full vector $H$ up and down the tree).
+For torus TP fabrics (dim-decomposed ring, shipped on TPU / Trainium), substitute the torus AR form of `collectives.md §3.2` with $M = H b$. Derivation and the ring-vs-DBT empirical crossover behavior are in `collectives.md §3.1` (cost) and explainer `02 §2`.
 
 ---
 
 ## 5.4 Sequence Parallel (SP) Communication
 
-Sequence Parallelism (SP) in inference typically refers to **Ring Attention** [RING-ATTN]. Here, the KV cache is partitioned along the sequence dimension $S$. To compute attention for a new token:
+Sequence Parallelism (SP) in inference typically refers to **Ring Attention** [RING-ATTN]. The KV cache is partitioned along the sequence dimension $S$; to compute attention for a new token the Query ($Q$) stays local and KV blocks rotate around the ring so that the local $Q$ attends to the full history. This is a **pass-KV** ring variant — the standard choice for KV-cache-dominated inference where KV is large relative to $Q$. (A pass-Q variant exists for training, where $Q$ is full-sequence; see [HUANG-CP-2024].)
 
-1. The Query ($Q$) remains local on the device.
-2. The KV blocks are **rotated** around the ring so that the local $Q$ can attend to the full history.
-
-This is a **pass-KV** ring variant: each device circulates its KV shard while keeping $Q$ stationary. This is the standard choice for KV-cache-dominated inference where KV is large relative to $Q$. (A pass-Q variant exists for training, where $Q$ is full-sequence; see [HUANG-CP-2024].)
-
-This is effectively an **All-Gather** operation (streaming the distributed KV cache to every rank), not an All-Reduce. Note that DeepSpeed-Ulysses [DEEPSPEED-ULYSSES] is an alternative SP approach using all-to-all instead of ring; unlike ring, it is bounded by the number of attention heads rather than the number of devices.
-
-While tree-based variants are theoretically possible, practical implementations (e.g., Megatron-LM SP and fused attention kernels) consistently use ring-style schedules: KV shards are large and must be processed in sequence order, making tree-style SP impractical.
-
-Thus, for modeling purposes, we assume **ring-style, pass-KV SP communication**.
+The ring operation is effectively an **All-Gather** (streaming the distributed KV cache to every rank), not an All-Reduce. DeepSpeed-Ulysses [DEEPSPEED-ULYSSES] is an alternative SP approach using all-to-all instead of ring; unlike ring, it is bounded by the number of attention heads rather than the number of devices. Tree-based SP variants are theoretically possible but no production implementation ships them — KV shards are large and must be processed in sequence order. For modeling purposes, we assume **ring-style, pass-KV SP communication**, costed via the ring AG primitive of `collectives.md §4.1`.
 
 ### SP Ring Communication Latency
 
-A ring with $SP$ ranks performs $(SP - 1)$ uni-directional shifts. Unlike the two-pass scatter-gather structure of TP All-Reduce, Ring Attention is a **single-pass** streaming operation.
-
-The **per-token, per-layer** latency is:
+Substituting the decode per-rank KV shard $M_\mathrm{SP} = (S / SP) \cdot (2 H_{kv} / TP) \cdot b$ into the star ring AG cost of `collectives.md §4.1`:
 
 $$
-t_{SP} =
-(SP - 1)\alpha_{SP}
-+
-(SP - 1)
-\cdot
-\frac{\left(\frac{S}{SP}\cdot \frac{2H_{kv}}{TP}\right) b}{BW_{\text{SP}}}
+t_{SP} \;=\; (SP - 1)\,\alpha_{SP} \;+\; (SP - 1) \cdot \frac{(S / SP) \cdot (2 H_{kv} / TP) \cdot b}{BW_{\text{SP}}}
 $$
 
-Interpretation:
+The message size reflects TP and SP as orthogonal partitions of the head and sequence dimensions. For torus SP fabrics, use the torus AG form of `collectives.md §4.2` with the same $M_\mathrm{SP}$.
 
-- **Single pass:** KV shards circulate once around the ring; no scatter phase.
-- **Message size per step:** The local KV shard — $S/SP$ rows × $2H_{kv}/TP$ columns (TP and SP are orthogonal partitions of head and sequence dimensions respectively). Total volume transferred per device: $\frac{SP-1}{SP} \times \text{TotalKV}$.
-- **Decode note:** In single-token decode, per-token compute time is small, so communication overlap with compute ($\rho$) is unlikely to be significant for SP. Use $\rho \approx 0$ for SP when modeling decode latency.
+**Decode overlap note:** in single-token decode, per-token compute time is small, so communication overlap with compute ($\rho$) is unlikely to be significant for SP. Use $\rho \approx 0$ for SP when modeling decode latency.
 
 ---
 
@@ -1473,22 +1392,17 @@ For a **pure MoE model**: $L_{\text{moe}} = L$, recovering the original formula.
 
 At $B=1$ these reduce to the classical single-token payloads. The B-factor reflects that a decode step processes $B$ activations concurrently, so each collective carries $B \times$ the per-token activation vector.
 
-### Practical Guidance: When to Use Ring vs. Tree Collectives
+### Practical Guidance: Shipped Algorithm Selection
 
-The choice between ring-style and tree-style collective algorithms depends strongly on the **physical interconnect topology**:
+Each collective in this section uses the algorithm that is actually shipped on the target fabric; other algorithms (Bruck A2A, recursive-doubling AR, PAT AG) are reference-only and live in `explaining/collectives/01 App. B`. Selection rules:
 
-- **NVSwitch / fully-connected crossbars (constant-hop latency):**  
-  Ring collectives often provide higher effective bandwidth because all links can operate
-  concurrently with no hop-distance penalty.
+- **TP All-Reduce:** NCCL ships both ring and double binary tree (DBT) on a star fabric; the choice is a manual tuner knob `tuner.ar_algorithm` (`collectives.md §3.1`), default `"ring"`. On torus fabrics (TPU / Trainium), only dim-decomposed ring ships — the knob is ignored. Empirical crossover: DBT wins at small $M$, ring wins at large $M$ ([DEMYST-NCCL]).
 
-- **2D/3D torus, dragonfly, and multi-hop switch fabrics:**  
-  Tree or recursive-doubling collectives typically reduce depth and latency, since ring
-  communication cost scales with hop count. Low-latency links benefit more from tree scheduling.
+- **EP All-to-All:** NCCL ships pairwise direct-send on a star; TPU / Trainium ships the bisection-bound pairwise form on a torus (`collectives.md §5`). Log-hop (Bruck) A2A is **not** shipped and does not appear in this section's formulas.
 
-- **Sequence Parallelism (SP):**  
-  SP operations must traverse KV shards in strict left-to-right order. Tree-style SP is rarely implemented in practice; **ring is the standard**.
+- **SP All-Gather:** Ring AG is the only shipped form in production inference stacks — KV shards are large and must be processed in sequence order, so tree variants are impractical. This applies to both star (`collectives.md §4.1`) and torus (`collectives.md §4.2`).
 
-This guidance explains why Section 5 provides both **ring** and **tree** expressions for EP and TP, but uses **ring** exclusively for SP.
+See `collectives.md §3–§6` for the full shipped-primitive inventory and per-topology cost formulas (including hierarchical RS → sub-AR → AG and in-network reduction); `collectives.md §7` for the contention coefficients $(\eta_\alpha, \eta_\beta)$.
 
 ---
 

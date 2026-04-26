@@ -496,68 +496,51 @@ $$
 t = \alpha + \frac{\text{message size}}{B_{\text{eff}}}
 $$
 
+**Delegation to `collectives.md`.** Shipped-primitive cost formulas (ring AR, DBT AR, ring AG / RS, pairwise A2A on star; dim-decomposed ring and bisection-bound A2A on torus; hierarchical RS → sub-AR → AG; in-network reduction via NVLS / Quantum SHARP / Tomahawk Ultra) are documented in `collectives.md §3–§6`, with contention coefficients $(\eta_\alpha, \eta_\beta)$ in `collectives.md §7`. This section substitutes the prefill per-rank message sizes (scaled by $S_{\text{input}}$) into those primitives; the $\alpha_{XP}$ and $BW_{XP}$ values are fabric-chain span quantities per `notation.md §7`.
+
 ### TP All-Reduce (prefill)
 
-The TP All-Reduce synchronizes the partial hidden-state outputs after Row-Parallel matrix multiplications. During prefill, the output has shape $[S_{\text{input}} \times H]$, so the message size is $H \cdot S_{\text{input}} \cdot b$ (compared to $H \cdot b$ during decode).
-
-Per-layer TP ring All-Reduce:
+The TP All-Reduce synchronizes the partial hidden-state outputs after Row-Parallel matrix multiplications. During prefill, the output has shape $[S_{\text{input}} \times H]$, so the message size is $M_{TP}^\mathrm{prefill} = H \cdot S_{\text{input}} \cdot b$ (vs. $H \cdot b$ during decode). NCCL ships ring (large-$M$) and DBT (small-$M$) AR on a star fabric, selected via `tuner.ar_algorithm` (`collectives.md §3.1`). Substituting $M_{TP}^\mathrm{prefill}$ into `collectives.md §3.1`:
 
 $$
-t_{TP}^{\text{prefill,ring}} =
-2(TP-1)\alpha_{TP}
-+
-2\frac{TP-1}{TP}
-\cdot
-\frac{H \cdot S_{\text{input}} \cdot b}{BW_{\text{TP}}}
+t_{TP}^{\text{prefill,ring}} \;=\; 2(TP-1)\,\alpha_{TP} \;+\; 2 \cdot \frac{TP-1}{TP} \cdot \frac{H \cdot S_{\text{input}} \cdot b}{BW_{\text{TP}}}
 $$
 
-For a tree All-Reduce:
-
 $$
-t_{TP}^{\text{prefill,tree}}
-\approx
-2\lceil\log_2(TP)\rceil\,\alpha_{TP}
-+
-2\frac{H \cdot S_{\text{input}} \cdot b}{BW_{\text{TP}}}
+t_{TP}^{\text{prefill,DBT}} \;=\; 2\,\lceil \log_2 TP \rceil \cdot \alpha_{TP} \;+\; 2 \cdot \frac{TP-1}{TP} \cdot \frac{H \cdot S_{\text{input}} \cdot b}{BW_{\text{TP}}}
 $$
 
-The $S_{\text{input}}$ factor in the bandwidth term means TP communication during prefill is substantially larger than during decode. For $S_{\text{input}} = 4096$ this is a $4096\times$ larger payload per collective than single-token decode.
+Torus TP fabrics (dim-decomposed ring, TPU / Trainium) use the torus AR form of `collectives.md §3.2` with the same $M_{TP}^\mathrm{prefill}$. The $S_{\text{input}}$ factor in the bandwidth term means TP communication during prefill is substantially larger than during decode — for $S_{\text{input}} = 4096$, the per-collective payload is $4096\times$ that of single-token decode.
 
 > **Implementation note — tiled prefill and $\alpha_{TP}$ accumulation:** In practice, large-$S_{\text{input}}$ prefill is often processed in $k$ sub-sequence tiles (e.g., to fit within SRAM or network buffer limits). Each tile launches an independent all-reduce, accumulating the $\alpha_{TP}$ startup latency $k$ times. The total un-hidden $\alpha$ overhead is $k \times \max(0,\, \alpha_{TP} - \rho \cdot t_{\text{tile,compute}})$, where $t_{\text{tile,compute}}$ is the compute time for a single tile. For fine-grained tiling with small tiles, each tile's compute-to-communication ratio mirrors the full-sequence overlap structure, so the $\rho$ factor still absorbs the hiding benefit. However, for very large $S_{\text{input}}$ and small tile sizes, the accumulated $k \cdot \alpha_{TP}$ term can become non-negligible even when each individual $\alpha_{TP}$ is fully hidden. The formulas above model a single collective per layer; the tiling multiplier $k$ can be incorporated when tile size is a known design parameter.
 
 ### EP All-to-All (prefill, MoE)
 
-For MoE layers, each device dispatches $k \cdot H \cdot S_{\text{input}} \cdot b$ bytes of token activations per direction (vs. $k \cdot H \cdot b$ during decode):
+For MoE layers, the Dispatch + Combine payload per direction is $k \cdot H \cdot S_{\text{input}} \cdot b$ (vs. $k \cdot H \cdot b$ during decode). The shipped A2A primitive is pairwise direct-send (NCCL on star; bisection-bound pairwise on torus) — see `collectives.md §5`. Substituting $M_{EP}^\mathrm{prefill} = k H \cdot S_{\text{input}} \cdot b$ into the star pairwise form with the $\times 2$ Dispatch + Combine factor:
 
 $$
-t_{EP}^{\text{prefill,ring}} =
-2(EP-1)\alpha_{EP}
-+
-2(EP-1)
-\frac{k H \cdot S_{\text{input}} \cdot b}{EP \cdot BW_{\text{EP}}}
+t_{EP}^{\text{prefill}} \;=\; 2(EP-1)\,\alpha_{EP} \;+\; 2 \cdot \frac{EP-1}{EP} \cdot \frac{k H \cdot S_{\text{input}} \cdot b}{BW_{\text{EP}}}
 $$
+
+For torus EP fabrics, use the torus A2A form of `collectives.md §5.2` with $M = k H \cdot S_{\text{input}} \cdot b$.
 
 ### PP Hop (prefill)
 
-The PP hop forwards the hidden-state shard to the next stage. With TP rank alignment, each device forwards its local shard of shape $[S_{\text{input}} \times H/TP]$:
+The PP hop forwards the hidden-state shard to the next stage. With TP rank alignment, each device forwards its local shard of shape $[S_{\text{input}} \times H/TP]$; this is a single point-to-point transfer (see `decode.md §5.1` for the p2p rationale):
 
 $$
-t_{PP}^{\text{prefill}} =
-\alpha_{PP}
-+
-\frac{(H/TP) \cdot S_{\text{input}} \cdot b}{BW_{\text{PP}}}
+t_{PP}^{\text{prefill}} \;=\; \alpha_{PP} \;+\; \frac{(H/TP) \cdot S_{\text{input}} \cdot b}{BW_{\text{PP}}}
 $$
 
 ### SP All-Gather (prefill)
 
-During prefill with SP, each SP rank holds $S_{\text{input}}/SP$ of the input sequence. Ring Attention must circulate KV shards so each device's query block can attend to the full input. The per-layer SP communication:
+During prefill with SP, each SP rank holds $S_{\text{input}}/SP$ of the input sequence. Ring Attention circulates KV shards so each device's query block can attend to the full input; the shipped primitive is ring AG per `collectives.md §4.1`. Substituting the per-rank KV shard $M_{SP}^\mathrm{prefill} = (S_{\text{input}} / SP) \cdot (2 H_{kv} / TP) \cdot b$:
 
 $$
-t_{SP}^{\text{prefill}} =
-(SP-1)\alpha_{SP}
-+
-(SP-1) \cdot \frac{(S_{\text{input}}/SP) \cdot (2 H_{kv}/TP) \cdot b}{BW_{\text{SP}}}
+t_{SP}^{\text{prefill}} \;=\; (SP-1)\,\alpha_{SP} \;+\; (SP-1) \cdot \frac{(S_{\text{input}} / SP) \cdot (2 H_{kv} / TP) \cdot b}{BW_{\text{SP}}}
 $$
+
+For torus SP fabrics, use the torus AG form of `collectives.md §4.2` with the same $M_{SP}^\mathrm{prefill}$.
 
 ### Total per-stage communication time (prefill)
 

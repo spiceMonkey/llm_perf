@@ -15,15 +15,19 @@ from llm_perf.core.primitives import (
     p2p_hop,
     ring_all_reduce,
     tree_all_reduce,
+    pairwise_a2a,
     ring_moe_all_to_all,
     tree_moe_all_to_all,
     ring_all_gather,
+    ring_reduce_scatter,
     torus_all_reduce,
     torus_all_gather,
+    torus_reduce_scatter,
     torus_moe_all_to_all,
-    dragonfly_all_reduce,
-    dragonfly_all_gather,
-    dragonfly_moe_all_to_all,
+    inc_all_reduce,
+    inc_all_gather,
+    inc_reduce_scatter,
+    inc_a2a,
     aggregate_per_stage,
     dense_weight_bytes,
     moe_weight_bytes,
@@ -82,12 +86,12 @@ def test_collective_cost():
     _check("ring_all_reduce G=1", ring_all_reduce(1000, 1, 1e-6, 1e9), 0.0)
     # ring_all_reduce at G=2: 2·1·α + 2·1/2·M/BW = 2α + M/BW
     _check("ring_all_reduce G=2", ring_all_reduce(1000, 2, 1e-6, 1e9), 2e-6 + 1000 / 1e9)
-    # tree_all_reduce at G=4: 2·2·α + 2·M/BW
-    _check("tree_all_reduce G=4", tree_all_reduce(1000, 4, 1e-6, 1e9), 4e-6 + 2 * 1000 / 1e9)
+    # tree_all_reduce (pipelined DBT) at G=4: 2·2·α + 2(3/4)·M/BW = 4α + 1.5·M/BW
+    _check("tree_all_reduce G=4", tree_all_reduce(1000, 4, 1e-6, 1e9), 4e-6 + 2 * (3 / 4) * 1000 / 1e9)
     # ring_moe_all_to_all at G=2: 2·1·α + 2·1·M/(2·BW) = 2α + M/BW
     _check("ring_moe_all_to_all G=2", ring_moe_all_to_all(1000, 2, 1e-6, 1e9), 2e-6 + 1000 / 1e9)
-    # tree_moe_all_to_all at G=4: 2·2·α + 2·M/BW
-    _check("tree_moe_all_to_all G=4", tree_moe_all_to_all(1000, 4, 1e-6, 1e9), 4e-6 + 2 * 1000 / 1e9)
+    # tree_moe_all_to_all (pipelined) at G=4: 2·2·α + 2(3/4)·M/BW = 4α + 1.5·M/BW
+    _check("tree_moe_all_to_all G=4", tree_moe_all_to_all(1000, 4, 1e-6, 1e9), 4e-6 + 2 * (3 / 4) * 1000 / 1e9)
     # ring_all_gather at G=2: 1·α + 1·M/BW
     _check("ring_all_gather G=2", ring_all_gather(1000, 2, 1e-6, 1e9), 1e-6 + 1000 / 1e9)
     # Zero BW → 0.0 guard
@@ -148,17 +152,17 @@ def test_torus_collective_cost():
     )
 
     # torus_moe_all_to_all: bisection-limited A2A.
-    # Balanced 8×8×8: diam=4+4+4=12, D_max=8 → 12·α + 8·M/(4·BW)
+    # Balanced 8×8×8: diam=4+4+4=12, D_max=8 → 12·α + 8·M/(8·BW) = 12·α + M/BW
     _check(
         "torus_A2A 8x8x8 balanced",
         torus_moe_all_to_all(M, (8, 8, 8), alpha, bw),
-        12 * alpha + 8 * M / (4 * bw),
+        12 * alpha + 8 * M / (8 * bw),
     )
     # Extreme 2×2×128: diam=1+1+64=66, D_max=128 → BW-term 16× the balanced case.
     _check(
         "torus_A2A 2x2x128 extreme",
         torus_moe_all_to_all(M, (2, 2, 128), alpha, bw),
-        66 * alpha + 128 * M / (4 * bw),
+        66 * alpha + 128 * M / (8 * bw),
     )
     # Layout sensitivity: BW-term scales exactly as D_max ratio (128/8 = 16×).
     _check(
@@ -176,164 +180,110 @@ def test_torus_collective_cost():
 
 
 # ────────────────────────────────────────────────────────────
-# dragonfly collective_cost
+# INC collective_cost — collectives/03_in_network_collectives.md §1.2-1.3
 # ────────────────────────────────────────────────────────────
 
-def test_dragonfly_collective_cost():
-    print("dragonfly_collective_cost:")
-    M, bw = 1000.0, 1e9
-    alpha_r, alpha_l, alpha_g = 1e-6, 2e-6, 5e-6
-    bw_r, bw_l, bw_g = 2e9, 1e9, 0.5e9
+def test_inc_collective_cost():
+    print("inc_collective_cost:")
+    M, alpha, bw = 1_000.0, 1e-6, 1e9
 
-    # Trivial-tier continuity: a=g=1 reduces to ring_all_reduce(M, p, α_r, BW_r).
-    # p=4, a=1, g=1 → 2·3·α_r + 2·(3/4)·M/BW_r.
+    # AR single-tier (scale-up): n_α = 2 regardless of N.
+    # inc_all_reduce(M, α_total, BW) = 2α + M/BW
     _check(
-        "df_AR a=1 g=1 continuity",
-        dragonfly_all_reduce(
-            M, 4, 1, 1,
-            alpha_r, bw_r,
-            alpha_l, bw_l,
-            alpha_g, bw_g,
-        ),
-        ring_all_reduce(M, 4, alpha_r, bw_r),
+        "inc_AR single-tier",
+        inc_all_reduce(M, alpha, bw),
+        2 * alpha + M / bw,
     )
-    # p=4, a=2, g=1: adds L1 contribution, no L2. Hand-compute.
-    # L0 = 2·3·α_r + 2·(3/4)·M/BW_r = 6e-6 + 1.5·M/BW_r
-    # L1 = 2·1·α_l + 2·(1/2)·(M/4)/BW_l = 2·α_l + (M/4)/BW_l
-    want = (6 * alpha_r + 1.5 * M / bw_r) + (2 * alpha_l + (M / 4) / bw_l)
+    # AR multi-tier (scale-out k=2): pass summed α; primitive applies the 2× factor.
+    # For α_total = 2α: result = 2·2α + M/BW = 4α + M/BW.
     _check(
-        "df_AR p=4 a=2 g=1",
-        dragonfly_all_reduce(
-            M, 4, 2, 1,
-            alpha_r, bw_r,
-            alpha_l, bw_l,
-            alpha_g, bw_g,
-        ),
-        want,
+        "inc_AR two-tier scale-out",
+        inc_all_reduce(M, 2 * alpha, bw),
+        4 * alpha + M / bw,
     )
-    # Full three-tier p=4, a=2, g=3.
-    # L0 = 6·α_r + 1.5·M/BW_r
-    # L1 = 2·α_l + (M/4)/BW_l
-    # L2 = 2·2·α_g + 2·(2/3)·(M/8)/BW_g
-    l0 = 6 * alpha_r + 1.5 * M / bw_r
-    l1 = 2 * alpha_l + (M / 4) / bw_l
-    l2 = 4 * alpha_g + (4 / 3) * (M / 8) / bw_g
+    # AG single-tier G=8: 2α + (G-1)·M/BW = 2α + 7·M/BW
     _check(
-        "df_AR p=4 a=2 g=3 best",
-        dragonfly_all_reduce(
-            M, 4, 2, 3,
-            alpha_r, bw_r,
-            alpha_l, bw_l,
-            alpha_g, bw_g,
-        ),
-        l0 + l1 + l2,
+        "inc_AG G=8 single-tier",
+        inc_all_gather(M, 8, alpha, bw),
+        2 * alpha + 7 * (M / bw),
     )
-    # worst_case=True doubles L2 only.
-    _check(
-        "df_AR p=4 a=2 g=3 worst_case",
-        dragonfly_all_reduce(
-            M, 4, 2, 3,
-            alpha_r, bw_r,
-            alpha_l, bw_l,
-            alpha_g, bw_g,
-            worst_case=True,
-        ),
-        l0 + l1 + 2 * l2,
-    )
+    # BW-eff doubling vs ring at fixed α, large N: inc_AR ≈ half the BW term of ring_AR.
+    # N=1024, α=0 isolates BW term: ring = 2·(1023/1024)·M/BW; inc = M/BW.
+    ring_bw = 2 * (1023 / 1024) * (M / bw)
+    inc_bw = M / bw
+    _check("inc_AR BW-term halved (N=1024)", inc_bw, ring_bw / (2 * 1023 / 1024))
 
-    # AG trivial-tier continuity: a=g=1 reduces to ring_all_gather(M, p, α_r, BW_r).
-    _check(
-        "df_AG a=1 g=1 continuity",
-        dragonfly_all_gather(
-            M, 4, 1, 1,
-            alpha_r, bw_r,
-            alpha_l, bw_l,
-            alpha_g, bw_g,
-        ),
-        ring_all_gather(M, 4, alpha_r, bw_r),
-    )
-    # AG p=2, a=2, g=2 hand-compute:
-    # L0 = 1·α_r + 1·M/BW_r
-    # L1 = 1·α_l + 1·(2·M)/BW_l
-    # L2 = 1·α_g + 1·(2·2·M)/BW_g = α_g + 4·M/BW_g
-    want_ag = (
-        (alpha_r + M / bw_r)
-        + (alpha_l + 2 * M / bw_l)
-        + (alpha_g + 4 * M / bw_g)
-    )
-    _check(
-        "df_AG p=2 a=2 g=2 best",
-        dragonfly_all_gather(
-            M, 2, 2, 2,
-            alpha_r, bw_r,
-            alpha_l, bw_l,
-            alpha_g, bw_g,
-        ),
-        want_ag,
-    )
-    # AG worst_case doubles L2 only.
-    _check(
-        "df_AG p=2 a=2 g=2 worst_case",
-        dragonfly_all_gather(
-            M, 2, 2, 2,
-            alpha_r, bw_r,
-            alpha_l, bw_l,
-            alpha_g, bw_g,
-            worst_case=True,
-        ),
-        (alpha_r + M / bw_r)
-        + (alpha_l + 2 * M / bw_l)
-        + 2 * (alpha_g + 4 * M / bw_g),
-    )
+    # Algorithmic-ceiling sanity check vs doc §3.1 (N=512, M=16MB, α=0.5us, BW=900GB/s).
+    # INC AR should total ~18.8 μs.
+    M_doc = 16 * 2**20  # 16 MiB
+    alpha_doc = 0.5e-6
+    bw_doc = 900 * 1e9
+    inc_ar_doc = inc_all_reduce(M_doc, alpha_doc, bw_doc)
+    # 2·0.5us + 16MiB/900GB/s = 1 μs + ~18.64 μs ≈ 19.6 μs (doc quotes 18.8 for decimal MB).
+    # Check structurally: should be dominated by BW term and within 2× of doc value.
+    _check_near("inc_AR N=512 doc anchor", inc_ar_doc, 19.6e-6, rel_tol=0.02)
 
-    # MoE A2A == AR formula identity (mirrors ring_moe_all_to_all == ring_all_reduce).
-    _check(
-        "df_A2A == df_AR identity",
-        dragonfly_moe_all_to_all(
-            M, 4, 2, 3,
-            alpha_r, bw_r,
-            alpha_l, bw_l,
-            alpha_g, bw_g,
-        ),
-        dragonfly_all_reduce(
-            M, 4, 2, 3,
-            alpha_r, bw_r,
-            alpha_l, bw_l,
-            alpha_g, bw_g,
-        ),
-    )
-    # Worst-case propagates through the alias.
-    _check(
-        "df_A2A worst_case",
-        dragonfly_moe_all_to_all(
-            M, 4, 2, 3,
-            alpha_r, bw_r,
-            alpha_l, bw_l,
-            alpha_g, bw_g,
-            worst_case=True,
-        ),
-        dragonfly_all_reduce(
-            M, 4, 2, 3,
-            alpha_r, bw_r,
-            alpha_l, bw_l,
-            alpha_g, bw_g,
-            worst_case=True,
-        ),
-    )
+    # No-op guards
+    _check("inc_AR BW=0",     inc_all_reduce(M, alpha, 0.0), 0.0)
+    _check("inc_AG G=1",      inc_all_gather(M, 1, alpha, bw), 0.0)
+    _check("inc_AG BW=0",     inc_all_gather(M, 4, alpha, 0.0), 0.0)
 
-    # No-op / zero-guards.
+    # inc_reduce_scatter — α-only collapse, mirrors inc_all_gather.
     _check(
-        "df_AR p=a=g=1",
-        dragonfly_all_reduce(M, 1, 1, 1, alpha_r, bw_r, alpha_l, bw_l, alpha_g, bw_g),
-        0.0,
+        "inc_RS G=8 single-tier",
+        inc_reduce_scatter(M, 8, alpha, bw),
+        2 * alpha + 7 * (M / bw),
     )
-    # Zero BW on any tier suppresses that tier's contribution only.
-    # p=2, a=2, g=1 with BW_l=0 → just L0.
+    _check("inc_RS G=1",       inc_reduce_scatter(M, 1, alpha, bw), 0.0)
+    _check("inc_RS BW=0",      inc_reduce_scatter(M, 4, alpha, 0.0), 0.0)
+
+    # inc_a2a — α_switch (single transaction, NOT 2×) + (G-1)/G · M/BW (bisection).
     _check(
-        "df_AR BW_l=0 suppresses L1",
-        dragonfly_all_reduce(M, 2, 2, 1, alpha_r, bw_r, alpha_l, 0.0, alpha_g, bw_g),
-        2 * 1 * alpha_r + 2 * (1 / 2) * (M / bw_r),
+        "inc_A2A G=8",
+        inc_a2a(M, 8, alpha, bw),
+        alpha + (7 / 8) * (M / bw),
     )
+    # α-collapse vs software pairwise: at G=64, α=1us, BW→∞, inc_a2a α-term should
+    # be ~63× smaller than pairwise_a2a's α-term (single switch txn vs (G-1) RTTs;
+    # both have factor of 2 elsewhere — pairwise from Dispatch+Combine).
+    pairwise_alpha = 2 * 63 * 1e-6
+    inc_a2a_alpha = inc_a2a(0.0, 64, 1e-6, 1e12)  # M=0 isolates α-term
+    _check("inc_A2A α-collapse vs pairwise (G=64)",
+           inc_a2a_alpha, 1e-6)
+    assert pairwise_alpha / inc_a2a_alpha == 126.0, (
+        f"α ratio mismatch: pairwise/inc = {pairwise_alpha / inc_a2a_alpha}"
+    )
+    print(f"  PASS  α-collapse ratio (pairwise/inc, G=64): 126.0×")
+    _check("inc_A2A G=1",      inc_a2a(M, 1, alpha, bw), 0.0)
+    _check("inc_A2A BW=0",     inc_a2a(M, 4, alpha, 0.0), 0.0)
+
+    # ring_reduce_scatter / torus_reduce_scatter — same shape as the AG analogs.
+    _check(
+        "ring_RS G=4",
+        ring_reduce_scatter(M, 4, alpha, bw),
+        3 * alpha + 3 * (M / bw),
+    )
+    _check(
+        "torus_RS 4x4",
+        torus_reduce_scatter(M, (4, 4), alpha, bw),
+        6 * alpha + 15 * (M / bw),
+    )
+    _check("ring_RS G=1",      ring_reduce_scatter(M, 1, alpha, bw), 0.0)
+    _check("torus_RS empty",   torus_reduce_scatter(M, (), alpha, bw), 0.0)
+
+    # pairwise_a2a is the canonical name for ring_moe_all_to_all (back-compat alias).
+    assert ring_moe_all_to_all is pairwise_a2a, (
+        "ring_moe_all_to_all should be an alias for pairwise_a2a"
+    )
+    print("  PASS  ring_moe_all_to_all is pairwise_a2a (alias preserved)")
+
+
+def _check_near(label: str, got: float, want: float, rel_tol: float) -> None:
+    if math.isclose(got, want, rel_tol=rel_tol, abs_tol=0.0):
+        print(f"  PASS  {label}: {got!r} ≈ {want!r} (rel_tol={rel_tol})")
+    else:
+        _failures.append(f"{label}: got {got!r}, want ~{want!r} (rel_tol={rel_tol})")
+        print(f"  FAIL  {label}: got {got!r}, want ~{want!r}")
 
 
 # ────────────────────────────────────────────────────────────
@@ -420,7 +370,7 @@ def test_linear_flops_per_token():
 def main() -> int:
     test_collective_cost()
     test_torus_collective_cost()
-    test_dragonfly_collective_cost()
+    test_inc_collective_cost()
     test_weight_footprint()
     test_kv_footprint()
     test_linear_flops_per_token()

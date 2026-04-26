@@ -131,7 +131,7 @@ _(→ decode.md; → dram3d.md for 3D DRAM extensions)_
 ---
 
 ## 7. Networking
-_(→ decode.md; → switching.md §1 for single-tier crossbar model; → switching.md §7 for fabric chains; → switching.md §8 for torus tiers; → switching.md §9 for dragonfly tiers; → switching.md §10 for unified dispatch)_
+_(→ decode.md; → switching.md §1 for single-tier crossbar model; → switching.md §7 for fabric chains; → switching.md §8 for torus tiers; → switching.md §9 for dragonfly tiers; → switching.md §10 for unified dispatch; → collectives.md §3–§6 for the shipped-primitive cost table consumed by decode.md / prefill.md; → collectives.md §7 for dynamic η_α / η_β)_
 
 The system model names physical networks as **fabrics** (`FabricSpec`); each fabric is an ordered list of switching tiers, innermost first. A collective (TP / EP / SP / PP) declares an ordered **fabric chain** via `SystemSpec.collective_fabrics[collective]`. Walking that chain innermost-first yields a single flattened tier list; a collective of group size $G$ spans tiers $0..k$ where $k$ is the smallest index with $\prod_{i=0}^{k} P_i \ge G$.
 
@@ -161,7 +161,18 @@ The system model names physical networks as **fabrics** (`FabricSpec`); each fab
 - $BW_\mathrm{r}, BW_\mathrm{l}, BW_\mathrm{g}$ — Per-tier single-direction bandwidth at the three tiers.
 - $c$ — Valiant-routing multiplier on the L2 sub-cost: $c = 2$ under `worst_case=True`, else $c = 1$.
 
-**Single-tier shorthand.** A chain with one crossbar fabric and one crossbar tier collapses to the flat pair $\alpha_{role} \equiv \alpha_{role,0}$, $BW_{role} \equiv BW_{role,0}$, independent of $G$. The decode/prefill equations in decode.md and prefill.md are written against this flat pair; multi-tier and topology-structured analyses substitute the appropriate span quantity (or topology-native formula) with $G$ set by the role-specific group size (e.g. $G = \text{TP}$ for TP collectives, $G = \text{EP}$ for EP, $G = 2$ for point-to-point PP hops). See `switching.md` §7 for the generic fabric-chain derivation and §8 / §9 for the torus and dragonfly specializations.
+**Contention coefficients** (collectives.md §7):
+- $\eta_\alpha$ — Dynamic α-inflator for a switching tier ($\geq 1$; ideal = 1). Captures serialization penalties under concurrent collectives and off-prefix layouts that steady-state microbenchmarks miss.
+- $\eta_\beta$ — Dynamic BW-deflator for a switching tier ($\in (0, 1]$; ideal = 1). Captures runtime bandwidth loss beyond the calibrated tier-level peak; distinct from the static `switching.md §4` efficiency already baked into that calibration. Hierarchical fabrics cap upper-tier $\eta_\beta$ at $\min(\eta_\beta^\mathrm{hw}, 1/s)$ where $s$ is the oversubscription ratio (collectives.md §7.2).
+
+**Single-tier shorthand.** A chain with one crossbar fabric and one crossbar tier collapses to the flat pair $\alpha_{role} \equiv \alpha_{role,0}$, $BW_{role} \equiv BW_{role,0}$, independent of $G$. The decode/prefill equations in decode.md and prefill.md are written against this flat pair; multi-tier and topology-structured analyses substitute the appropriate span quantity (or topology-native formula) with $G$ set by the role-specific group size (e.g. $G = \text{TP}$ for TP collectives, $G = \text{EP}$ for EP, $G = 2$ for point-to-point PP hops). See `switching.md` §7 for the generic fabric-chain derivation and §8 / §9 for the torus and dragonfly specializations; `collectives.md §3–§6` for the shipped-primitive cost table (ring / DBT AR on star, dim-decomposed ring on torus, hierarchical RS → sub-AR → AG, in-network reduction via NVLS / Quantum SHARP / Tomahawk Ultra) consumed by decode.md §5 and prefill.md §3.2; `collectives.md §7` for $\eta_\alpha / \eta_\beta$ application.
+
+**Collective-primitive coefficients** (collectives.md §3–§6):
+- $n_\alpha$ — Coefficient on $\alpha$ in a shipped-primitive cost formula (number of startup traversals). Per-primitive values in collectives.md §3–§6.
+- $n_\beta$ — Coefficient on $M / \mathrm{BW}$. Per-primitive values in collectives.md §3–§6.
+- $\alpha_\mathrm{switch}$ — Switch cut-through latency (200–400 ns) consumed by in-network collective formulas (collectives.md §3.4, §4.4, §5.4, §6).
+- $\mathrm{BW_{eff}} = \mathrm{BW} / n_\beta$ — Effective per-rank bandwidth seen by a collective. AR alone has $\mathrm{BW_{eff}} = \mathrm{BW}/2$ in software and $\mathrm{BW_{eff}} = \mathrm{BW}$ under INC (switch ALU + multicast crossbar fuses the two halves; collectives.md §3.4).
+- $\mathrm{ar\_algorithm}$ — Tuning-knob symbol selecting star AR algorithm: admissible values $\{\mathrm{ring}, \mathrm{DBT}\}$, default $\mathrm{ring}$. Does not apply to torus AR (only dim-decomposed ring is shipped). See `collectives.md §3.1`.
 
 ---
 
