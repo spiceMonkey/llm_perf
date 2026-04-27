@@ -3699,7 +3699,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 1048576.0,
+            "msg_SP_bytes": 2097152.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -3804,7 +3804,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 16777216.0,
+            "msg_SP_bytes": 33554432.0,
             "msg_TP_bytes": 131072.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -3909,7 +3909,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 8388608.0,
+            "msg_SP_bytes": 16777216.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -4014,7 +4014,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 536870912.0,
+            "msg_SP_bytes": 1073741824.0,
             "msg_TP_bytes": 524288.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -4119,7 +4119,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 2097152.0,
+            "msg_SP_bytes": 4194304.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -4224,7 +4224,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 2097152.0,
+            "msg_SP_bytes": 4194304.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -4329,7 +4329,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 2097152.0,
+            "msg_SP_bytes": 4194304.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -8109,7 +8109,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 1048576.0,
+            "msg_SP_bytes": 2097152.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -8214,7 +8214,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 16777216.0,
+            "msg_SP_bytes": 33554432.0,
             "msg_TP_bytes": 131072.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -8319,7 +8319,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 8388608.0,
+            "msg_SP_bytes": 16777216.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -8424,7 +8424,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 536870912.0,
+            "msg_SP_bytes": 1073741824.0,
             "msg_TP_bytes": 524288.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -8529,7 +8529,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 2097152.0,
+            "msg_SP_bytes": 4194304.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -8634,7 +8634,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 2097152.0,
+            "msg_SP_bytes": 4194304.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -8739,7 +8739,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 2097152.0,
+            "msg_SP_bytes": 4194304.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -13254,7 +13254,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 1048576.0,
+            "msg_SP_bytes": 2097152.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -13359,7 +13359,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 16777216.0,
+            "msg_SP_bytes": 33554432.0,
             "msg_TP_bytes": 131072.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -13464,7 +13464,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 8388608.0,
+            "msg_SP_bytes": 16777216.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -13569,7 +13569,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 536870912.0,
+            "msg_SP_bytes": 1073741824.0,
             "msg_TP_bytes": 524288.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -13674,7 +13674,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 2097152.0,
+            "msg_SP_bytes": 4194304.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -13779,7 +13779,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 2097152.0,
+            "msg_SP_bytes": 4194304.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -13884,7 +13884,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 2097152.0,
+            "msg_SP_bytes": 4194304.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -14458,8 +14458,8 @@
             "t_EP_prefill": 0.0,
             "t_PP_prefill": 0.0,
             "t_SP_prefill": 0.0,
-            "t_TP_prefill": 0.00015069485827160493,
-            "t_prefill_comm": 0.009644470929382715
+            "t_TP_prefill": 0.00015069485827160495,
+            "t_prefill_comm": 0.009644470929382717
           },
           "flops": {
             "F_attn_kv_prefill": 274877906944,
@@ -14473,10 +14473,10 @@
             "chunk_size": 0,
             "n_chunks": 0,
             "t_pipeline_warmup": 0.0,
-            "t_prefill": 0.009695374245483456,
-            "t_prefill_batched": 0.009695374245483456,
-            "t_prefill_chunked": 0.009695374245483456,
-            "t_prefill_comm": 0.009644470929382715,
+            "t_prefill": 0.009695374245483458,
+            "t_prefill_batched": 0.009695374245483458,
+            "t_prefill_chunked": 0.009695374245483458,
+            "t_prefill_comm": 0.009644470929382717,
             "t_prefill_compute": 5.090331610074075e-05,
             "t_prefill_local": 5.090331610074075e-05,
             "t_prefill_mem": 1.2582912000000002e-05
@@ -14563,8 +14563,8 @@
             "t_EP_prefill": 0.0,
             "t_PP_prefill": 0.0,
             "t_SP_prefill": 0.0,
-            "t_TP_prefill": 0.00015069485827160493,
-            "t_prefill_comm": 0.009644470929382715
+            "t_TP_prefill": 0.00015069485827160495,
+            "t_prefill_comm": 0.009644470929382717
           },
           "flops": {
             "F_attn_kv_prefill": 274877906944,
@@ -14578,10 +14578,10 @@
             "chunk_size": 0,
             "n_chunks": 0,
             "t_pipeline_warmup": 0.0,
-            "t_prefill": 0.009695374245483456,
-            "t_prefill_batched": 0.0821659879277353,
-            "t_prefill_chunked": 0.009695374245483456,
-            "t_prefill_comm": 0.009644470929382715,
+            "t_prefill": 0.009695374245483458,
+            "t_prefill_batched": 0.08216598792773533,
+            "t_prefill_chunked": 0.009695374245483458,
+            "t_prefill_comm": 0.009644470929382717,
             "t_prefill_compute": 5.090331610074075e-05,
             "t_prefill_local": 5.090331610074075e-05,
             "t_prefill_mem": 1.2582912000000002e-05
@@ -14668,8 +14668,8 @@
             "t_EP_prefill": 0.0,
             "t_PP_prefill": 0.0,
             "t_SP_prefill": 0.0,
-            "t_TP_prefill": 0.0003747794330864197,
-            "t_prefill_comm": 0.02398588371753086
+            "t_TP_prefill": 0.0003747794330864198,
+            "t_prefill_comm": 0.023985883717530868
           },
           "flops": {
             "F_attn_kv_prefill": 4398046511104,
@@ -14683,10 +14683,10 @@
             "chunk_size": 2048,
             "n_chunks": 8,
             "t_pipeline_warmup": 0.0,
-            "t_prefill": 0.02427094228769501,
-            "t_prefill_batched": 0.02427094228769501,
+            "t_prefill": 0.024270942287695017,
+            "t_prefill_batched": 0.024270942287695017,
             "t_prefill_chunked": 0.05827143252600099,
-            "t_prefill_comm": 0.02398588371753086,
+            "t_prefill_comm": 0.023985883717530868,
             "t_prefill_compute": 0.0002850585701641482,
             "t_prefill_local": 0.0002850585701641482,
             "t_prefill_mem": 1.3981013333333336e-05
@@ -18399,7 +18399,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 1048576.0,
+            "msg_SP_bytes": 2097152.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -18504,7 +18504,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 16777216.0,
+            "msg_SP_bytes": 33554432.0,
             "msg_TP_bytes": 131072.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -18609,7 +18609,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 8388608.0,
+            "msg_SP_bytes": 16777216.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -18714,7 +18714,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 536870912.0,
+            "msg_SP_bytes": 1073741824.0,
             "msg_TP_bytes": 524288.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -18819,7 +18819,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 2097152.0,
+            "msg_SP_bytes": 4194304.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -18924,7 +18924,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 2097152.0,
+            "msg_SP_bytes": 4194304.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -19029,7 +19029,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 2097152.0,
+            "msg_SP_bytes": 4194304.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -25014,7 +25014,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 1048576.0,
+            "msg_SP_bytes": 2097152.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -25119,7 +25119,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 16777216.0,
+            "msg_SP_bytes": 33554432.0,
             "msg_TP_bytes": 131072.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -25224,7 +25224,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 8388608.0,
+            "msg_SP_bytes": 16777216.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -25329,7 +25329,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 536870912.0,
+            "msg_SP_bytes": 1073741824.0,
             "msg_TP_bytes": 524288.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -25434,7 +25434,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 2097152.0,
+            "msg_SP_bytes": 4194304.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -25539,7 +25539,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 2097152.0,
+            "msg_SP_bytes": 4194304.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -25644,7 +25644,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 2097152.0,
+            "msg_SP_bytes": 4194304.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -25749,7 +25749,7 @@
           "comm": {
             "msg_EP_bytes": 32768.0,
             "msg_PP_bytes": 2048.0,
-            "msg_SP_bytes": 524288.0,
+            "msg_SP_bytes": 1048576.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 2.08192e-06,
             "t_PP": 5.040959999999999e-06,
@@ -25854,7 +25854,7 @@
           "comm": {
             "msg_EP_bytes": 524288.0,
             "msg_PP_bytes": 32768.0,
-            "msg_SP_bytes": 8388608.0,
+            "msg_SP_bytes": 16777216.0,
             "msg_TP_bytes": 131072.0,
             "t_EP": 3.31072e-06,
             "t_PP": 5.65536e-06,
@@ -25959,7 +25959,7 @@
           "comm": {
             "msg_EP_bytes": 32768.0,
             "msg_PP_bytes": 2048.0,
-            "msg_SP_bytes": 4194304.0,
+            "msg_SP_bytes": 8388608.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 2.08192e-06,
             "t_PP": 5.040959999999999e-06,
@@ -26064,7 +26064,7 @@
           "comm": {
             "msg_EP_bytes": 2097152.0,
             "msg_PP_bytes": 131072.0,
-            "msg_SP_bytes": 268435456.0,
+            "msg_SP_bytes": 536870912.0,
             "msg_TP_bytes": 524288.0,
             "t_EP": 7.24288e-06,
             "t_PP": 7.621439999999999e-06,
@@ -26169,7 +26169,7 @@
           "comm": {
             "msg_EP_bytes": 32768.0,
             "msg_PP_bytes": 2048.0,
-            "msg_SP_bytes": 1048576.0,
+            "msg_SP_bytes": 2097152.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 2.08192e-06,
             "t_PP": 5.040959999999999e-06,
@@ -26274,7 +26274,7 @@
           "comm": {
             "msg_EP_bytes": 32768.0,
             "msg_PP_bytes": 2048.0,
-            "msg_SP_bytes": 1048576.0,
+            "msg_SP_bytes": 2097152.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 2.08192e-06,
             "t_PP": 5.040959999999999e-06,
@@ -26379,7 +26379,7 @@
           "comm": {
             "msg_EP_bytes": 32768.0,
             "msg_PP_bytes": 2048.0,
-            "msg_SP_bytes": 1048576.0,
+            "msg_SP_bytes": 2097152.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 2.08192e-06,
             "t_PP": 5.040959999999999e-06,
@@ -32364,7 +32364,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 1048576.0,
+            "msg_SP_bytes": 2097152.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -32469,7 +32469,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 16777216.0,
+            "msg_SP_bytes": 33554432.0,
             "msg_TP_bytes": 131072.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -32574,7 +32574,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 8388608.0,
+            "msg_SP_bytes": 16777216.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -32679,7 +32679,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 536870912.0,
+            "msg_SP_bytes": 1073741824.0,
             "msg_TP_bytes": 524288.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -32784,7 +32784,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 2097152.0,
+            "msg_SP_bytes": 4194304.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -32889,7 +32889,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 2097152.0,
+            "msg_SP_bytes": 4194304.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -32994,7 +32994,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 2097152.0,
+            "msg_SP_bytes": 4194304.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -33099,7 +33099,7 @@
           "comm": {
             "msg_EP_bytes": 32768.0,
             "msg_PP_bytes": 2048.0,
-            "msg_SP_bytes": 524288.0,
+            "msg_SP_bytes": 1048576.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 1.0364088888888889e-06,
             "t_PP": 5.022755555555556e-07,
@@ -33204,7 +33204,7 @@
           "comm": {
             "msg_EP_bytes": 524288.0,
             "msg_PP_bytes": 32768.0,
-            "msg_SP_bytes": 8388608.0,
+            "msg_SP_bytes": 16777216.0,
             "msg_TP_bytes": 131072.0,
             "t_EP": 1.5825422222222222e-06,
             "t_PP": 5.364088888888889e-07,
@@ -33309,7 +33309,7 @@
           "comm": {
             "msg_EP_bytes": 32768.0,
             "msg_PP_bytes": 2048.0,
-            "msg_SP_bytes": 4194304.0,
+            "msg_SP_bytes": 8388608.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 1.0364088888888889e-06,
             "t_PP": 5.022755555555556e-07,
@@ -33414,7 +33414,7 @@
           "comm": {
             "msg_EP_bytes": 2097152.0,
             "msg_PP_bytes": 131072.0,
-            "msg_SP_bytes": 268435456.0,
+            "msg_SP_bytes": 536870912.0,
             "msg_TP_bytes": 524288.0,
             "t_EP": 3.3301688888888888e-06,
             "t_PP": 6.456355555555555e-07,
@@ -33519,7 +33519,7 @@
           "comm": {
             "msg_EP_bytes": 32768.0,
             "msg_PP_bytes": 2048.0,
-            "msg_SP_bytes": 1048576.0,
+            "msg_SP_bytes": 2097152.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 1.0364088888888889e-06,
             "t_PP": 5.022755555555556e-07,
@@ -33624,7 +33624,7 @@
           "comm": {
             "msg_EP_bytes": 32768.0,
             "msg_PP_bytes": 2048.0,
-            "msg_SP_bytes": 1048576.0,
+            "msg_SP_bytes": 2097152.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 1.0364088888888889e-06,
             "t_PP": 5.022755555555556e-07,
@@ -33729,7 +33729,7 @@
           "comm": {
             "msg_EP_bytes": 32768.0,
             "msg_PP_bytes": 2048.0,
-            "msg_SP_bytes": 1048576.0,
+            "msg_SP_bytes": 2097152.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 1.0364088888888889e-06,
             "t_PP": 5.022755555555556e-07,
@@ -40449,7 +40449,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 1048576.0,
+            "msg_SP_bytes": 2097152.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -40554,7 +40554,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 16777216.0,
+            "msg_SP_bytes": 33554432.0,
             "msg_TP_bytes": 131072.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -40659,7 +40659,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 8388608.0,
+            "msg_SP_bytes": 16777216.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -40764,7 +40764,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 536870912.0,
+            "msg_SP_bytes": 1073741824.0,
             "msg_TP_bytes": 524288.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -40869,7 +40869,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 2097152.0,
+            "msg_SP_bytes": 4194304.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -40974,7 +40974,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 2097152.0,
+            "msg_SP_bytes": 4194304.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -41079,7 +41079,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 2097152.0,
+            "msg_SP_bytes": 4194304.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -41184,7 +41184,7 @@
           "comm": {
             "msg_EP_bytes": 32768.0,
             "msg_PP_bytes": 2048.0,
-            "msg_SP_bytes": 524288.0,
+            "msg_SP_bytes": 1048576.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 1.0364088888888889e-06,
             "t_PP": 5.022755555555556e-07,
@@ -41289,7 +41289,7 @@
           "comm": {
             "msg_EP_bytes": 524288.0,
             "msg_PP_bytes": 32768.0,
-            "msg_SP_bytes": 8388608.0,
+            "msg_SP_bytes": 16777216.0,
             "msg_TP_bytes": 131072.0,
             "t_EP": 1.5825422222222222e-06,
             "t_PP": 5.364088888888889e-07,
@@ -41394,7 +41394,7 @@
           "comm": {
             "msg_EP_bytes": 32768.0,
             "msg_PP_bytes": 2048.0,
-            "msg_SP_bytes": 4194304.0,
+            "msg_SP_bytes": 8388608.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 1.0364088888888889e-06,
             "t_PP": 5.022755555555556e-07,
@@ -41499,7 +41499,7 @@
           "comm": {
             "msg_EP_bytes": 2097152.0,
             "msg_PP_bytes": 131072.0,
-            "msg_SP_bytes": 268435456.0,
+            "msg_SP_bytes": 536870912.0,
             "msg_TP_bytes": 524288.0,
             "t_EP": 3.3301688888888888e-06,
             "t_PP": 6.456355555555555e-07,
@@ -41604,7 +41604,7 @@
           "comm": {
             "msg_EP_bytes": 32768.0,
             "msg_PP_bytes": 2048.0,
-            "msg_SP_bytes": 1048576.0,
+            "msg_SP_bytes": 2097152.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 1.0364088888888889e-06,
             "t_PP": 5.022755555555556e-07,
@@ -41709,7 +41709,7 @@
           "comm": {
             "msg_EP_bytes": 32768.0,
             "msg_PP_bytes": 2048.0,
-            "msg_SP_bytes": 1048576.0,
+            "msg_SP_bytes": 2097152.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 1.0364088888888889e-06,
             "t_PP": 5.022755555555556e-07,
@@ -41814,7 +41814,7 @@
           "comm": {
             "msg_EP_bytes": 32768.0,
             "msg_PP_bytes": 2048.0,
-            "msg_SP_bytes": 1048576.0,
+            "msg_SP_bytes": 2097152.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 1.0364088888888889e-06,
             "t_PP": 5.022755555555556e-07,
@@ -42388,8 +42388,8 @@
             "t_EP_prefill": 0.0,
             "t_PP_prefill": 0.0,
             "t_SP_prefill": 0.0,
-            "t_TP_prefill": 0.00015069485827160493,
-            "t_prefill_comm": 0.009644470929382715
+            "t_TP_prefill": 0.00015069485827160495,
+            "t_prefill_comm": 0.009644470929382717
           },
           "flops": {
             "F_attn_kv_prefill": 274877906944,
@@ -42403,10 +42403,10 @@
             "chunk_size": 0,
             "n_chunks": 0,
             "t_pipeline_warmup": 0.0,
-            "t_prefill": 0.009831117457382715,
-            "t_prefill_batched": 0.009831117457382715,
-            "t_prefill_chunked": 0.009831117457382715,
-            "t_prefill_comm": 0.009644470929382715,
+            "t_prefill": 0.009831117457382717,
+            "t_prefill_batched": 0.009831117457382717,
+            "t_prefill_chunked": 0.009831117457382717,
+            "t_prefill_comm": 0.009644470929382717,
             "t_prefill_compute": 7.762755705362964e-05,
             "t_prefill_local": 0.000186646528,
             "t_prefill_mem": 0.000186646528
@@ -42493,8 +42493,8 @@
             "t_EP_prefill": 0.0,
             "t_PP_prefill": 0.0,
             "t_SP_prefill": 0.0,
-            "t_TP_prefill": 0.00015069485827160493,
-            "t_prefill_comm": 0.009644470929382715
+            "t_TP_prefill": 0.00015069485827160495,
+            "t_prefill_comm": 0.009644470929382717
           },
           "flops": {
             "F_attn_kv_prefill": 274877906944,
@@ -42508,10 +42508,10 @@
             "chunk_size": 0,
             "n_chunks": 0,
             "t_pipeline_warmup": 0.0,
-            "t_prefill": 0.009831117457382715,
-            "t_prefill_batched": 0.08259357578298153,
-            "t_prefill_chunked": 0.009831117457382715,
-            "t_prefill_comm": 0.009644470929382715,
+            "t_prefill": 0.009831117457382717,
+            "t_prefill_batched": 0.08259357578298156,
+            "t_prefill_chunked": 0.009831117457382717,
+            "t_prefill_comm": 0.009644470929382717,
             "t_prefill_compute": 7.762755705362964e-05,
             "t_prefill_local": 0.000186646528,
             "t_prefill_mem": 0.000186646528
@@ -42598,8 +42598,8 @@
             "t_EP_prefill": 0.0,
             "t_PP_prefill": 0.0,
             "t_SP_prefill": 0.0,
-            "t_TP_prefill": 0.0003747794330864197,
-            "t_prefill_comm": 0.02398588371753086
+            "t_TP_prefill": 0.0003747794330864198,
+            "t_prefill_comm": 0.023985883717530868
           },
           "flops": {
             "F_attn_kv_prefill": 4398046511104,
@@ -42613,10 +42613,10 @@
             "chunk_size": 2048,
             "n_chunks": 8,
             "t_pipeline_warmup": 0.0,
-            "t_prefill": 0.024377839251506564,
-            "t_prefill_batched": 0.024377839251506564,
+            "t_prefill": 0.02437783925150657,
+            "t_prefill_batched": 0.02437783925150657,
             "t_prefill_chunked": 0.05953358041441976,
-            "t_prefill_comm": 0.02398588371753086,
+            "t_prefill_comm": 0.023985883717530868,
             "t_prefill_compute": 0.0003919555339757037,
             "t_prefill_local": 0.0003919555339757037,
             "t_prefill_mem": 0.0001880446293333333
@@ -48534,7 +48534,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 1048576.0,
+            "msg_SP_bytes": 2097152.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -48639,7 +48639,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 16777216.0,
+            "msg_SP_bytes": 33554432.0,
             "msg_TP_bytes": 131072.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -48744,7 +48744,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 8388608.0,
+            "msg_SP_bytes": 16777216.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -48849,7 +48849,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 536870912.0,
+            "msg_SP_bytes": 1073741824.0,
             "msg_TP_bytes": 524288.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -48954,7 +48954,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 2097152.0,
+            "msg_SP_bytes": 4194304.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -49059,7 +49059,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 2097152.0,
+            "msg_SP_bytes": 4194304.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -49164,7 +49164,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 2097152.0,
+            "msg_SP_bytes": 4194304.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -49269,7 +49269,7 @@
           "comm": {
             "msg_EP_bytes": 32768.0,
             "msg_PP_bytes": 2048.0,
-            "msg_SP_bytes": 524288.0,
+            "msg_SP_bytes": 1048576.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 2.2184533333333333e-06,
             "t_PP": 1.0136533333333332e-06,
@@ -49374,7 +49374,7 @@
           "comm": {
             "msg_EP_bytes": 524288.0,
             "msg_PP_bytes": 32768.0,
-            "msg_SP_bytes": 8388608.0,
+            "msg_SP_bytes": 16777216.0,
             "msg_TP_bytes": 131072.0,
             "t_EP": 5.495253333333333e-06,
             "t_PP": 1.2184533333333332e-06,
@@ -49479,7 +49479,7 @@
           "comm": {
             "msg_EP_bytes": 32768.0,
             "msg_PP_bytes": 2048.0,
-            "msg_SP_bytes": 4194304.0,
+            "msg_SP_bytes": 8388608.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 2.2184533333333333e-06,
             "t_PP": 1.0136533333333332e-06,
@@ -49584,7 +49584,7 @@
           "comm": {
             "msg_EP_bytes": 2097152.0,
             "msg_PP_bytes": 131072.0,
-            "msg_SP_bytes": 268435456.0,
+            "msg_SP_bytes": 536870912.0,
             "msg_TP_bytes": 524288.0,
             "t_EP": 1.5981013333333334e-05,
             "t_PP": 1.8738133333333332e-06,
@@ -49689,7 +49689,7 @@
           "comm": {
             "msg_EP_bytes": 32768.0,
             "msg_PP_bytes": 2048.0,
-            "msg_SP_bytes": 1048576.0,
+            "msg_SP_bytes": 2097152.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 2.2184533333333333e-06,
             "t_PP": 1.0136533333333332e-06,
@@ -49794,7 +49794,7 @@
           "comm": {
             "msg_EP_bytes": 32768.0,
             "msg_PP_bytes": 2048.0,
-            "msg_SP_bytes": 1048576.0,
+            "msg_SP_bytes": 2097152.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 2.2184533333333333e-06,
             "t_PP": 1.0136533333333332e-06,
@@ -49899,7 +49899,7 @@
           "comm": {
             "msg_EP_bytes": 32768.0,
             "msg_PP_bytes": 2048.0,
-            "msg_SP_bytes": 1048576.0,
+            "msg_SP_bytes": 2097152.0,
             "msg_TP_bytes": 8192.0,
             "t_EP": 2.2184533333333333e-06,
             "t_PP": 1.0136533333333332e-06,
@@ -55884,7 +55884,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 655360.0,
+            "msg_SP_bytes": 1310720.0,
             "msg_TP_bytes": 10240.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -55989,7 +55989,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 10485760.0,
+            "msg_SP_bytes": 20971520.0,
             "msg_TP_bytes": 163840.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -56094,7 +56094,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 5242880.0,
+            "msg_SP_bytes": 10485760.0,
             "msg_TP_bytes": 10240.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -56199,7 +56199,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 335544320.0,
+            "msg_SP_bytes": 671088640.0,
             "msg_TP_bytes": 655360.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -56304,7 +56304,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 1310720.0,
+            "msg_SP_bytes": 2621440.0,
             "msg_TP_bytes": 10240.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -56409,7 +56409,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 1310720.0,
+            "msg_SP_bytes": 2621440.0,
             "msg_TP_bytes": 10240.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -56514,7 +56514,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 1310720.0,
+            "msg_SP_bytes": 2621440.0,
             "msg_TP_bytes": 10240.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -56619,7 +56619,7 @@
           "comm": {
             "msg_EP_bytes": 20480.0,
             "msg_PP_bytes": 2560.0,
-            "msg_SP_bytes": 327680.0,
+            "msg_SP_bytes": 655360.0,
             "msg_TP_bytes": 10240.0,
             "t_EP": 2.0512e-06,
             "t_PP": 5.051199999999999e-06,
@@ -56724,7 +56724,7 @@
           "comm": {
             "msg_EP_bytes": 327680.0,
             "msg_PP_bytes": 40960.0,
-            "msg_SP_bytes": 5242880.0,
+            "msg_SP_bytes": 10485760.0,
             "msg_TP_bytes": 163840.0,
             "t_EP": 2.8192e-06,
             "t_PP": 5.819199999999999e-06,
@@ -56829,7 +56829,7 @@
           "comm": {
             "msg_EP_bytes": 20480.0,
             "msg_PP_bytes": 2560.0,
-            "msg_SP_bytes": 2621440.0,
+            "msg_SP_bytes": 5242880.0,
             "msg_TP_bytes": 10240.0,
             "t_EP": 2.0512e-06,
             "t_PP": 5.051199999999999e-06,
@@ -56934,7 +56934,7 @@
           "comm": {
             "msg_EP_bytes": 1310720.0,
             "msg_PP_bytes": 163840.0,
-            "msg_SP_bytes": 167772160.0,
+            "msg_SP_bytes": 335544320.0,
             "msg_TP_bytes": 655360.0,
             "t_EP": 5.2768e-06,
             "t_PP": 8.2768e-06,
@@ -57039,7 +57039,7 @@
           "comm": {
             "msg_EP_bytes": 20480.0,
             "msg_PP_bytes": 2560.0,
-            "msg_SP_bytes": 655360.0,
+            "msg_SP_bytes": 1310720.0,
             "msg_TP_bytes": 10240.0,
             "t_EP": 2.0512e-06,
             "t_PP": 5.051199999999999e-06,
@@ -57144,7 +57144,7 @@
           "comm": {
             "msg_EP_bytes": 20480.0,
             "msg_PP_bytes": 2560.0,
-            "msg_SP_bytes": 655360.0,
+            "msg_SP_bytes": 1310720.0,
             "msg_TP_bytes": 10240.0,
             "t_EP": 2.0512e-06,
             "t_PP": 5.051199999999999e-06,
@@ -57249,7 +57249,7 @@
           "comm": {
             "msg_EP_bytes": 20480.0,
             "msg_PP_bytes": 2560.0,
-            "msg_SP_bytes": 655360.0,
+            "msg_SP_bytes": 1310720.0,
             "msg_TP_bytes": 10240.0,
             "t_EP": 2.0512e-06,
             "t_PP": 5.051199999999999e-06,
@@ -63234,7 +63234,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 655360.0,
+            "msg_SP_bytes": 1310720.0,
             "msg_TP_bytes": 10240.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -63339,7 +63339,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 10485760.0,
+            "msg_SP_bytes": 20971520.0,
             "msg_TP_bytes": 163840.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -63444,7 +63444,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 5242880.0,
+            "msg_SP_bytes": 10485760.0,
             "msg_TP_bytes": 10240.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -63549,7 +63549,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 335544320.0,
+            "msg_SP_bytes": 671088640.0,
             "msg_TP_bytes": 655360.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -63654,7 +63654,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 1310720.0,
+            "msg_SP_bytes": 2621440.0,
             "msg_TP_bytes": 10240.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -63759,7 +63759,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 1310720.0,
+            "msg_SP_bytes": 2621440.0,
             "msg_TP_bytes": 10240.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -63864,7 +63864,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 1310720.0,
+            "msg_SP_bytes": 2621440.0,
             "msg_TP_bytes": 10240.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -63969,7 +63969,7 @@
           "comm": {
             "msg_EP_bytes": 20480.0,
             "msg_PP_bytes": 2560.0,
-            "msg_SP_bytes": 327680.0,
+            "msg_SP_bytes": 655360.0,
             "msg_TP_bytes": 10240.0,
             "t_EP": 1.0227555555555556e-06,
             "t_PP": 5.028444444444444e-07,
@@ -64074,7 +64074,7 @@
           "comm": {
             "msg_EP_bytes": 327680.0,
             "msg_PP_bytes": 40960.0,
-            "msg_SP_bytes": 5242880.0,
+            "msg_SP_bytes": 10485760.0,
             "msg_TP_bytes": 163840.0,
             "t_EP": 1.3640888888888888e-06,
             "t_PP": 5.455111111111111e-07,
@@ -64179,7 +64179,7 @@
           "comm": {
             "msg_EP_bytes": 20480.0,
             "msg_PP_bytes": 2560.0,
-            "msg_SP_bytes": 2621440.0,
+            "msg_SP_bytes": 5242880.0,
             "msg_TP_bytes": 10240.0,
             "t_EP": 1.0227555555555556e-06,
             "t_PP": 5.028444444444444e-07,
@@ -64284,7 +64284,7 @@
           "comm": {
             "msg_EP_bytes": 1310720.0,
             "msg_PP_bytes": 163840.0,
-            "msg_SP_bytes": 167772160.0,
+            "msg_SP_bytes": 335544320.0,
             "msg_TP_bytes": 655360.0,
             "t_EP": 2.4563555555555555e-06,
             "t_PP": 6.820444444444444e-07,
@@ -64389,7 +64389,7 @@
           "comm": {
             "msg_EP_bytes": 20480.0,
             "msg_PP_bytes": 2560.0,
-            "msg_SP_bytes": 655360.0,
+            "msg_SP_bytes": 1310720.0,
             "msg_TP_bytes": 10240.0,
             "t_EP": 1.0227555555555556e-06,
             "t_PP": 5.028444444444444e-07,
@@ -64494,7 +64494,7 @@
           "comm": {
             "msg_EP_bytes": 20480.0,
             "msg_PP_bytes": 2560.0,
-            "msg_SP_bytes": 655360.0,
+            "msg_SP_bytes": 1310720.0,
             "msg_TP_bytes": 10240.0,
             "t_EP": 1.0227555555555556e-06,
             "t_PP": 5.028444444444444e-07,
@@ -64599,7 +64599,7 @@
           "comm": {
             "msg_EP_bytes": 20480.0,
             "msg_PP_bytes": 2560.0,
-            "msg_SP_bytes": 655360.0,
+            "msg_SP_bytes": 1310720.0,
             "msg_TP_bytes": 10240.0,
             "t_EP": 1.0227555555555556e-06,
             "t_PP": 5.028444444444444e-07,
@@ -71319,7 +71319,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 655360.0,
+            "msg_SP_bytes": 1310720.0,
             "msg_TP_bytes": 10240.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -71424,7 +71424,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 10485760.0,
+            "msg_SP_bytes": 20971520.0,
             "msg_TP_bytes": 163840.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -71529,7 +71529,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 5242880.0,
+            "msg_SP_bytes": 10485760.0,
             "msg_TP_bytes": 10240.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -71634,7 +71634,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 335544320.0,
+            "msg_SP_bytes": 671088640.0,
             "msg_TP_bytes": 655360.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -71739,7 +71739,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 1310720.0,
+            "msg_SP_bytes": 2621440.0,
             "msg_TP_bytes": 10240.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -71844,7 +71844,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 1310720.0,
+            "msg_SP_bytes": 2621440.0,
             "msg_TP_bytes": 10240.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -71949,7 +71949,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 1310720.0,
+            "msg_SP_bytes": 2621440.0,
             "msg_TP_bytes": 10240.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -72054,7 +72054,7 @@
           "comm": {
             "msg_EP_bytes": 20480.0,
             "msg_PP_bytes": 2560.0,
-            "msg_SP_bytes": 327680.0,
+            "msg_SP_bytes": 655360.0,
             "msg_TP_bytes": 10240.0,
             "t_EP": 1.0227555555555556e-06,
             "t_PP": 5.028444444444444e-07,
@@ -72159,7 +72159,7 @@
           "comm": {
             "msg_EP_bytes": 327680.0,
             "msg_PP_bytes": 40960.0,
-            "msg_SP_bytes": 5242880.0,
+            "msg_SP_bytes": 10485760.0,
             "msg_TP_bytes": 163840.0,
             "t_EP": 1.3640888888888888e-06,
             "t_PP": 5.455111111111111e-07,
@@ -72264,7 +72264,7 @@
           "comm": {
             "msg_EP_bytes": 20480.0,
             "msg_PP_bytes": 2560.0,
-            "msg_SP_bytes": 2621440.0,
+            "msg_SP_bytes": 5242880.0,
             "msg_TP_bytes": 10240.0,
             "t_EP": 1.0227555555555556e-06,
             "t_PP": 5.028444444444444e-07,
@@ -72369,7 +72369,7 @@
           "comm": {
             "msg_EP_bytes": 1310720.0,
             "msg_PP_bytes": 163840.0,
-            "msg_SP_bytes": 167772160.0,
+            "msg_SP_bytes": 335544320.0,
             "msg_TP_bytes": 655360.0,
             "t_EP": 2.4563555555555555e-06,
             "t_PP": 6.820444444444444e-07,
@@ -72474,7 +72474,7 @@
           "comm": {
             "msg_EP_bytes": 20480.0,
             "msg_PP_bytes": 2560.0,
-            "msg_SP_bytes": 655360.0,
+            "msg_SP_bytes": 1310720.0,
             "msg_TP_bytes": 10240.0,
             "t_EP": 1.0227555555555556e-06,
             "t_PP": 5.028444444444444e-07,
@@ -72579,7 +72579,7 @@
           "comm": {
             "msg_EP_bytes": 20480.0,
             "msg_PP_bytes": 2560.0,
-            "msg_SP_bytes": 655360.0,
+            "msg_SP_bytes": 1310720.0,
             "msg_TP_bytes": 10240.0,
             "t_EP": 1.0227555555555556e-06,
             "t_PP": 5.028444444444444e-07,
@@ -72684,7 +72684,7 @@
           "comm": {
             "msg_EP_bytes": 20480.0,
             "msg_PP_bytes": 2560.0,
-            "msg_SP_bytes": 655360.0,
+            "msg_SP_bytes": 1310720.0,
             "msg_TP_bytes": 10240.0,
             "t_EP": 1.0227555555555556e-06,
             "t_PP": 5.028444444444444e-07,
@@ -79404,7 +79404,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 655360.0,
+            "msg_SP_bytes": 1310720.0,
             "msg_TP_bytes": 10240.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -79509,7 +79509,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 10485760.0,
+            "msg_SP_bytes": 20971520.0,
             "msg_TP_bytes": 163840.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -79614,7 +79614,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 5242880.0,
+            "msg_SP_bytes": 10485760.0,
             "msg_TP_bytes": 10240.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -79719,7 +79719,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 335544320.0,
+            "msg_SP_bytes": 671088640.0,
             "msg_TP_bytes": 655360.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -79824,7 +79824,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 1310720.0,
+            "msg_SP_bytes": 2621440.0,
             "msg_TP_bytes": 10240.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -79929,7 +79929,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 1310720.0,
+            "msg_SP_bytes": 2621440.0,
             "msg_TP_bytes": 10240.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -80034,7 +80034,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 1310720.0,
+            "msg_SP_bytes": 2621440.0,
             "msg_TP_bytes": 10240.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -80139,7 +80139,7 @@
           "comm": {
             "msg_EP_bytes": 20480.0,
             "msg_PP_bytes": 2560.0,
-            "msg_SP_bytes": 327680.0,
+            "msg_SP_bytes": 655360.0,
             "msg_TP_bytes": 10240.0,
             "t_EP": 2.136533333333333e-06,
             "t_PP": 1.0170666666666666e-06,
@@ -80244,7 +80244,7 @@
           "comm": {
             "msg_EP_bytes": 327680.0,
             "msg_PP_bytes": 40960.0,
-            "msg_SP_bytes": 5242880.0,
+            "msg_SP_bytes": 10485760.0,
             "msg_TP_bytes": 163840.0,
             "t_EP": 4.184533333333334e-06,
             "t_PP": 1.2730666666666667e-06,
@@ -80349,7 +80349,7 @@
           "comm": {
             "msg_EP_bytes": 20480.0,
             "msg_PP_bytes": 2560.0,
-            "msg_SP_bytes": 2621440.0,
+            "msg_SP_bytes": 5242880.0,
             "msg_TP_bytes": 10240.0,
             "t_EP": 2.136533333333333e-06,
             "t_PP": 1.0170666666666666e-06,
@@ -80454,7 +80454,7 @@
           "comm": {
             "msg_EP_bytes": 1310720.0,
             "msg_PP_bytes": 163840.0,
-            "msg_SP_bytes": 167772160.0,
+            "msg_SP_bytes": 335544320.0,
             "msg_TP_bytes": 655360.0,
             "t_EP": 1.0738133333333333e-05,
             "t_PP": 2.092266666666667e-06,
@@ -80559,7 +80559,7 @@
           "comm": {
             "msg_EP_bytes": 20480.0,
             "msg_PP_bytes": 2560.0,
-            "msg_SP_bytes": 655360.0,
+            "msg_SP_bytes": 1310720.0,
             "msg_TP_bytes": 10240.0,
             "t_EP": 2.136533333333333e-06,
             "t_PP": 1.0170666666666666e-06,
@@ -80664,7 +80664,7 @@
           "comm": {
             "msg_EP_bytes": 20480.0,
             "msg_PP_bytes": 2560.0,
-            "msg_SP_bytes": 655360.0,
+            "msg_SP_bytes": 1310720.0,
             "msg_TP_bytes": 10240.0,
             "t_EP": 2.136533333333333e-06,
             "t_PP": 1.0170666666666666e-06,
@@ -80769,7 +80769,7 @@
           "comm": {
             "msg_EP_bytes": 20480.0,
             "msg_PP_bytes": 2560.0,
-            "msg_SP_bytes": 655360.0,
+            "msg_SP_bytes": 1310720.0,
             "msg_TP_bytes": 10240.0,
             "t_EP": 2.136533333333333e-06,
             "t_PP": 1.0170666666666666e-06,
@@ -86754,7 +86754,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 143360.0,
+            "msg_SP_bytes": 286720.0,
             "msg_TP_bytes": 7168.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -86859,7 +86859,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 2293760.0,
+            "msg_SP_bytes": 4587520.0,
             "msg_TP_bytes": 114688.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -86964,7 +86964,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 1146880.0,
+            "msg_SP_bytes": 2293760.0,
             "msg_TP_bytes": 7168.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -87069,7 +87069,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 73400320.0,
+            "msg_SP_bytes": 146800640.0,
             "msg_TP_bytes": 458752.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -87174,7 +87174,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 286720.0,
+            "msg_SP_bytes": 573440.0,
             "msg_TP_bytes": 7168.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -87279,7 +87279,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 286720.0,
+            "msg_SP_bytes": 573440.0,
             "msg_TP_bytes": 7168.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -87384,7 +87384,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 286720.0,
+            "msg_SP_bytes": 573440.0,
             "msg_TP_bytes": 7168.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -87489,7 +87489,7 @@
           "comm": {
             "msg_EP_bytes": 64512.0,
             "msg_PP_bytes": 1792.0,
-            "msg_SP_bytes": 71680.0,
+            "msg_SP_bytes": 143360.0,
             "msg_TP_bytes": 7168.0,
             "t_EP": 2.16128e-06,
             "t_PP": 5.0358399999999995e-06,
@@ -87594,7 +87594,7 @@
           "comm": {
             "msg_EP_bytes": 1032192.0,
             "msg_PP_bytes": 28672.0,
-            "msg_SP_bytes": 1146880.0,
+            "msg_SP_bytes": 2293760.0,
             "msg_TP_bytes": 114688.0,
             "t_EP": 4.58048e-06,
             "t_PP": 5.573439999999999e-06,
@@ -87699,7 +87699,7 @@
           "comm": {
             "msg_EP_bytes": 64512.0,
             "msg_PP_bytes": 1792.0,
-            "msg_SP_bytes": 573440.0,
+            "msg_SP_bytes": 1146880.0,
             "msg_TP_bytes": 7168.0,
             "t_EP": 2.16128e-06,
             "t_PP": 5.0358399999999995e-06,
@@ -87804,7 +87804,7 @@
           "comm": {
             "msg_EP_bytes": 4128768.0,
             "msg_PP_bytes": 114688.0,
-            "msg_SP_bytes": 36700160.0,
+            "msg_SP_bytes": 73400320.0,
             "msg_TP_bytes": 458752.0,
             "t_EP": 1.232192e-05,
             "t_PP": 7.29376e-06,
@@ -87909,7 +87909,7 @@
           "comm": {
             "msg_EP_bytes": 64512.0,
             "msg_PP_bytes": 1792.0,
-            "msg_SP_bytes": 143360.0,
+            "msg_SP_bytes": 286720.0,
             "msg_TP_bytes": 7168.0,
             "t_EP": 2.16128e-06,
             "t_PP": 5.0358399999999995e-06,
@@ -88014,7 +88014,7 @@
           "comm": {
             "msg_EP_bytes": 64512.0,
             "msg_PP_bytes": 1792.0,
-            "msg_SP_bytes": 143360.0,
+            "msg_SP_bytes": 286720.0,
             "msg_TP_bytes": 7168.0,
             "t_EP": 2.16128e-06,
             "t_PP": 5.0358399999999995e-06,
@@ -88119,7 +88119,7 @@
           "comm": {
             "msg_EP_bytes": 64512.0,
             "msg_PP_bytes": 1792.0,
-            "msg_SP_bytes": 143360.0,
+            "msg_SP_bytes": 286720.0,
             "msg_TP_bytes": 7168.0,
             "t_EP": 2.16128e-06,
             "t_PP": 5.0358399999999995e-06,
@@ -94104,7 +94104,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 143360.0,
+            "msg_SP_bytes": 286720.0,
             "msg_TP_bytes": 7168.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -94209,7 +94209,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 2293760.0,
+            "msg_SP_bytes": 4587520.0,
             "msg_TP_bytes": 114688.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -94314,7 +94314,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 1146880.0,
+            "msg_SP_bytes": 2293760.0,
             "msg_TP_bytes": 7168.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -94419,7 +94419,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 73400320.0,
+            "msg_SP_bytes": 146800640.0,
             "msg_TP_bytes": 458752.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -94524,7 +94524,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 286720.0,
+            "msg_SP_bytes": 573440.0,
             "msg_TP_bytes": 7168.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -94629,7 +94629,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 286720.0,
+            "msg_SP_bytes": 573440.0,
             "msg_TP_bytes": 7168.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -94734,7 +94734,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 286720.0,
+            "msg_SP_bytes": 573440.0,
             "msg_TP_bytes": 7168.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -94839,7 +94839,7 @@
           "comm": {
             "msg_EP_bytes": 64512.0,
             "msg_PP_bytes": 1792.0,
-            "msg_SP_bytes": 71680.0,
+            "msg_SP_bytes": 143360.0,
             "msg_TP_bytes": 7168.0,
             "t_EP": 1.07168e-06,
             "t_PP": 5.019911111111111e-07,
@@ -94944,7 +94944,7 @@
           "comm": {
             "msg_EP_bytes": 1032192.0,
             "msg_PP_bytes": 28672.0,
-            "msg_SP_bytes": 1146880.0,
+            "msg_SP_bytes": 2293760.0,
             "msg_TP_bytes": 114688.0,
             "t_EP": 2.14688e-06,
             "t_PP": 5.318577777777777e-07,
@@ -95049,7 +95049,7 @@
           "comm": {
             "msg_EP_bytes": 64512.0,
             "msg_PP_bytes": 1792.0,
-            "msg_SP_bytes": 573440.0,
+            "msg_SP_bytes": 1146880.0,
             "msg_TP_bytes": 7168.0,
             "t_EP": 1.07168e-06,
             "t_PP": 5.019911111111111e-07,
@@ -95154,7 +95154,7 @@
           "comm": {
             "msg_EP_bytes": 4128768.0,
             "msg_PP_bytes": 114688.0,
-            "msg_SP_bytes": 36700160.0,
+            "msg_SP_bytes": 73400320.0,
             "msg_TP_bytes": 458752.0,
             "t_EP": 5.58752e-06,
             "t_PP": 6.27431111111111e-07,
@@ -95259,7 +95259,7 @@
           "comm": {
             "msg_EP_bytes": 64512.0,
             "msg_PP_bytes": 1792.0,
-            "msg_SP_bytes": 143360.0,
+            "msg_SP_bytes": 286720.0,
             "msg_TP_bytes": 7168.0,
             "t_EP": 1.07168e-06,
             "t_PP": 5.019911111111111e-07,
@@ -95364,7 +95364,7 @@
           "comm": {
             "msg_EP_bytes": 64512.0,
             "msg_PP_bytes": 1792.0,
-            "msg_SP_bytes": 143360.0,
+            "msg_SP_bytes": 286720.0,
             "msg_TP_bytes": 7168.0,
             "t_EP": 1.07168e-06,
             "t_PP": 5.019911111111111e-07,
@@ -95469,7 +95469,7 @@
           "comm": {
             "msg_EP_bytes": 64512.0,
             "msg_PP_bytes": 1792.0,
-            "msg_SP_bytes": 143360.0,
+            "msg_SP_bytes": 286720.0,
             "msg_TP_bytes": 7168.0,
             "t_EP": 1.07168e-06,
             "t_PP": 5.019911111111111e-07,
@@ -102189,7 +102189,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 143360.0,
+            "msg_SP_bytes": 286720.0,
             "msg_TP_bytes": 7168.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -102294,7 +102294,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 2293760.0,
+            "msg_SP_bytes": 4587520.0,
             "msg_TP_bytes": 114688.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -102399,7 +102399,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 1146880.0,
+            "msg_SP_bytes": 2293760.0,
             "msg_TP_bytes": 7168.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -102504,7 +102504,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 73400320.0,
+            "msg_SP_bytes": 146800640.0,
             "msg_TP_bytes": 458752.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -102609,7 +102609,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 286720.0,
+            "msg_SP_bytes": 573440.0,
             "msg_TP_bytes": 7168.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -102714,7 +102714,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 286720.0,
+            "msg_SP_bytes": 573440.0,
             "msg_TP_bytes": 7168.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -102819,7 +102819,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 286720.0,
+            "msg_SP_bytes": 573440.0,
             "msg_TP_bytes": 7168.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -102924,7 +102924,7 @@
           "comm": {
             "msg_EP_bytes": 64512.0,
             "msg_PP_bytes": 1792.0,
-            "msg_SP_bytes": 71680.0,
+            "msg_SP_bytes": 143360.0,
             "msg_TP_bytes": 7168.0,
             "t_EP": 1.07168e-06,
             "t_PP": 5.019911111111111e-07,
@@ -103029,7 +103029,7 @@
           "comm": {
             "msg_EP_bytes": 1032192.0,
             "msg_PP_bytes": 28672.0,
-            "msg_SP_bytes": 1146880.0,
+            "msg_SP_bytes": 2293760.0,
             "msg_TP_bytes": 114688.0,
             "t_EP": 2.14688e-06,
             "t_PP": 5.318577777777777e-07,
@@ -103134,7 +103134,7 @@
           "comm": {
             "msg_EP_bytes": 64512.0,
             "msg_PP_bytes": 1792.0,
-            "msg_SP_bytes": 573440.0,
+            "msg_SP_bytes": 1146880.0,
             "msg_TP_bytes": 7168.0,
             "t_EP": 1.07168e-06,
             "t_PP": 5.019911111111111e-07,
@@ -103239,7 +103239,7 @@
           "comm": {
             "msg_EP_bytes": 4128768.0,
             "msg_PP_bytes": 114688.0,
-            "msg_SP_bytes": 36700160.0,
+            "msg_SP_bytes": 73400320.0,
             "msg_TP_bytes": 458752.0,
             "t_EP": 5.58752e-06,
             "t_PP": 6.27431111111111e-07,
@@ -103344,7 +103344,7 @@
           "comm": {
             "msg_EP_bytes": 64512.0,
             "msg_PP_bytes": 1792.0,
-            "msg_SP_bytes": 143360.0,
+            "msg_SP_bytes": 286720.0,
             "msg_TP_bytes": 7168.0,
             "t_EP": 1.07168e-06,
             "t_PP": 5.019911111111111e-07,
@@ -103449,7 +103449,7 @@
           "comm": {
             "msg_EP_bytes": 64512.0,
             "msg_PP_bytes": 1792.0,
-            "msg_SP_bytes": 143360.0,
+            "msg_SP_bytes": 286720.0,
             "msg_TP_bytes": 7168.0,
             "t_EP": 1.07168e-06,
             "t_PP": 5.019911111111111e-07,
@@ -103554,7 +103554,7 @@
           "comm": {
             "msg_EP_bytes": 64512.0,
             "msg_PP_bytes": 1792.0,
-            "msg_SP_bytes": 143360.0,
+            "msg_SP_bytes": 286720.0,
             "msg_TP_bytes": 7168.0,
             "t_EP": 1.07168e-06,
             "t_PP": 5.019911111111111e-07,
@@ -110274,7 +110274,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 143360.0,
+            "msg_SP_bytes": 286720.0,
             "msg_TP_bytes": 7168.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -110379,7 +110379,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 2293760.0,
+            "msg_SP_bytes": 4587520.0,
             "msg_TP_bytes": 114688.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -110484,7 +110484,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 1146880.0,
+            "msg_SP_bytes": 2293760.0,
             "msg_TP_bytes": 7168.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -110589,7 +110589,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 73400320.0,
+            "msg_SP_bytes": 146800640.0,
             "msg_TP_bytes": 458752.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -110694,7 +110694,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 286720.0,
+            "msg_SP_bytes": 573440.0,
             "msg_TP_bytes": 7168.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -110799,7 +110799,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 286720.0,
+            "msg_SP_bytes": 573440.0,
             "msg_TP_bytes": 7168.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -110904,7 +110904,7 @@
           "comm": {
             "msg_EP_bytes": 0.0,
             "msg_PP_bytes": 0.0,
-            "msg_SP_bytes": 286720.0,
+            "msg_SP_bytes": 573440.0,
             "msg_TP_bytes": 7168.0,
             "t_EP": 0.0,
             "t_PP": 0.0,
@@ -111009,7 +111009,7 @@
           "comm": {
             "msg_EP_bytes": 64512.0,
             "msg_PP_bytes": 1792.0,
-            "msg_SP_bytes": 71680.0,
+            "msg_SP_bytes": 143360.0,
             "msg_TP_bytes": 7168.0,
             "t_EP": 2.43008e-06,
             "t_PP": 1.0119466666666667e-06,
@@ -111114,7 +111114,7 @@
           "comm": {
             "msg_EP_bytes": 1032192.0,
             "msg_PP_bytes": 28672.0,
-            "msg_SP_bytes": 1146880.0,
+            "msg_SP_bytes": 2293760.0,
             "msg_TP_bytes": 114688.0,
             "t_EP": 8.88128e-06,
             "t_PP": 1.1911466666666666e-06,
@@ -111219,7 +111219,7 @@
           "comm": {
             "msg_EP_bytes": 64512.0,
             "msg_PP_bytes": 1792.0,
-            "msg_SP_bytes": 573440.0,
+            "msg_SP_bytes": 1146880.0,
             "msg_TP_bytes": 7168.0,
             "t_EP": 2.43008e-06,
             "t_PP": 1.0119466666666667e-06,
@@ -111324,7 +111324,7 @@
           "comm": {
             "msg_EP_bytes": 4128768.0,
             "msg_PP_bytes": 114688.0,
-            "msg_SP_bytes": 36700160.0,
+            "msg_SP_bytes": 73400320.0,
             "msg_TP_bytes": 458752.0,
             "t_EP": 2.952512e-05,
             "t_PP": 1.7645866666666667e-06,
@@ -111429,7 +111429,7 @@
           "comm": {
             "msg_EP_bytes": 64512.0,
             "msg_PP_bytes": 1792.0,
-            "msg_SP_bytes": 143360.0,
+            "msg_SP_bytes": 286720.0,
             "msg_TP_bytes": 7168.0,
             "t_EP": 2.43008e-06,
             "t_PP": 1.0119466666666667e-06,
@@ -111534,7 +111534,7 @@
           "comm": {
             "msg_EP_bytes": 64512.0,
             "msg_PP_bytes": 1792.0,
-            "msg_SP_bytes": 143360.0,
+            "msg_SP_bytes": 286720.0,
             "msg_TP_bytes": 7168.0,
             "t_EP": 2.43008e-06,
             "t_PP": 1.0119466666666667e-06,
@@ -111639,7 +111639,7 @@
           "comm": {
             "msg_EP_bytes": 64512.0,
             "msg_PP_bytes": 1792.0,
-            "msg_SP_bytes": 143360.0,
+            "msg_SP_bytes": 286720.0,
             "msg_TP_bytes": 7168.0,
             "t_EP": 2.43008e-06,
             "t_PP": 1.0119466666666667e-06,
