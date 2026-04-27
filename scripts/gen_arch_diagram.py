@@ -8,9 +8,9 @@ Python module that governs it.
 import matplotlib.pyplot as plt
 from matplotlib.patches import FancyBboxPatch
 
-fig, ax = plt.subplots(figsize=(16, 12))
+fig, ax = plt.subplots(figsize=(16, 9.7))
 ax.set_xlim(0, 16)
-ax.set_ylim(0, 12)
+ax.set_ylim(2.3, 12)
 ax.set_aspect("equal")
 ax.axis("off")
 
@@ -149,7 +149,7 @@ ref_text(8, 3.65, "modeling/kv.md · core/kv_paging_model.py", fontsize=9)
 # ═══════════════════════════════════════════════════════════════════
 # Legend at bottom
 # ═══════════════════════════════════════════════════════════════════
-legend_y = 2.5
+legend_y = 3.05
 legend_items = [
     (C_GPU,    "#C62828", "GPU Compute"),
     (C_SRAM,   "#00838F", "SRAM (fast tier)"),
@@ -163,7 +163,7 @@ for i, (fc, ec, label) in enumerate(legend_items):
     rounded_box(lx, legend_y, 0.4, 0.25, fc, lw=0.8, ec=ec)
     ax.text(lx + 0.5, legend_y + 0.12, label, ha="left", va="center", fontsize=9, color=C_TEXT)
 
-ax.text(8, 1.95, "Green italic labels reference modeling docs and core Python modules",
+ax.text(8, 2.6, "Green italic labels reference modeling docs and core Python modules",
         ha="center", va="center", fontsize=10, color=C_REF, fontstyle="italic")
 
 fig.tight_layout()
