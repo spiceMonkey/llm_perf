@@ -110,21 +110,12 @@ for row_y in [top_y, bot_y]:
 # Device-level references
 ref_text(10.5, 9.0, "core/{memory_model, decode_model, memory_placement}.py · sram.md · primitives/", fontsize=7.5)
 
-# PP connections (horizontal arrows between top-row devices)
-for dx in [7.4, 9.2, 11.0]:
-    ax.annotate("", xy=(dx, 8.28), xytext=(dx - 0.15, 8.28),
-                arrowprops=dict(arrowstyle="->", color="#E65100", lw=1.8))
-ax.text(13.05, 8.28, "PP", ha="center", va="center",
-        fontsize=12, fontweight="bold", color="#BF360C")
-
-# DP label
-ax.text(13.05, 7.18, "DP ×", ha="center", va="center",
-        fontsize=11, fontweight="bold", color="#BF360C")
-
 # Decode scale-up/out network — shown as the canonical hierarchical chain
 # (innermost first). Single-tier deployments collapse to one element.
+# All five parallelism dimensions (TP/EP/SP intra-domain, PP cross-stage,
+# DP across replicas) ride this one fabric model.
 rounded_box(5.85, 5.7, 6.5, 0.42, C_SWITCH, lw=1.5, ec="#2E7D32")
-ax.text(9.1, 5.91, "Scale-up/out Network  (TP / EP / SP)", ha="center", va="center",
+ax.text(9.1, 5.91, "Scale-up/out Network  (TP / EP / SP / PP / DP)", ha="center", va="center",
         fontsize=11, fontweight="bold", color="#1B5E20")
 ax.text(9.1, 5.55, "hierarchical α-β:  pair_mesh / NVLink → PCIe / fat-tree → ethernet  · INC short-circuit on sharp_class / hw_a2a tiers",
         ha="center", va="center", fontsize=8.5, color="#1B5E20", fontstyle="italic")
