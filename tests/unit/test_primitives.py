@@ -2,8 +2,11 @@
 
 Each test fixtures a tiny model/partition, hand-computes the expected byte
 or FLOP count from the closed-form expression in the primitive's docstring,
-and asserts bit-equality. These catch accidental formula changes during the
-refactor (Phase 2 onward must reproduce these numbers exactly).
+and asserts bit-equality. These pin down the upstream-synced
+``collective_cost.py`` API surface — see ``scratch/collectives_cost_CHANGES.md``
+for the post-sync conventions (M = full per-rank payload for AG/RS;
+``tree_all_reduce`` defaults to non-pipelined; MoE Dispatch+Combine 2×
+wrap lives in the dispatcher, not the primitive).
 
 Usage:  PYTHONPATH=. python tests/unit/test_primitives.py
 """
@@ -16,14 +19,12 @@ from llm_perf.core.primitives import (
     ring_all_reduce,
     tree_all_reduce,
     pairwise_a2a,
-    ring_moe_all_to_all,
-    tree_moe_all_to_all,
     ring_all_gather,
     ring_reduce_scatter,
     torus_all_reduce,
     torus_all_gather,
     torus_reduce_scatter,
-    torus_moe_all_to_all,
+    torus_a2a,
     inc_all_reduce,
     inc_all_gather,
     inc_reduce_scatter,
@@ -74,8 +75,16 @@ def _check(label: str, got: float, want: float) -> None:
         print(f"  FAIL  {label}: got {got!r}, want {want!r}")
 
 
+def _check_near(label: str, got: float, want: float, rel_tol: float) -> None:
+    if math.isclose(got, want, rel_tol=rel_tol, abs_tol=0.0):
+        print(f"  PASS  {label}: {got!r} ≈ {want!r} (rel_tol={rel_tol})")
+    else:
+        _failures.append(f"{label}: got {got!r}, want ~{want!r} (rel_tol={rel_tol})")
+        print(f"  FAIL  {label}: got {got!r}, want ~{want!r}")
+
+
 # ────────────────────────────────────────────────────────────
-# collective_cost
+# collective_cost — α-β primitives (upstream-synced)
 # ────────────────────────────────────────────────────────────
 
 def test_collective_cost():
@@ -86,14 +95,27 @@ def test_collective_cost():
     _check("ring_all_reduce G=1", ring_all_reduce(1000, 1, 1e-6, 1e9), 0.0)
     # ring_all_reduce at G=2: 2·1·α + 2·1/2·M/BW = 2α + M/BW
     _check("ring_all_reduce G=2", ring_all_reduce(1000, 2, 1e-6, 1e9), 2e-6 + 1000 / 1e9)
-    # tree_all_reduce (pipelined DBT) at G=4: 2·2·α + 2(3/4)·M/BW = 4α + 1.5·M/BW
-    _check("tree_all_reduce G=4", tree_all_reduce(1000, 4, 1e-6, 1e9), 4e-6 + 2 * (3 / 4) * 1000 / 1e9)
-    # ring_moe_all_to_all at G=2: 2·1·α + 2·1·M/(2·BW) = 2α + M/BW
-    _check("ring_moe_all_to_all G=2", ring_moe_all_to_all(1000, 2, 1e-6, 1e9), 2e-6 + 1000 / 1e9)
-    # tree_moe_all_to_all (pipelined) at G=4: 2·2·α + 2(3/4)·M/BW = 4α + 1.5·M/BW
-    _check("tree_moe_all_to_all G=4", tree_moe_all_to_all(1000, 4, 1e-6, 1e9), 4e-6 + 2 * (3 / 4) * 1000 / 1e9)
-    # ring_all_gather at G=2: 1·α + 1·M/BW
-    _check("ring_all_gather G=2", ring_all_gather(1000, 2, 1e-6, 1e9), 1e-6 + 1000 / 1e9)
+    # tree_all_reduce default (pipelined=False, P=1 schedule):
+    #   2·⌈log₂G⌉·α + ⌈log₂G⌉·M/BW
+    # G=4: 2·2·α + 2·M/BW = 4α + 2·M/BW
+    _check("tree_all_reduce G=4 (P=1)",
+           tree_all_reduce(1000, 4, 1e-6, 1e9),
+           4e-6 + 2 * 1000 / 1e9)
+    # tree_all_reduce pipelined=True (asymptotic P→P*): 2·⌈log₂G⌉·α + M/BW
+    _check("tree_all_reduce G=4 pipelined",
+           tree_all_reduce(1000, 4, 1e-6, 1e9, pipelined=True),
+           4e-6 + 1000 / 1e9)
+    # pairwise_a2a — single direction (no Dispatch+Combine 2× — that lives
+    # in the dispatcher's MoE wrap). G=2: 1·α + (1/2)·M/BW = α + M/(2·BW)
+    _check("pairwise_a2a G=2",
+           pairwise_a2a(1000, 2, 1e-6, 1e9),
+           1e-6 + 1000 / (2 * 1e9))
+    # ring_all_gather under new M=full convention:
+    #   (G-1)·α + (G-1)/G · M/BW
+    # G=2, M=1000: 1·α + (1/2)·1000/BW = α + 500/BW
+    _check("ring_all_gather G=2 (M=full)",
+           ring_all_gather(1000, 2, 1e-6, 1e9),
+           1e-6 + 500 / 1e9)
     # Zero BW → 0.0 guard
     _check("p2p_hop BW=0", p2p_hop(1000, 1e-6, 0), 0.0)
     _check("ring_all_reduce BW=0", ring_all_reduce(1000, 4, 1e-6, 0), 0.0)
@@ -137,38 +159,47 @@ def test_torus_collective_cost():
     _check("torus_AR BW-term (4,4)",   torus_all_reduce(M, (4, 4),    0.0, bw), bw_term)
     _check("torus_AR BW-term (2,2,4)", torus_all_reduce(M, (2, 2, 4), 0.0, bw), bw_term)
 
-    # torus_all_gather: T5 continuity + 2D
-    # G=4: 3·α + 3·M/BW
+    # torus_all_gather under new M=full convention: Σ(D-1)·α + (N-1)/N · M/BW
+    # G=4: 3·α + 3/4·M/BW
     _check(
         "torus_AG k=1 continuity",
         torus_all_gather(M, (4,), alpha, bw),
         ring_all_gather(M, 4, alpha, bw),
     )
-    # 2D 4×4: hops=6, N=16 → 6·α + 15·M/BW
+    # 2D 4×4: hops=6, N=16 → 6·α + (15/16)·M/BW
     _check(
-        "torus_AG 4x4",
+        "torus_AG 4x4 (M=full)",
         torus_all_gather(M, (4, 4), alpha, bw),
-        6 * alpha + 15 * (M / bw),
+        6 * alpha + (15 / 16) * (M / bw),
     )
 
-    # torus_moe_all_to_all: bisection-limited A2A.
-    # Balanced 8×8×8: diam=4+4+4=12, D_max=8 → 12·α + 8·M/(8·BW) = 12·α + M/BW
+    # torus_a2a: bisection-limited A2A (no MoE 2× wrap — that's dispatcher-side).
+    # Balanced 8×8×8 wraparound: diam=4+4+4=12, D_max=8 → 12·α + 8·M/(8·BW) = 12α + M/BW
     _check(
-        "torus_A2A 8x8x8 balanced",
-        torus_moe_all_to_all(M, (8, 8, 8), alpha, bw),
+        "torus_A2A 8x8x8 balanced (wraparound)",
+        torus_a2a(M, (8, 8, 8), alpha, bw),
         12 * alpha + 8 * M / (8 * bw),
     )
-    # Extreme 2×2×128: diam=1+1+64=66, D_max=128 → BW-term 16× the balanced case.
+    # Extreme 2×2×128 wraparound: diam=1+1+64=66, D_max=128 → BW-term 16× the balanced case
     _check(
         "torus_A2A 2x2x128 extreme",
-        torus_moe_all_to_all(M, (2, 2, 128), alpha, bw),
+        torus_a2a(M, (2, 2, 128), alpha, bw),
         66 * alpha + 128 * M / (8 * bw),
     )
-    # Layout sensitivity: BW-term scales exactly as D_max ratio (128/8 = 16×).
+    # Layout sensitivity: BW-term scales exactly as D_max ratio (128/8 = 16×)
     _check(
         "torus_A2A D_max ratio (128/8)",
-        torus_moe_all_to_all(M, (2, 2, 128), 0.0, bw),
-        16 * torus_moe_all_to_all(M, (8, 8, 8), 0.0, bw),
+        torus_a2a(M, (2, 2, 128), 0.0, bw),
+        16 * torus_a2a(M, (8, 8, 8), 0.0, bw),
+    )
+    # k-D mesh (wraparound=False): open-line diameter Σ(D-1), bisection /4.
+    # 4×4 mesh: diam=3+3=6, D_max=4 → 6α + 4·M/(4·BW) = 6α + M/BW.
+    # vs same-shape torus 4×4: diam=2+2=4, D_max=4 → 4α + 4·M/(8·BW) = 4α + M/(2·BW).
+    # Mesh BW term is exactly 2× torus BW term.
+    _check(
+        "torus_A2A 4x4 mesh BW = 2× wraparound",
+        torus_a2a(M, (4, 4), 0.0, bw, wraparound=False),
+        2 * torus_a2a(M, (4, 4), 0.0, bw, wraparound=True),
     )
 
     # No-op / zero-guard parity with crossbar primitives.
@@ -176,11 +207,11 @@ def test_torus_collective_cost():
     _check("torus_AR empty",   torus_all_reduce(M, (),    alpha, bw), 0.0)
     _check("torus_AR BW=0",    torus_all_reduce(M, (4, 4), alpha, 0.0), 0.0)
     _check("torus_AG BW=0",    torus_all_gather(M, (4, 4), alpha, 0.0), 0.0)
-    _check("torus_A2A BW=0",   torus_moe_all_to_all(M, (4, 4), alpha, 0.0), 0.0)
+    _check("torus_A2A BW=0",   torus_a2a(M, (4, 4), alpha, 0.0), 0.0)
 
 
 # ────────────────────────────────────────────────────────────
-# INC collective_cost — collectives/03_in_network_collectives.md §1.2-1.3
+# INC collective_cost — 04_in_network_collectives.md
 # ────────────────────────────────────────────────────────────
 
 def test_inc_collective_cost():
@@ -201,11 +232,12 @@ def test_inc_collective_cost():
         inc_all_reduce(M, 2 * alpha, bw),
         4 * alpha + M / bw,
     )
-    # AG single-tier G=8: 2α + (G-1)·M/BW = 2α + 7·M/BW
+    # AG single-tier under new M=full convention: 2α + (G-1)/G · M/BW
+    # G=8: 2α + (7/8)·M/BW
     _check(
-        "inc_AG G=8 single-tier",
+        "inc_AG G=8 (M=full)",
         inc_all_gather(M, 8, alpha, bw),
-        2 * alpha + 7 * (M / bw),
+        2 * alpha + (7 / 8) * (M / bw),
     )
     # BW-eff doubling vs ring at fixed α, large N: inc_AR ≈ half the BW term of ring_AR.
     # N=1024, α=0 isolates BW term: ring = 2·(1023/1024)·M/BW; inc = M/BW.
@@ -220,7 +252,6 @@ def test_inc_collective_cost():
     bw_doc = 900 * 1e9
     inc_ar_doc = inc_all_reduce(M_doc, alpha_doc, bw_doc)
     # 2·0.5us + 16MiB/900GB/s = 1 μs + ~18.64 μs ≈ 19.6 μs (doc quotes 18.8 for decimal MB).
-    # Check structurally: should be dominated by BW term and within 2× of doc value.
     _check_near("inc_AR N=512 doc anchor", inc_ar_doc, 19.6e-6, rel_tol=0.02)
 
     # No-op guards
@@ -228,62 +259,50 @@ def test_inc_collective_cost():
     _check("inc_AG G=1",      inc_all_gather(M, 1, alpha, bw), 0.0)
     _check("inc_AG BW=0",     inc_all_gather(M, 4, alpha, 0.0), 0.0)
 
-    # inc_reduce_scatter — α-only collapse, mirrors inc_all_gather.
+    # inc_reduce_scatter under new M=full convention: 2α + (G-1)/G · M/BW
     _check(
-        "inc_RS G=8 single-tier",
+        "inc_RS G=8 (M=full)",
         inc_reduce_scatter(M, 8, alpha, bw),
-        2 * alpha + 7 * (M / bw),
+        2 * alpha + (7 / 8) * (M / bw),
     )
     _check("inc_RS G=1",       inc_reduce_scatter(M, 1, alpha, bw), 0.0)
     _check("inc_RS BW=0",      inc_reduce_scatter(M, 4, alpha, 0.0), 0.0)
 
-    # inc_a2a — α_switch (single transaction, NOT 2×) + (G-1)/G · M/BW (bisection).
+    # inc_a2a — α_switch (single transaction, NOT 2×) + (G-1)/G · M/BW.
+    # The MoE Dispatch+Combine 2× wrap lives in dispatch.py, not the primitive.
     _check(
         "inc_A2A G=8",
         inc_a2a(M, 8, alpha, bw),
         alpha + (7 / 8) * (M / bw),
     )
-    # α-collapse vs software pairwise: at G=64, α=1us, BW→∞, inc_a2a α-term should
-    # be ~63× smaller than pairwise_a2a's α-term (single switch txn vs (G-1) RTTs;
-    # both have factor of 2 elsewhere — pairwise from Dispatch+Combine).
-    pairwise_alpha = 2 * 63 * 1e-6
+    # α-collapse vs software pairwise: at G=64, α=1us, both are single-direction
+    # primitives now. pairwise_a2a α-term = (G-1)·α = 63·α. inc_a2a α-term = α.
+    # Ratio = 63×.
+    pairwise_alpha = pairwise_a2a(0.0, 64, 1e-6, 1e12)
     inc_a2a_alpha = inc_a2a(0.0, 64, 1e-6, 1e12)  # M=0 isolates α-term
-    _check("inc_A2A α-collapse vs pairwise (G=64)",
-           inc_a2a_alpha, 1e-6)
-    assert pairwise_alpha / inc_a2a_alpha == 126.0, (
+    _check("inc_A2A α-collapse vs pairwise (G=64)", inc_a2a_alpha, 1e-6)
+    assert pairwise_alpha / inc_a2a_alpha == 63.0, (
         f"α ratio mismatch: pairwise/inc = {pairwise_alpha / inc_a2a_alpha}"
     )
-    print(f"  PASS  α-collapse ratio (pairwise/inc, G=64): 126.0×")
+    print(f"  PASS  α-collapse ratio (pairwise/inc, G=64): 63.0×")
     _check("inc_A2A G=1",      inc_a2a(M, 1, alpha, bw), 0.0)
     _check("inc_A2A BW=0",     inc_a2a(M, 4, alpha, 0.0), 0.0)
 
-    # ring_reduce_scatter / torus_reduce_scatter — same shape as the AG analogs.
+    # ring_reduce_scatter / torus_reduce_scatter under new M=full convention.
+    # ring_RS G=4: (G-1)·α + (G-1)/G · M/BW = 3α + (3/4)·M/BW
     _check(
-        "ring_RS G=4",
+        "ring_RS G=4 (M=full)",
         ring_reduce_scatter(M, 4, alpha, bw),
-        3 * alpha + 3 * (M / bw),
+        3 * alpha + (3 / 4) * (M / bw),
     )
+    # torus_RS 4×4: hops=6, N=16 → 6α + (15/16)·M/BW
     _check(
-        "torus_RS 4x4",
+        "torus_RS 4x4 (M=full)",
         torus_reduce_scatter(M, (4, 4), alpha, bw),
-        6 * alpha + 15 * (M / bw),
+        6 * alpha + (15 / 16) * (M / bw),
     )
     _check("ring_RS G=1",      ring_reduce_scatter(M, 1, alpha, bw), 0.0)
     _check("torus_RS empty",   torus_reduce_scatter(M, (), alpha, bw), 0.0)
-
-    # pairwise_a2a is the canonical name for ring_moe_all_to_all (back-compat alias).
-    assert ring_moe_all_to_all is pairwise_a2a, (
-        "ring_moe_all_to_all should be an alias for pairwise_a2a"
-    )
-    print("  PASS  ring_moe_all_to_all is pairwise_a2a (alias preserved)")
-
-
-def _check_near(label: str, got: float, want: float, rel_tol: float) -> None:
-    if math.isclose(got, want, rel_tol=rel_tol, abs_tol=0.0):
-        print(f"  PASS  {label}: {got!r} ≈ {want!r} (rel_tol={rel_tol})")
-    else:
-        _failures.append(f"{label}: got {got!r}, want ~{want!r} (rel_tol={rel_tol})")
-        print(f"  FAIL  {label}: got {got!r}, want ~{want!r}")
 
 
 # ────────────────────────────────────────────────────────────

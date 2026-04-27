@@ -28,11 +28,9 @@ from llm_perf.core.primitives import (
     pairwise_a2a,
     ring_all_gather,
     ring_all_reduce,
-    ring_moe_all_to_all,
     ring_reduce_scatter,
     torus_all_reduce,
     tree_all_reduce,
-    tree_moe_all_to_all,
 )
 from llm_perf.specs.system_spec import CrossbarTier, MeshTier, TorusTier, span_tiers
 from llm_perf.utils import GB_TO_BYTES, US_TO_SECONDS
@@ -91,10 +89,13 @@ def _old_path(op: str, tiers, M: float, G: int, algorithm: str) -> float:
         if algorithm == "tree":
             return tree_all_reduce(M, G, alpha_s, bw_Bps)
     if op == "moe_a2a":
+        # Dispatcher applies the 2× Dispatch+Combine wrap uniformly;
+        # mirror it here. tree A2A is no longer supported (upstream removed
+        # `tree_moe_all_to_all` per scratch/collectives_cost_CHANGES.md §3).
         if algorithm == "ring":
-            return ring_moe_all_to_all(M, G, alpha_s, bw_Bps)
-        if algorithm == "tree":
-            return tree_moe_all_to_all(M, G, alpha_s, bw_Bps)
+            return 2 * pairwise_a2a(M, G, alpha_s, bw_Bps)
+    if op == "all_reduce" and algorithm == "tree_pipelined":
+        return tree_all_reduce(M, G, alpha_s, bw_Bps, pipelined=True)
     raise ValueError(f"bad op/algorithm: {op!r}/{algorithm!r}")
 
 
@@ -118,19 +119,26 @@ def _hier_ref(op: str, M: float, G: int, crossed, outer_alg: str) -> float:
     )
 
     if op == "all_reduce":
-        M_shard = M / G_inner
-        t_rs = ring_reduce_scatter(M_shard, G_inner, alpha_inner_s, bw_inner_Bps)
-        t_outer = (
-            ring_all_reduce(M_shard, L, alpha_outer_s, bw_outer_Bps)
-            if outer_alg == "ring"
-            else tree_all_reduce(M_shard, L, alpha_outer_s, bw_outer_Bps)
-        )
-        t_ag = ring_all_gather(M_shard, G_inner, alpha_inner_s, bw_inner_Bps)
+        # New AG/RS convention: pass full M (per-rank pre-scatter input or
+        # gathered output) to inner phases. Outer AR consumes the post-RS
+        # shard payload M/G_inner.
+        t_rs = ring_reduce_scatter(M, G_inner, alpha_inner_s, bw_inner_Bps)
+        if outer_alg == "ring":
+            t_outer = ring_all_reduce(M / G_inner, L, alpha_outer_s, bw_outer_Bps)
+        elif outer_alg == "tree":
+            t_outer = tree_all_reduce(M / G_inner, L, alpha_outer_s, bw_outer_Bps)
+        elif outer_alg == "tree_pipelined":
+            t_outer = tree_all_reduce(M / G_inner, L, alpha_outer_s, bw_outer_Bps, pipelined=True)
+        else:
+            raise ValueError(f"_hier_ref: unsupported outer_alg={outer_alg!r}")
+        t_ag = ring_all_gather(M, G_inner, alpha_inner_s, bw_inner_Bps)
         return t_rs + t_outer + t_ag
     if op == "all_gather":
+        # New AG convention: M = per-rank gathered output. Inner AG produces
+        # G_inner shards = M/L; outer AG produces the full M.
         return (
-            ring_all_gather(M, G_inner, alpha_inner_s, bw_inner_Bps)
-            + ring_all_gather(G_inner * M, L, alpha_outer_s, bw_outer_Bps)
+            ring_all_gather(M / L, G_inner, alpha_inner_s, bw_inner_Bps)
+            + ring_all_gather(M, L, alpha_outer_s, bw_outer_Bps)
         )
     raise ValueError(f"_hier_ref: unsupported op={op!r}")
 
@@ -167,17 +175,18 @@ def test_T1_single_tier():
     print("T1 single-tier crossbar equivalence:")
     tier = CrossbarTier(name="t0", ports=32, bw_per_port_GBps=900.0, alpha_us=0.5)
     cases = [
-        ("p2p",        "ring", 1_024.0,        2),
-        ("p2p",        "ring", 10_000_000.0,   2),
-        ("all_gather", "ring", 4_096.0,        8),
-        ("all_gather", "ring", 100_000_000.0,  16),
-        ("all_reduce", "ring", 1_000_000.0,    8),
-        ("all_reduce", "ring", 1_000_000.0,    32),
-        ("all_reduce", "tree", 1_000_000.0,    8),
-        ("all_reduce", "tree", 1_000_000.0,    16),
-        ("moe_a2a",    "ring", 500_000.0,      8),
-        ("moe_a2a",    "ring", 500_000.0,      32),
-        ("moe_a2a",    "tree", 500_000.0,      8),
+        ("p2p",        "ring",           1_024.0,        2),
+        ("p2p",        "ring",           10_000_000.0,   2),
+        ("all_gather", "ring",           4_096.0,        8),
+        ("all_gather", "ring",           100_000_000.0,  16),
+        ("all_reduce", "ring",           1_000_000.0,    8),
+        ("all_reduce", "ring",           1_000_000.0,    32),
+        ("all_reduce", "tree",           1_000_000.0,    8),
+        ("all_reduce", "tree",           1_000_000.0,    16),
+        ("all_reduce", "tree_pipelined", 1_000_000.0,    16),
+        ("moe_a2a",    "ring",           500_000.0,      8),
+        ("moe_a2a",    "ring",           500_000.0,      32),
+        # MoE A2A "tree" was deprecated upstream — no longer enumerated.
     ]
     for op, alg, M, G in cases:
         old = _old_path(op, [tier], M, G, alg)
@@ -197,21 +206,22 @@ def test_T2_multi_tier():
     chain = [tier0, tier1]
     cases = [
         # Stays in tier 0
-        ("all_reduce", "ring", 1_000_000.0, 8),
-        ("all_reduce", "ring", 1_000_000.0, 64),
+        ("all_reduce", "ring",           1_000_000.0, 8),
+        ("all_reduce", "ring",           1_000_000.0, 64),
         # Boundary — exactly tier0.ports
-        ("all_reduce", "ring", 1_000_000.0, 72),
-        ("all_reduce", "tree", 1_000_000.0, 72),
+        ("all_reduce", "ring",           1_000_000.0, 72),
+        ("all_reduce", "tree",           1_000_000.0, 72),
+        ("all_reduce", "tree_pipelined", 1_000_000.0, 72),
         # Spills into tier 1
-        ("all_reduce", "ring", 1_000_000.0, 144),
-        ("all_reduce", "ring", 1_000_000.0, 576),
-        ("all_reduce", "tree", 1_000_000.0, 576),
+        ("all_reduce", "ring",           1_000_000.0, 144),
+        ("all_reduce", "ring",           1_000_000.0, 576),
+        ("all_reduce", "tree",           1_000_000.0, 576),
+        ("all_reduce", "tree_pipelined", 1_000_000.0, 576),
         # All-gather + MoE-A2A across both tiers
-        ("all_gather", "ring", 10_000.0,   288),
-        ("moe_a2a",    "ring", 50_000.0,   288),
-        ("moe_a2a",    "tree", 50_000.0,   288),
+        ("all_gather", "ring",           10_000.0,   288),
+        ("moe_a2a",    "ring",           50_000.0,   288),
         # p2p always stays in tier 0 (G=2)
-        ("p2p",        "ring", 500_000.0,  2),
+        ("p2p",        "ring",           500_000.0,  2),
     ]
     for op, alg, M, G in cases:
         old = _old_path(op, chain, M, G, alg)
@@ -227,7 +237,7 @@ def test_T3_randomized():
     print("T3 randomized property test (1000 draws):")
     rng = random.Random(0xC0FFEE)
     ops = ["all_reduce", "all_gather", "moe_a2a", "p2p"]
-    algs = ["ring", "tree"]
+    ar_algs = ["ring", "tree", "tree_pipelined"]
     mismatches = 0
     for i in range(1000):
         n_tiers = rng.randint(1, 4)
@@ -241,7 +251,9 @@ def test_T3_randomized():
             for j in range(n_tiers)
         ]
         op = rng.choice(ops)
-        alg = rng.choice(algs) if op in ("all_reduce", "moe_a2a") else "ring"
+        # AR has 3 algorithms (ring / tree / tree_pipelined); MoE A2A is
+        # ring-only after upstream removed tree_moe_all_to_all.
+        alg = rng.choice(ar_algs) if op == "all_reduce" else "ring"
         M = rng.uniform(1.0, 1e8)
         # Group size spans inside tier 0 through full-chain reach.
         max_reach = 1
@@ -339,8 +351,9 @@ def test_T6_inc_dispatch():
     _check("AG G=64 inc on", got, want)
 
     # (d) MoE A2A on an INC tier must stay on ring (no structural INC win).
+    # Dispatcher applies 2× Dispatch+Combine wrap on the underlying primitive.
     got = cost_collective([inc_tier], "moe_a2a", M, 64, algorithm="ring")
-    want = ring_moe_all_to_all(M, 64, alpha_s_endpoint, bw_Bps)
+    want = 2 * pairwise_a2a(M, 64, alpha_s_endpoint, bw_Bps)
     _check("A2A G=64 inc tier → ring", got, want)
 
     # (e) p2p on an INC tier stays on single-hop.
@@ -397,7 +410,7 @@ def test_T6_inc_dispatch():
         inc="hw_a2a", inc_alpha_us=alpha_switch,
     )
     got = cost_collective([hw_a2a_tier], "moe_a2a", M, 64, algorithm="ring")
-    want = inc_a2a(M, 64, alpha_s_switch, bw_Bps)
+    want = 2 * inc_a2a(M, 64, alpha_s_switch, bw_Bps)
     _check("A2A G=64 hw_a2a tier → inc_a2a", got, want)
 
     # (k) sharp_class tier with A2A — must NOT route through inc_a2a; falls through
@@ -407,7 +420,7 @@ def test_T6_inc_dispatch():
         inc="sharp_class", inc_alpha_us=alpha_switch,
     )
     got = cost_collective([sharp_tier], "moe_a2a", M, 64, algorithm="ring")
-    want = pairwise_a2a(M, 64, alpha_s_endpoint, bw_Bps)
+    want = 2 * pairwise_a2a(M, 64, alpha_s_endpoint, bw_Bps)
     _check("A2A G=64 sharp_class tier → pairwise (no INC for A2A)", got, want)
 
     # (l) HW A2A tier with AR/AG — also routes through SHARP-class INC paths
@@ -426,7 +439,7 @@ def test_T6_inc_dispatch():
 
     # (n) inc_enabled=False forces software fallback even on hw_a2a tier.
     got = cost_collective([hw_a2a_tier], "moe_a2a", M, 64, inc_enabled=False, algorithm="ring")
-    want = pairwise_a2a(M, 64, alpha_s_endpoint, bw_Bps)
+    want = 2 * pairwise_a2a(M, 64, alpha_s_endpoint, bw_Bps)
     _check("A2A hw_a2a tier inc_enabled=False → pairwise", got, want)
 
 
@@ -563,12 +576,12 @@ def test_T8_enumerate_options():
     def _names(opts):
         return [n for n, _ in opts]
 
-    # (a) Star single-tier AR: ring + tree, no INC (plain tier).
+    # (a) Star single-tier AR: ring + tree (P=1) + tree_pipelined; no INC (plain tier).
     opts = enumerate_options([star_tier], "all_reduce", M, 64)
-    if _names(opts) != ["ring", "tree"]:
-        _failures.append(f"T8a: expected ['ring','tree'], got {_names(opts)}")
+    if _names(opts) != ["ring", "tree", "tree_pipelined"]:
+        _failures.append(f"T8a: expected ['ring','tree','tree_pipelined'], got {_names(opts)}")
     else:
-        print("  PASS  star AR: [ring, tree]")
+        print("  PASS  star AR: [ring, tree, tree_pipelined]")
 
     # (b) Star single-tier AG: ring only.
     opts = enumerate_options([star_tier], "all_gather", M, 64)
@@ -584,12 +597,12 @@ def test_T8_enumerate_options():
     else:
         print("  PASS  star A2A: [ring] (no deprecated tree)")
 
-    # (d) Star + sharp_class AR: ring + tree + inc.
+    # (d) Star + sharp_class AR: ring + tree + tree_pipelined + inc.
     opts = enumerate_options([inc_tier], "all_reduce", M, 64)
-    if _names(opts) != ["ring", "tree", "inc"]:
-        _failures.append(f"T8d: expected ['ring','tree','inc'], got {_names(opts)}")
+    if _names(opts) != ["ring", "tree", "tree_pipelined", "inc"]:
+        _failures.append(f"T8d: expected ['ring','tree','tree_pipelined','inc'], got {_names(opts)}")
     else:
-        print("  PASS  star+sharp_class AR: [ring, tree, inc]")
+        print("  PASS  star+sharp_class AR: [ring, tree, tree_pipelined, inc]")
 
     # (e) Star + sharp_class AG: ring + inc.
     opts = enumerate_options([inc_tier], "all_gather", M, 64)
@@ -614,8 +627,8 @@ def test_T8_enumerate_options():
 
     # (h) inc_enabled=False removes INC entries on the same tier.
     opts = enumerate_options([inc_tier], "all_reduce", M, 64, inc_enabled=False)
-    if _names(opts) != ["ring", "tree"]:
-        _failures.append(f"T8h: expected ['ring','tree'] when inc_enabled=False, got {_names(opts)}")
+    if _names(opts) != ["ring", "tree", "tree_pipelined"]:
+        _failures.append(f"T8h: expected ['ring','tree','tree_pipelined'] when inc_enabled=False, got {_names(opts)}")
     else:
         print("  PASS  inc_enabled=False suppresses inc")
 
@@ -674,14 +687,14 @@ def test_T8_enumerate_options():
     # cost_collective time).
     mixed = [star_tier, torus_tier]
     opts = enumerate_options(mixed, "all_reduce", M, 4096)
-    # Should be flat-ring/tree (mirrors cost_collective's flat-fallback for
-    # mixed); no INC since one tier is torus.
+    # Should be flat-ring/tree/tree_pipelined (mirrors cost_collective's
+    # flat-fallback for mixed); no INC since one tier is torus.
     if "inc" in _names(opts):
         _failures.append(f"T8n: mixed chain enumerated 'inc': {_names(opts)}")
-    elif set(_names(opts)) != {"ring", "tree"}:
-        _failures.append(f"T8n: mixed chain expected {{ring,tree}}, got {_names(opts)}")
+    elif set(_names(opts)) != {"ring", "tree", "tree_pipelined"}:
+        _failures.append(f"T8n: mixed chain expected {{ring,tree,tree_pipelined}}, got {_names(opts)}")
     else:
-        print("  PASS  mixed crossbar+torus AR: [ring, tree], no INC")
+        print("  PASS  mixed crossbar+torus AR: [ring, tree, tree_pipelined], no INC")
 
 
 # ────────────────────────────────────────────────────────────
@@ -706,22 +719,32 @@ def test_T9_hierarchical_crossbar():
     bw_outer_Bps = 400e9
 
     # ─── (a) Hierarchical AR cell-level: matches ring_RS + ring_AR + ring_AG.
+    # New AG/RS convention: pass full M to the inner phases.
     expected_ar = (
-        ring_reduce_scatter(M / G_inner, G_inner, alpha_inner_s, bw_inner_Bps)
+        ring_reduce_scatter(M, G_inner, alpha_inner_s, bw_inner_Bps)
         + ring_all_reduce(M / G_inner, L, alpha_outer_s, bw_outer_Bps)
-        + ring_all_gather(M / G_inner, G_inner, alpha_inner_s, bw_inner_Bps)
+        + ring_all_gather(M, G_inner, alpha_inner_s, bw_inner_Bps)
     )
     got = cost_collective(chain, "all_reduce", M, G, algorithm="ring")
     _check("hier-AR ring composition", got, expected_ar)
 
-    # ─── (b) Hierarchical AR with outer=tree.
+    # ─── (b) Hierarchical AR with outer=tree (default pipelined=False).
     expected_ar_tree = (
-        ring_reduce_scatter(M / G_inner, G_inner, alpha_inner_s, bw_inner_Bps)
+        ring_reduce_scatter(M, G_inner, alpha_inner_s, bw_inner_Bps)
         + tree_all_reduce(M / G_inner, L, alpha_outer_s, bw_outer_Bps)
-        + ring_all_gather(M / G_inner, G_inner, alpha_inner_s, bw_inner_Bps)
+        + ring_all_gather(M, G_inner, alpha_inner_s, bw_inner_Bps)
     )
     got = cost_collective(chain, "all_reduce", M, G, algorithm="tree")
     _check("hier-AR tree composition", got, expected_ar_tree)
+
+    # ─── (b') Hierarchical AR with outer=tree_pipelined.
+    expected_ar_tree_p = (
+        ring_reduce_scatter(M, G_inner, alpha_inner_s, bw_inner_Bps)
+        + tree_all_reduce(M / G_inner, L, alpha_outer_s, bw_outer_Bps, pipelined=True)
+        + ring_all_gather(M, G_inner, alpha_inner_s, bw_inner_Bps)
+    )
+    got = cost_collective(chain, "all_reduce", M, G, algorithm="tree_pipelined")
+    _check("hier-AR tree_pipelined composition", got, expected_ar_tree_p)
 
     # ─── (c) α-side: matches collectives.md §3.3 closed form
     # 2(G_inner − 1)·α_inner + 2(L − 1)·α_outer for ring-on-ring.
@@ -749,10 +772,11 @@ def test_T9_hierarchical_crossbar():
     else:
         print(f"  PASS  hier-AR β telescopes to flat 2(N-1)/N at uniform BW")
 
-    # ─── (e) Hierarchical AG: inner AG + outer AG cascade.
+    # ─── (e) Hierarchical AG: inner AG + outer AG cascade. New AG convention:
+    # inner produces per-rank size M/L, outer produces per-rank size M.
     expected_ag = (
-        ring_all_gather(M, G_inner, alpha_inner_s, bw_inner_Bps)
-        + ring_all_gather(G_inner * M, L, alpha_outer_s, bw_outer_Bps)
+        ring_all_gather(M / L, G_inner, alpha_inner_s, bw_inner_Bps)
+        + ring_all_gather(M, L, alpha_outer_s, bw_outer_Bps)
     )
     got = cost_collective(chain, "all_gather", M, G, algorithm="ring")
     _check("hier-AG inner+outer cascade", got, expected_ag)
@@ -765,11 +789,11 @@ def test_T9_hierarchical_crossbar():
 
     # ─── (g) MoE A2A on multi-tier uses per-destination-class accounting (§5.3).
     # See T10 for the cell-level formula check; here just confirm the dispatcher
-    # routes to the hierarchical-A2A path (cost ≠ flat pairwise).
+    # routes to the hierarchical-A2A path (cost ≠ flat pairwise wrapped 2×).
     got = cost_collective(chain, "moe_a2a", M, G, algorithm="ring")
     alpha_total_s = alpha_inner_s + alpha_outer_s
     bw_min_Bps = min(bw_inner_Bps, bw_outer_Bps)
-    flat_a2a = pairwise_a2a(M, G, alpha_total_s, bw_min_Bps)
+    flat_a2a = 2 * pairwise_a2a(M, G, alpha_total_s, bw_min_Bps)
     if got == flat_a2a:
         _failures.append(
             f"T9g: multi-tier A2A should use hierarchical path, got flat ({got!r})"
@@ -780,18 +804,22 @@ def test_T9_hierarchical_crossbar():
     # ─── (h) enumerate_options on multi-tier surfaces hierarchical costs.
     opts = enumerate_options(chain, "all_reduce", M, G)
     names = [n for n, _ in opts]
-    if names != ["ring", "tree"]:
+    if names != ["ring", "tree", "tree_pipelined"]:
         _failures.append(
-            f"T9h: multi-tier AR enumerate names: expected ['ring','tree'], got {names}"
+            f"T9h: multi-tier AR enumerate names: expected "
+            f"['ring','tree','tree_pipelined'], got {names}"
         )
     else:
         # Check costs match hierarchical cell.
         cost_ring = dict(opts)["ring"]
         cost_tree = dict(opts)["tree"]
+        cost_tree_p = dict(opts)["tree_pipelined"]
         if not math.isclose(cost_ring, expected_ar, rel_tol=1e-12):
             _failures.append(f"T9h: enumerate ring != hier-AR cost")
         elif not math.isclose(cost_tree, expected_ar_tree, rel_tol=1e-12):
             _failures.append(f"T9h: enumerate tree != hier-AR-tree cost")
+        elif not math.isclose(cost_tree_p, expected_ar_tree_p, rel_tol=1e-12):
+            _failures.append(f"T9h: enumerate tree_pipelined != hier-AR-tree_pipelined cost")
         else:
             print("  PASS  enumerate_options multi-tier AR returns hierarchical costs")
 
@@ -865,24 +893,24 @@ def test_T12_optimizer():
     else:
         print("  PASS  prefill TP AR with sharp_class → 'inc'")
 
-    # ─── (b) inc_enabled=False forces SW choice; small M → DBT (tree).
+    # ─── (b) inc_enabled=False forces SW choice; at small M, the optimizer
+    # should pick a tree variant (DBT beats ring on α). Either tree (P=1) or
+    # tree_pipelined is acceptable — they have the same α coefficient and only
+    # differ in the BW term, so at small M the cheaper one wins on β.
     tuner_noinc = replace(tuner, inc_enabled=False)
     resolved2 = optimize_collective_algorithms(dense_model, part, sys, tuner_noinc)
-    if resolved2.tp_algorithm_decode not in ("ring", "tree"):
-        _failures.append(f"T12b: SW-only should pick ring or tree, got {resolved2.tp_algorithm_decode!r}")
-    elif resolved2.tp_algorithm_decode != "tree":
-        # At small M, DBT should win over ring.
-        _failures.append(f"T12b: small-M should pick 'tree', got {resolved2.tp_algorithm_decode!r}")
+    sw_algs = ("ring", "tree", "tree_pipelined")
+    if resolved2.tp_algorithm_decode not in sw_algs:
+        _failures.append(f"T12b: SW-only should pick {sw_algs}, got {resolved2.tp_algorithm_decode!r}")
+    elif not resolved2.tp_algorithm_decode.startswith("tree"):
+        _failures.append(f"T12b: small-M should pick a tree variant, got {resolved2.tp_algorithm_decode!r}")
     else:
-        print("  PASS  inc_enabled=False forces SW; small-M → 'tree' (DBT)")
+        print(f"  PASS  inc_enabled=False forces SW; small-M → {resolved2.tp_algorithm_decode!r}")
 
-    # ─── (c) Large prefill M → ring beats tree (ring is BW-optimal at large M
-    # in practice per [DEMYST-NCCL]; but in the pure α-β model ring and DBT
-    # have identical BW terms, so it's α-driven). Verify the optimizer just
-    # picks min consistently — the exact answer depends on (α, BW, M).
-    # Smoke test: resolution succeeds and yields a valid name.
+    # ─── (c) Same idea for prefill — verify the optimizer resolves to a
+    # valid SW algorithm (the exact choice depends on (α, BW, M)).
     resolved3 = optimize_collective_algorithms(dense_model, part, sys, tuner_noinc)
-    if resolved3.tp_algorithm_prefill not in ("ring", "tree"):
+    if resolved3.tp_algorithm_prefill not in sw_algs:
         _failures.append(f"T12c: prefill SW choice invalid: {resolved3.tp_algorithm_prefill!r}")
     else:
         print(f"  PASS  prefill SW resolves to {resolved3.tp_algorithm_prefill!r}")
@@ -1074,9 +1102,8 @@ def test_T10_hierarchical_a2a():
     _check("hier-A2A 2-tier per-class", got, expected)
 
     # ─── (b) When G ≤ G_inner (stays within pod), n_outer=0; should match
-    # single-tier flat pairwise. The dispatcher routes single-tier to flat,
-    # so exercising on a single-tier chain confirms parity.
-    intra_only = pairwise_a2a(M, 64, alpha_inner_s, bw_inner_Bps)
+    # single-tier flat pairwise (with the dispatcher's 2× MoE wrap).
+    intra_only = 2 * pairwise_a2a(M, 64, alpha_inner_s, bw_inner_Bps)
     got = cost_collective([inner], "moe_a2a", M, 64, algorithm="ring")
     _check("intra-pod A2A G=64 stays flat (single-tier)", got, intra_only)
 
@@ -1122,7 +1149,7 @@ def test_T10_hierarchical_a2a():
     hw_out = CrossbarTier(name="hw_out", ports=8, bw_per_port_GBps=400.0,
                            alpha_us=2.5, inc="hw_a2a", inc_alpha_us=0.4)
     got = cost_collective([hw_in, hw_out], "moe_a2a", M, G, algorithm="ring")
-    expected_inc = inc_a2a(M, G, (0.2 + 0.4) * 1e-6, 400e9)
+    expected_inc = 2 * inc_a2a(M, G, (0.2 + 0.4) * 1e-6, 400e9)
     _check("hw_a2a multi-tier A2A → inc_a2a (bypasses hierarchical)",
            got, expected_inc)
 
@@ -1163,21 +1190,25 @@ def test_T13_mesh():
         want = cost_collective([torus], op, M, 64, algorithm="ring")
         _check(f"k-D mesh == torus: {op}", got, want)
 
-    # A2A: k-D mesh pays 2× the BW penalty (D_max/4 vs D_max/8).
+    # A2A: mesh and torus differ on TWO axes per upstream's torus_a2a fix:
+    #   - diameter:  mesh = Σ(d-1)        ; torus = Σ⌊d/2⌋
+    #   - bisection: mesh BW = D_max/4   ; torus BW = D_max/8 (mesh 2× worse)
+    # Dispatcher applies the 2× MoE Dispatch+Combine wrap uniformly.
     got_a2a_kdm = cost_collective([kdm], "moe_a2a", M, 64, algorithm="ring")
     got_a2a_torus = cost_collective([torus], "moe_a2a", M, 64, algorithm="ring")
-    diam = sum(d // 2 for d in (8, 8))
+    diam_mesh = sum(d - 1 for d in (8, 8))      # 7+7=14 (open-line)
+    diam_torus = sum(d // 2 for d in (8, 8))    # 4+4=8  (wraparound)
     d_max = 8
-    expected_kdm = diam * alpha_s + d_max * M / (4 * bw_Bps)
-    expected_torus = diam * alpha_s + d_max * M / (8 * bw_Bps)
+    expected_kdm = 2 * (diam_mesh * alpha_s + d_max * M / (4 * bw_Bps))
+    expected_torus = 2 * (diam_torus * alpha_s + d_max * M / (8 * bw_Bps))
     if not math.isclose(got_a2a_kdm, expected_kdm, rel_tol=1e-12):
         _failures.append(f"T13 k-D mesh A2A: got {got_a2a_kdm}, expected {expected_kdm}")
     elif not math.isclose(got_a2a_torus, expected_torus, rel_tol=1e-12):
         _failures.append(f"T13 torus A2A: got {got_a2a_torus}, expected {expected_torus}")
     else:
-        # And k-D mesh must be exactly 2× torus on the BW term (α terms identical).
-        bw_term_kdm = got_a2a_kdm - diam * alpha_s
-        bw_term_torus = got_a2a_torus - diam * alpha_s
+        # k-D mesh BW term = 2× torus BW term (the 2× MoE wrap factors out).
+        bw_term_kdm = got_a2a_kdm - 2 * diam_mesh * alpha_s
+        bw_term_torus = got_a2a_torus - 2 * diam_torus * alpha_s
         if not math.isclose(bw_term_kdm, 2.0 * bw_term_torus, rel_tol=1e-12):
             _failures.append(
                 f"T13: k-D mesh A2A BW should be 2× torus, got "
