@@ -219,7 +219,7 @@ ICS 2022.
 De Sensi, D., Di Girolamo, S., McMahon, K., Roweth, D., & Hoefler, T. (2020).  
 *An In-Depth Analysis of the Slingshot Interconnect.*  
 SC 2020.  
-→ Rosetta 64-port dragonfly; measured α-calibration across router/group/global tiers; adaptive-routing effectiveness under real workloads. Calibration source for the `slingshot11.dragonfly.json` system.
+→ Rosetta 64-port dragonfly; measured α-calibration across router/group/global tiers; adaptive-routing effectiveness under real workloads.
 
 **[SWING]**  
 Cascagrande, M., De Sensi, D., et al. (2024).  
