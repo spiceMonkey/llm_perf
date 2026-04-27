@@ -10,7 +10,7 @@ LLM inference, decode, peak FLOPS, roofline, batch size, $B^*$ crossover, arithm
 
 ## 1. The puzzle
 
-The `pareto_vs_flops.ipynb` sweep sets GPU peak FLOPS to `[0.5×, 1×, 2×, 4×, ∞]` on a fixed (HBM BW, scale-up I/O) machine and runs GPT-1.8T MoE FP4 on 72 GB200 GPUs. Every curve — including the FLOPS → ∞ reference — **overlaps exactly**.
+The `notebooks/pareto_vs_flops.ipynb` sweep sets GPU peak FLOPS to `[0.5×, 1×, 2×, 4×, ∞]` on a fixed (HBM BW, scale-up I/O) machine and runs GPT-1.8T MoE FP4 on 72 GB200 GPUs. Every curve — including the FLOPS → ∞ reference — **overlaps exactly**.
 
 The textbook roofline intuition is that extra FLOPS should lift the high-throughput (high-$B$) corner, because decode becomes compute-bound once $B$ is large enough to amortize the per-step weight read. Here it doesn't — not for any $B$ the paged-KV cache allows, and **not even asymptotically as $B \to \infty$**.
 
@@ -174,7 +174,7 @@ The quadratic $S^2$ in compute is the key asymmetry. Decode processes 1 query ag
 
 **Why FLOPS doesn't help for decode at long $S$ here:** GPT-1.8T MoE at $S$=8192 with GQA on GB200 has $\text{AI}_B \approx 290$ FLOPs/byte, well below GB200's balance of 1125. The workload lives in row 3 of the table above. $t_{compute}$ slope is smaller than $t_{mem}$ slope, so extra $B$ never closes the gap — and extra FLOPS only moves the balance point further out of reach.
 
-**Why it does help for decode at short $S$:** at $S$=1024 the $T_{kv}$ slope drops ~8×, pushing $\text{AI}_B$ above the 1125 threshold. The `pareto_vs_flops.ipynb` §9 companion sweep confirms: at $S$=1024, $B$=8192, the step flips compute-bound on 1× FLOPS, and 4× FLOPS lifts high-$B$ throughput/GPU from ~7850 → ~9550.
+**Why it does help for decode at short $S$:** at $S$=1024 the $T_{kv}$ slope drops ~8×, pushing $\text{AI}_B$ above the 1125 threshold. The `notebooks/pareto_vs_flops.ipynb` §9 companion sweep confirms: at $S$=1024, $B$=8192, the step flips compute-bound on 1× FLOPS, and 4× FLOPS lifts high-$B$ throughput/GPU from ~7850 → ~9550.
 
 **Why it always helps for prefill and training:** attention compute grows as $S^2$ per sequence while KV traffic grows as $S$, so $\text{AI}^{prefill} \propto S$. At realistic $S$ that number is orders of magnitude above any hardware's FLOPS/BW ratio. Weight reads additionally amortize over $B \cdot S$ tokens instead of $B$, making $T_\theta$ negligible. Both workloads are squarely compute-bound — buying FLOPS buys performance directly.
 
@@ -184,5 +184,5 @@ The quadratic $S^2$ in compute is the key asymmetry. Decode processes 1 query ag
 
 - `documentation/explaining/frontier_convergence_at_high_b.md` — the $B^*$ formula and the partition-invariant FLOPS ceiling (relevant when the denominator *is* positive).
 - `documentation/modeling/decode.md` — derivation of $t_{compute}$, $t_{mem}$, $T_\theta$, $T_{kv}$.
-- `pareto_vs_flops.ipynb` — the sweep data this note explains.
-- `pareto_vs_mem.ipynb` — the mirror sweep where HBM BW *does* move the frontier on both corners.
+- `notebooks/pareto_vs_flops.ipynb` — the sweep data this note explains.
+- `notebooks/pareto_vs_mem.ipynb` — the mirror sweep where HBM BW *does* move the frontier on both corners.
