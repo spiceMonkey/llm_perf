@@ -20,6 +20,7 @@ C_DECODE = "#FFE0B2"
 C_SWITCH = "#E8F5E9"
 C_DEVICE = "#FFF9C4"
 C_HBM = "#E1BEE7"
+C_SRAM = "#B2EBF2"
 C_GPU = "#FFCDD2"
 C_INTERCO = "#CFD8DC"
 C_KV = "#F3E5F5"
@@ -74,8 +75,8 @@ ref_text(2.4, 9.28, "modeling/prefill.md · core/prefill_model.py", fontsize=7.5
 for dx, dy in [(0.8, 7.85), (2.35, 7.85), (0.8, 6.75), (2.35, 6.75)]:
     rounded_box(dx, dy, 1.35, 0.85, C_DEVICE, label="Device", fontsize=11, lw=1.0, ec="#F9A825")
 
-# Prefill scale-up switch
-rounded_box(0.8, 5.7, 2.9, 0.42, C_SWITCH, label="Scale-Up Switch", fontsize=10, lw=1.2, ec="#2E7D32")
+# Prefill scale-up/out network
+rounded_box(0.8, 5.7, 2.9, 0.42, C_SWITCH, label="Scale-up/out Network", fontsize=10, lw=1.2, ec="#2E7D32")
 
 # ═══════════════════════════════════════════════════════════════════
 # Decode Cluster (right)
@@ -87,18 +88,27 @@ ax.text(10.5, 9.55, "(memory-bound, autoregressive)", ha="center", va="center",
         fontsize=10, color="#BF360C", fontstyle="italic")
 ref_text(10.5, 9.28, "modeling/decode.md · core/decode_model.py", fontsize=7.5)
 
-# Decode devices — 4 top, 4 bottom, tight spacing
+# Decode devices — 4 top, 4 bottom; each device is a 3-tier memory stack:
+# GPU compute (top) · SRAM fast tier (middle) · HBM/DRAM slow tier (bottom).
+# The SRAM tier is what SRAM-augmented architectures (Groq, d-Matrix) expose
+# at multi-TB/s; on a conventional GPU it represents on-die L1/L2.
 dw, dh = 1.55, 0.85
 top_y, bot_y = 7.85, 6.75
 x_starts = [5.85, 7.65, 9.45, 11.25]
+band_h = 0.245
+gap = 0.025
 for row_y in [top_y, bot_y]:
     for dx in x_starts:
         rounded_box(dx, row_y, dw, dh, C_DEVICE, lw=1.0, ec="#F9A825")
-        rounded_box(dx + 0.04, row_y + 0.44, dw - 0.08, 0.36, C_GPU, label="GPU", fontsize=9.5, lw=0.8, ec="#C62828")
-        rounded_box(dx + 0.04, row_y + 0.04, dw - 0.08, 0.36, C_HBM, label="HBM", fontsize=9.5, lw=0.8, ec="#7B1FA2")
+        gpu_y  = row_y + dh - gap - band_h
+        sram_y = gpu_y - gap - band_h
+        hbm_y  = sram_y - gap - band_h
+        rounded_box(dx + 0.04, gpu_y,  dw - 0.08, band_h, C_GPU,  label="GPU",     fontsize=8.5, lw=0.8, ec="#C62828")
+        rounded_box(dx + 0.04, sram_y, dw - 0.08, band_h, C_SRAM, label="SRAM",    fontsize=8.5, lw=0.8, ec="#00838F")
+        rounded_box(dx + 0.04, hbm_y,  dw - 0.08, band_h, C_HBM,  label="HBM/DRAM", fontsize=8.5, lw=0.8, ec="#7B1FA2")
 
 # Device-level references
-ref_text(10.5, 9.0, "core/memory_model.py · decode_model.py · primitives/", fontsize=7.5)
+ref_text(10.5, 9.0, "core/{memory_model, decode_model, memory_placement}.py · sram.md · primitives/", fontsize=7.5)
 
 # PP connections (horizontal arrows between top-row devices)
 for dx in [7.4, 9.2, 11.0]:
@@ -111,11 +121,14 @@ ax.text(13.05, 8.28, "PP", ha="center", va="center",
 ax.text(13.05, 7.18, "DP ×", ha="center", va="center",
         fontsize=11, fontweight="bold", color="#BF360C")
 
-# Decode scale-up switch
+# Decode scale-up/out network — shown as the canonical hierarchical chain
+# (innermost first). Single-tier deployments collapse to one element.
 rounded_box(5.85, 5.7, 6.5, 0.42, C_SWITCH, lw=1.5, ec="#2E7D32")
-ax.text(9.1, 5.91, "Scale-Up Switch  (TP / EP / SP)", ha="center", va="center",
+ax.text(9.1, 5.91, "Scale-up/out Network  (TP / EP / SP)", ha="center", va="center",
         fontsize=11, fontweight="bold", color="#1B5E20")
-ref_text(9.1, 5.35, "modeling/collectives.md · core/decode_model.py", fontsize=7.5)
+ax.text(9.1, 5.55, "hierarchical α-β:  pair_mesh / NVLink → PCIe / fat-tree → ethernet  · INC short-circuit on sharp_class / hw_a2a tiers",
+        ha="center", va="center", fontsize=8.5, color="#1B5E20", fontstyle="italic")
+ref_text(9.1, 5.25, "modeling/collectives.md · core/{decode_model, collective_algo_opt}.py · primitives/dispatch.py", fontsize=7.5)
 
 # ═══════════════════════════════════════════════════════════════════
 # KV Transfer interconnect (between clusters)
@@ -147,16 +160,17 @@ ref_text(8, 3.65, "modeling/kv.md · core/kv_paging_model.py", fontsize=9)
 # ═══════════════════════════════════════════════════════════════════
 legend_y = 2.5
 legend_items = [
-    (C_GPU, "#C62828", "GPU Compute"),
-    (C_HBM, "#7B1FA2", "HBM Memory"),
-    (C_SWITCH, "#2E7D32", "Scale-Up Switch"),
-    (C_INTERCO, "#37474F", "Disagg Interconnect"),
-    (C_KV, "#6A1B9A", "KV Cache"),
+    (C_GPU,    "#C62828", "GPU Compute"),
+    (C_SRAM,   "#00838F", "SRAM (fast tier)"),
+    (C_HBM,    "#7B1FA2", "HBM/DRAM (slow tier)"),
+    (C_SWITCH, "#2E7D32", "Scale-up/out Network"),
+    (C_INTERCO, "#37474F", "Disagg KV Transfer"),
+    (C_KV,     "#6A1B9A", "Distributed KV Cache"),
 ]
 for i, (fc, ec, label) in enumerate(legend_items):
-    lx = 1.2 + i * 2.9
+    lx = 0.5 + i * 2.55
     rounded_box(lx, legend_y, 0.4, 0.25, fc, lw=0.8, ec=ec)
-    ax.text(lx + 0.55, legend_y + 0.12, label, ha="left", va="center", fontsize=10, color=C_TEXT)
+    ax.text(lx + 0.5, legend_y + 0.12, label, ha="left", va="center", fontsize=9, color=C_TEXT)
 
 ax.text(8, 1.95, "Green italic labels reference modeling docs and core Python modules",
         ha="center", va="center", fontsize=10, color=C_REF, fontstyle="italic")
