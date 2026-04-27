@@ -400,6 +400,7 @@ Placement:
 - $T_{\theta,i}$ — Weight bytes residing on tier $i$; $\sum_i T_{\theta,i} = T_{\theta,\text{device}}$.
 - $T_{\text{KV},i}$ — Per-request KV bytes residing on tier $i$; $\sum_i T_{\text{KV},i} = T_{\text{KV,device}}$.
 - Capacity constraint per tier: $T_{\theta,i} + B \cdot T_{\text{KV},i} \le C_i$ (sram.md §1.3; uses the per-device, per-request $T_{\text{KV,device}}$ from `decode.md §2.3`, which already bakes in $TP \cdot SP$ and the context length $S$).
+- `auto_priority` — Greedy tiebreaker when both `weights_tier` and `kv_tier` are `auto`: `"weights"` (default) fills weights into the fastest tier first, then KV gets remainder; `"kv"` flips the order. Inert when either class is explicitly pinned.
 
 Multi-tier roofline (sram.md §2.1) — full $\alpha$–$\beta$ form:
 $$t_{\text{mem}}(B) = \sum_i \left[\, \alpha_i + \frac{T_{\theta,i} + B \cdot T_{\text{KV},i}}{BW_{\text{eff},i}} \,\right]$$

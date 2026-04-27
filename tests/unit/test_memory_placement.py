@@ -173,6 +173,66 @@ def test_pinned_overflow_raises():
         _check("error names overflowing class", e.data_class == "weights")
 
 
+def test_auto_priority_weights_default_fills_weights_first():
+    """auto_priority='weights' (the default) puts weights on the fast tier
+    first; KV gets remainder. This is the existing behavior — pinned by the
+    test to guard against regression."""
+    tiers = _two_tier_dmatrix()
+    # Both classes individually fit but together exceed SRAM.
+    T_theta, T_kv, B = 1.5e9, 0.04e9, 16  # 1.5 weights + 0.64 KV = 2.14 > 2 GB SRAM
+    plc = resolve_placement(T_theta, T_kv, B, tiers, MemoryPlacementSpec())
+    _check_close("weights-first: weights all on SRAM",
+                 plc.weights_per_tier[0], T_theta)
+    _check_close("weights-first: weights nothing on LPDDR5",
+                 plc.weights_per_tier[1], 0.0)
+
+
+def test_auto_priority_kv_fills_kv_first():
+    """auto_priority='kv' flips the order — KV claims SRAM first; weights
+    spill to LPDDR5 if there's not enough room."""
+    tiers = _two_tier_dmatrix()
+    T_theta, T_kv, B = 1.5e9, 0.04e9, 16
+    plc = resolve_placement(
+        T_theta, T_kv, B, tiers,
+        MemoryPlacementSpec(auto_priority="kv"),
+    )
+    # KV total = 16 * 0.04 = 0.64 GB; fits on SRAM with margin
+    _check_close("kv-first: KV all on SRAM",
+                 plc.kv_per_request_per_tier[0], T_kv)
+    _check_close("kv-first: KV nothing on LPDDR5",
+                 plc.kv_per_request_per_tier[1], 0.0)
+    # Weights then fill remaining SRAM (2 - 0.64 = 1.36 GB) and spill 0.14 GB
+    _check_close("kv-first: weights on SRAM = remaining capacity",
+                 plc.weights_per_tier[0], 1.36e9)
+    _check_close("kv-first: weights spill 0.14 GB to LPDDR5",
+                 plc.weights_per_tier[1], 0.14e9)
+
+
+def test_auto_priority_inert_when_pinned():
+    """When weights or KV is explicitly pinned, auto_priority has no effect
+    on the pinned class — pin always wins."""
+    tiers = _two_tier_dmatrix()
+    plc = resolve_placement(
+        1.0e9, 0.05e9, 16, tiers,
+        MemoryPlacementSpec(weights_tier="lpddr5", auto_priority="kv"),
+    )
+    # weights pinned → all on LPDDR5 regardless of priority
+    _check_close("pinned weights override priority",
+                 plc.weights_per_tier[1], 1.0e9)
+    _check_close("pinned weights nothing on SRAM",
+                 plc.weights_per_tier[0], 0.0)
+
+
+def test_auto_priority_invalid_raises():
+    tiers = _two_tier_dmatrix()
+    try:
+        resolve_placement(1e9, 0.0, 1, tiers,
+                          MemoryPlacementSpec(auto_priority="banana"))
+        _check("bad auto_priority raises", False, "no exception")
+    except ValueError as e:
+        _check("bad auto_priority raises ValueError", "auto_priority" in str(e))
+
+
 def test_pin_unknown_tier_raises():
     tiers = _two_tier_dmatrix()
     try:
@@ -295,6 +355,10 @@ def main() -> int:
     test_pin_weights_to_slow_tier()
     test_pinned_overflow_raises()
     test_pin_unknown_tier_raises()
+    test_auto_priority_weights_default_fills_weights_first()
+    test_auto_priority_kv_fills_kv_first()
+    test_auto_priority_inert_when_pinned()
+    test_auto_priority_invalid_raises()
     test_two_tier_crossover_matches_closed_form()
     test_tuner_loader_default_placement_is_auto_auto()
     test_tuner_loader_placement_block_round_trips()

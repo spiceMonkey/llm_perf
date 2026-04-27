@@ -96,9 +96,9 @@ The left-hand side is the resident footprint on tier $i$ of one device — weigh
 
 Two placement policies cover the practical cases:
 
-**Greedy fastest-first.** Fill tier 0 with weights until it spills; place the remainder on tier 1; place KV on whichever tier has remaining capacity, prioritizing the fastest tier that fits. This matches the Groq deployment model (a single fast tier, no spill option) and d-Matrix Performance Mode (weights pinned to SRAM, KV on SRAM if it fits else LPDDR5) [DMATRIX-HC25].
+**Greedy fastest-first.** Fill tier 0 with the priority class until it spills; place the remainder on tier 1; place the second class on whichever tier has remaining capacity, prioritizing the fastest tier that fits. The priority class is **weights by default** (the `auto_priority="weights"` field on `MemoryPlacementSpec`) on the rationale that weights are a stable size for a given deployment while KV grows with context length and batch — pinning the stable class to the fast tier is more robust. Set `auto_priority="kv"` to flip the order when the KV term dominates and SRAM-resident KV matters more than SRAM-resident weights. This matches the Groq deployment model (a single fast tier, no spill option) and d-Matrix Performance Mode (weights pinned to SRAM, KV on SRAM if it fits else LPDDR5) [DMATRIX-HC25].
 
-**Operator-specified.** Each data class is pinned to a chosen tier by a `MemoryPlacementSpec` field on the tuner. This matches d-Matrix Capacity Mode, where the operator pins weights to LPDDR5 to free SRAM for a larger batch or longer context [DMATRIX-HC25]. The two-mode toggle exposed by d-Matrix's Aviator runtime is exactly this placement-spec switch.
+**Operator-specified.** Each data class is pinned to a chosen tier by a `MemoryPlacementSpec` field on the tuner; pin overflow raises `CapacityError`. This matches d-Matrix Capacity Mode, where the operator pins weights to LPDDR5 to free SRAM for a larger batch or longer context [DMATRIX-HC25]. The two-mode toggle exposed by d-Matrix's Aviator runtime is exactly this placement-spec switch. `auto_priority` is inert for any class that is explicitly pinned.
 
 ---
 
