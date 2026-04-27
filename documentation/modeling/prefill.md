@@ -588,7 +588,7 @@ For $PP = 1$ (no pipeline parallelism), $t_{\text{pipeline,warmup}} = 0$.
 
 ## 3.4 Hardware Prefill Latency Formula
 
-Combining all three phases, with overlap factor $\rho \in [0, 1]$ capturing the fraction of prefill communication that can be hidden behind compute:
+Combining all three phases, with overlap factor $\rho \in [0, 1]$ capturing the fraction of prefill communication that can be hidden behind compute, and an SW dispatch budget $t_{\mathrm{SW}}^{\mathrm{stage}}$ for per-stage CPU kernel-launch overhead:
 
 $$
 t_{\text{prefill}} =
@@ -601,11 +601,19 @@ $$
 
 **Interpretation of each term:**
 
-- $t_{\text{prefill,local}}$: roofline local time; dominated by compute at typical $S_{\text{input}}$ (Section 2.3).
+- $t_{\text{prefill,local}}$: roofline local time, *with two corrections* added to the legacy $\max(t_{\text{compute}}, t_{\text{mem}})$ form:
+  - $t_{\text{compute}}^{\mathrm{eff}} = t_{\text{compute}} / \eta_{\mathrm{TC}}(\mathrm{mb}_{\mathrm{prefill}})$ — Tensor Core efficiency derate at small effective microbatch (notation.md §9). For prefill, $\mathrm{mb}_{\mathrm{prefill}} = B_{\text{prefill}} \cdot S_{\text{input}} / PP$ is large enough at typical $S$ that $\eta_{\mathrm{TC}} \approx 1$; the term is included for consistency with decode and to capture small-$S$ corner cases.
+  - SW composition with the per-stage CPU dispatch budget $t_{\mathrm{SW}}^{\mathrm{stage}} = (L/PP) \cdot k \cdot \tau_{\mathrm{launch}}$, applied via the SW-overlap factor $\rho_{\mathrm{SW}}$:
+  
+  $$
+  t_{\text{prefill,local}} = \max\!\bigl(\max(t_{\text{compute}}^{\mathrm{eff}}, t_{\text{mem}}),\ \rho_{\mathrm{SW}} \cdot \max(t_{\text{compute}}^{\mathrm{eff}}, t_{\text{mem}}) + (1 - \rho_{\mathrm{SW}}) \cdot (\max(t_{\text{compute}}^{\mathrm{eff}}, t_{\text{mem}}) + t_{\mathrm{SW}}^{\mathrm{stage}}),\ t_{\mathrm{SW}}^{\mathrm{stage}}\bigr)
+  $$
+  
+  Note the prefill SW formula is per stage rather than per round: each forward pass through the pipeline is a single end-to-end sweep with no microbatch round structure (cf. decode.md §6.3.2). See [framework.md §2.2](framework.md#22-cuda-kernel-launch--cuda-graph-replay-t_mathrmsw) for the full derivation. With `kernel_launch_us = 0` the term vanishes (legacy roofline).
 - $\max(0,\, t_{\text{prefill,comm}} - \rho\, t_{\text{prefill,local}})$: residual communication after compute–communication overlap. In the compute-bound prefill regime, $t_{\text{prefill,local}}$ is large, so significant communication hiding ($\rho \approx 0.8$–$1.0$) is achievable.
 - $t_{\text{pipeline,warmup}}$: pipeline fill penalty; grows with $PP$ and with $S_{\text{input}}$ (since $t_{PP}^{\text{prefill}}$ scales with $S_{\text{input}}$).
 
-> **Overlap note:** The overlap factor $\rho$ is an original parameterization (this work); see `references.md`. In the compute-bound prefill regime, compute and communication can be overlapped aggressively by pipelining GEMM tiles with collective operations (e.g., using NCCL + CUDA stream concurrency). Practical $\rho$ values are system-dependent but commonly 0.5–0.9.
+> **Overlap note:** The overlap factor $\rho$ is an original parameterization (this work); see `references.md`. In the compute-bound prefill regime, compute and communication can be overlapped aggressively by pipelining GEMM tiles with collective operations (e.g., using NCCL + CUDA stream concurrency). Practical $\rho$ values are system-dependent but commonly 0.5–0.9. The independent $\rho_{\mathrm{SW}}$ governs CPU-GPU dispatch overlap; default $\rho_{\mathrm{SW}} = 1$ assumes async dispatch keeps the GPU command queue full.
 
 ---
 

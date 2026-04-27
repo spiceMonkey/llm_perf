@@ -1589,16 +1589,26 @@ $$
 \gamma_{\text{pp}} = \max\left(1,\; \frac{PP}{B}\right)
 $$
 
+The user-observed step time also includes the per-round CPU dispatch budget $t_{\mathrm{SW}}$ — the cumulative kernel-launch latency on the host side (kernel_launch_overhead.md §5):
+
 $$
-t_{\text{step,user}} = t_{\text{stage}} \cdot \gamma_{\text{pp}}
+t_{\mathrm{SW}} = L \cdot k \cdot \tau_{\mathrm{launch}}, \qquad k = k_{\mathrm{compute}} + k_{\mathrm{collective}} \cdot (n_{\mathrm{TP}}^{\mathrm{eff}} + n_{\mathrm{EP}}^{\mathrm{eff}} + n_{\mathrm{SP}}^{\mathrm{eff}})
 $$
 
-**Regimes:**
+where the $n_{*}^{\mathrm{eff}}$ terms are the per-layer collective counts that fire for the current shape (zero when the corresponding axis is 1). Composing GPU work and host dispatch via the SW overlap factor $\rho_{\mathrm{SW}}$:
 
-- $B \ge PP$: $t_{\text{step,user}} = t_{\text{stage}}$ (pipeline kept full by inflight batching).
-- $B < PP$: $t_{\text{step,user}} = (PP/B)\, t_{\text{stage}}$ (single-user or low-batch decode pays the full pipeline depth per token).
+$$
+t_{\mathrm{step,user}} = \max\!\bigl(t_{\mathrm{stage}},\ \rho_{\mathrm{SW}} \cdot t_{\mathrm{stage}} + (1 - \rho_{\mathrm{SW}}) \cdot (t_{\mathrm{stage}} + t_{\mathrm{SW}}),\ t_{\mathrm{SW}}\bigr) \cdot \gamma_{\mathrm{pp}}
+$$
 
-At $B = 1, PP = 1$ this reduces to $t_{\text{step,user}} = t_{\text{stage}}$ — backward compatible with the non-pipelined decode model.
+**Regimes (assuming $\rho_{\mathrm{SW}} = 1$, the default):**
+
+- $t_{\mathrm{stage}} \ge t_{\mathrm{SW}}$: $t_{\mathrm{step,user}} = t_{\mathrm{stage}} \cdot \gamma_{\mathrm{pp}}$ (GPU-bound — async dispatch fully hides kernel-launch overhead).
+- $t_{\mathrm{stage}} < t_{\mathrm{SW}}$: $t_{\mathrm{step,user}} = t_{\mathrm{SW}} \cdot \gamma_{\mathrm{pp}}$ (SW-bound — CPU cannot feed the GPU fast enough; common at small microbatch on dense decode).
+
+When $t_{\mathrm{SW}} = 0$ (SW modeling disabled by setting `kernel_launch_us = 0` in the tuner) the formula reduces to the legacy $t_{\mathrm{step,user}} = t_{\mathrm{stage}} \cdot \gamma_{\mathrm{pp}}$. At $B = 1, PP = 1$ and $t_{\mathrm{SW}} = 0$, this further reduces to $t_{\mathrm{step,user}} = t_{\mathrm{stage}}$ — backward compatible with the non-pipelined decode model.
+
+A separate Tensor Core efficiency term $\eta_{\mathrm{TC}}(\mathrm{mb})$ derates the compute roofline at small microbatch — see [practical_pp_choice.md §3.3](../explaining/practical_pp_choice.md#33-microbatch-granularity-and-kernel-launch-overhead) and [kernel_launch_overhead.md](../explaining/kernel_launch_overhead.md) for the full derivation; with the default $\eta_{\mathrm{TC}} = 1$ (no curve set) this term is a no-op.
 
 ### 6.3.3 Throughput
 

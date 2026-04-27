@@ -14,8 +14,7 @@ The hardware roofline model in `decode.md` establishes a lower bound on per-toke
 - [1. Overhead Classification](#1-overhead-classification)
 - [2. CPU / Software-Stack Overhead Terms](#2-cpu--software-stack-overhead-terms)
   - [2.1 Tokenization Latency ($t_{\text{tok}}$)](#21-tokenization-latency-t_texttok)
-  - [2.2 CUDA Kernel Launch Overhead ($t_{\text{launch}}$)](#22-cuda-kernel-launch-overhead-t_textlaunch)
-  - [2.3 CUDA Graph Replay ($t_{\text{graph}}$)](#23-cuda-graph-replay-t_textgraph)
+  - [2.2 CUDA Kernel Launch / CUDA Graph Replay ($t_{\mathrm{SW}}$)](#22-cuda-kernel-launch--cuda-graph-replay-t_mathrmsw)
   - [2.4 Request Scheduling / Batch Assembly ($t_{\text{sched}}$)](#24-request-scheduling--batch-assembly-t_textsched)
   - [2.5 Token Sampling ($t_{\text{sample}}$)](#25-token-sampling-t_textsample)
   - [2.6 Response Streaming / Detokenization ($t_{\text{detok}}$)](#26-response-streaming--detokenization-t_textdetok)
@@ -63,35 +62,46 @@ Each subsection below describes what the term measures, why it exists at the sys
 
 ---
 
-### §2.2 CUDA Kernel Launch Overhead ($t_{\text{launch}}$)
+### §2.2 CUDA Kernel Launch / CUDA Graph Replay ($t_{\mathrm{SW}}$)
 
-**What it measures.** $t_{\text{launch}}$ is the cumulative CPU→GPU kernel submission latency incurred per decode step when CUDA graph capture is not used. Each GEMM, attention kernel, norm kernel, and elementwise activation contributes a fixed per-kernel launch cost.
+**Note (2026-04, framework_update PR).** §2.2 and §2.3 were originally separate empirical constants ($t_{\mathrm{launch}}$ and $t_{\mathrm{graph}}$). They are now merged into a single derived per-round dispatch budget, $t_{\mathrm{SW}}$, computed inside the decode latency model from `TuningSpec` knobs rather than supplied as a flat scalar. The derivation lives in [kernel_launch_overhead.md §5](../explaining/kernel_launch_overhead.md#5-mapping-the-overhead-to-the-llm_perf-framework); this section summarises the modeling surface.
 
-**Why it exists.** CUDA kernel launch involves a driver API call (`cuLaunchKernel` or the runtime equivalent), which transfers grid/block parameters to the GPU command processor via a CPU-visible ring buffer. On H100, a single kernel launch costs approximately 5–20 µs of CPU time; the GPU itself sees the kernel only after this submission overhead. For a full transformer layer with attention, FFN, and norm kernels, $n_{\text{kernels}} \approx \mathcal{O}(10\text{–}30)$ per layer, giving:
+**What it measures.** $t_{\mathrm{SW}}$ is the cumulative CPU→GPU kernel submission latency incurred per pipeline round on each device. In steady-state inflight batching ($B \ge PP$), a round contains exactly $PP$ microbatches per stage, each launching $L/PP$ layers' worth of kernels; summing across the round gives:
 
 $$
-t_{\text{launch}} \approx n_{\text{kernels}} \times t_{\text{kernel-launch}} \approx L \times 10\text{–}600\;\mu\text{s}
+t_{\mathrm{SW}} = L \cdot k \cdot \tau_{\mathrm{launch}}, \qquad k = k_{\mathrm{compute}} + k_{\mathrm{collective}} \cdot (n_{\mathrm{TP}}^{\mathrm{eff}} + n_{\mathrm{EP}}^{\mathrm{eff}} + n_{\mathrm{SP}}^{\mathrm{eff}})
 $$
 
-for a model with $L$ layers without any kernel fusion. Fused implementations (e.g., FlashAttention fusing Q/K/V projection + attention + output projection) reduce $n_{\text{kernels}}$ substantially.
+where $\tau_{\mathrm{launch}}$ is the per-kernel dispatch latency, $k_{\mathrm{compute}}$ is the per-layer compute kernel count (≈10 after typical fusion), $k_{\mathrm{collective}}$ is the per-collective kernel count (≈2 for NCCL), and the $n_{*}^{\mathrm{eff}}$ terms are the per-layer collective counts that actually fire for the current shape (zero on axes where the parallelism is 1).
 
-**Calibration.** Profile a decode step with Nsight Systems; count distinct kernel launches and measure the gap between consecutive kernel starts. The difference between `cuda:0` timeline utilization and 100% in the idle periods between kernels reflects launch overhead.
+**Why it exists.** Every kernel the model launches incurs a fixed CPU-side dispatch cost: `cudaLaunchKernel` driver call, parameter marshalling, command-buffer dispatch. CUDA Graphs collapse the framework / driver portion of this cost by replaying a pre-captured DAG with one API call instead of $L \cdot k$. The framework parameterises the difference via $\tau_{\mathrm{launch}}$:
 
-**Typical values.** On H100 SXM5: ~5–20 µs per kernel launch. For an unfused 80-layer model with ~20 kernels per layer: up to 16–32 ms per decode step, which would dominate over compute. In practice, kernel fusion and CUDA graphs (§2.3) reduce this to negligible levels.
+- **CUDA Graphs on (production default):** $\tau_{\mathrm{launch}} \approx 1.5\,\mu s$.
+- **Eager / no graphs:** $\tau_{\mathrm{launch}} \approx 7\,\mu s$ (range 5–10).
 
----
+**How it enters the roofline.** Through the SW-overlap factor $\rho_{\mathrm{SW}}$:
 
-### §2.3 CUDA Graph Replay ($t_{\text{graph}}$)
+$$
+t_{\mathrm{step,user}} = \max\!\bigl(t_{\mathrm{stage}},\ \rho_{\mathrm{SW}} \cdot t_{\mathrm{stage}} + (1 - \rho_{\mathrm{SW}}) \cdot (t_{\mathrm{stage}} + t_{\mathrm{SW}}),\ t_{\mathrm{SW}}\bigr) \cdot \gamma_{\mathrm{pp}}
+$$
 
-**What it measures.** $t_{\text{graph}}$ is the latency to replay a pre-captured CUDA graph representing the entire decode step. It replaces the per-kernel launch sequence with a single graph launch command, amortizing all submission overhead into one fixed cost.
+At $\rho_{\mathrm{SW}} = 1$ (default — async dispatch fully overlaps with GPU work), $t_{\mathrm{SW}}$ acts as a *floor*: it kicks in only when the GPU's $t_{\mathrm{stage}}$ is shorter than the round's launch budget. At $\rho_{\mathrm{SW}} = 0$ (synchronous worst case), $t_{\mathrm{SW}}$ adds linearly. Setting `kernel_launch_us = 0` in the tuner disables the term entirely (legacy roofline behavior).
 
-**Why it exists.** CUDA graph capture records the exact sequence of GPU operations (kernels, memory copies, synchronization points) in a single graph object during a warm-up pass. On subsequent decode steps, the graph is replayed atomically from the GPU side, eliminating CPU involvement per kernel. This is the primary technique used by TensorRT-LLM [TENSORRT-LLM] and vLLM's graph mode [VLLM] to reduce kernel launch overhead to a single fixed cost per step.
+**Calibration.** Two independent profiles:
 
-**Limitations.** CUDA graph replay requires static input shapes (fixed batch size, fixed sequence configuration). This is incompatible with naive continuous batching (PagedAttention with variable batch sizes per step). Production systems work around this by bucketing batch sizes to a discrete set of graph captures, or by falling back to eager mode for irregular shapes.
+1. Count $k_{\mathrm{compute}}$ and $k_{\mathrm{collective}}$ from a Nsight Systems timeline of one decode step (count distinct kernels per layer; group collectives via NCCL marker ranges).
+2. Measure $\tau_{\mathrm{launch}}$ from the gap between consecutive kernel starts on the CPU timeline (eager mode) or graph-launch elapsed time (graph mode).
 
-**Calibration.** Capture graphs at each batch-size bucket; measure end-to-end decode step time with and without graph mode at matching batch sizes. The difference is $t_{\text{launch}}$ from §2.2. The residual with graph mode is $t_{\text{graph}}$.
+**Typical values on H100 SXM5 / B200.**
 
-**Typical values.** 10–100 µs per decode step on H100 SXM5 with graph mode, across a range of batch sizes.
+| Mode | $\tau_{\mathrm{launch}}$ | $t_{\mathrm{SW}}$ for $L = 120$, $k = 12$ |
+|---|---:|---:|
+| Eager / no graphs | ~7 μs | ~10 ms per round |
+| CUDA Graphs (production default) | ~1.5 μs | ~2.16 ms per round |
+
+Compared with a typical mb=1 decode $t_{\mathrm{stage}}$ of ~1.8–2.2 ms, this floor is order-of-magnitude relevant; production systems rely on the CUDA-Graphs path to keep $t_{\mathrm{SW}} \le t_{\mathrm{stage}}$ at deployable batch sizes.
+
+**Legacy fallback.** The opaque per-step constants `OverheadSpec.t_graph_us` (and the older `t_launch`) remain in the schema for back-compat. The E2E calculator uses them only when the derived $t_{\mathrm{SW}}$ is zero (i.e., SW modeling explicitly disabled). New deployments should leave the legacy constants at 0 and tune via the TuningSpec fields.
 
 ---
 

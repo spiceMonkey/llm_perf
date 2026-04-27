@@ -195,19 +195,26 @@ Layer and token:
 ## 9. Decode Timing and Throughput
 _(→ decode.md)_
 
-- $t_{\text{compute}}$ — Per-token compute time: $F_{\text{token,device}} / R_{\text{GPU}}$.
+- $t_{\text{compute}}$ — Per-token compute time at peak Tensor Core throughput: $F_{\text{token,device}} / R_{\text{GPU}}$.
+- $\eta_{\mathrm{TC}}(\mathrm{mb})$ — Tensor Core efficiency factor at microbatch $\mathrm{mb} = B/PP$. Piecewise-linear from a user-supplied curve; defaults to 1 (no derate). Captures the wgmma / mma.sync M-tile floor (kernel_launch_overhead.md §2, practical_pp_choice.md §3.3).
+- $t_{\text{compute}}^{\mathrm{eff}}$ — Tensor-Core-derated compute time: $t_{\text{compute}} / \eta_{\mathrm{TC}}(\mathrm{mb})$.
 - $t_{\text{mem}}$ — Per-token memory time: $T_{\text{token,device}}^{\text{eff}} / BW_{\text{mem}}$.
-- $t_{\text{local}}$ — Roofline local time: $\max(t_{\text{compute}}, t_{\text{mem}})$.
+- $t_{\text{local}}$ — Roofline local time: $\max(t_{\text{compute}}^{\mathrm{eff}}, t_{\text{mem}})$.
 - $t_{TP}, t_{EP}, t_{SP}, t_{PP}$ — Communication time per step per parallelism type (message sizes scale with $B$; see decode.md §5).
 - $t_{\text{comm}}$ — Combined communication time per decode step per PP stage.
-- $t_{\text{stage}}$ — Per-PP-stage step time (overlap-aware, pre-bubble):
+- $t_{\text{stage}}$ — Per-PP-stage GPU-side step time (overlap-aware, pre-bubble):
   $$t_{\text{stage}} = t_{\text{local}} + \max(0,\; t_{\text{comm}} - \rho \cdot t_{\text{local}})$$
+- $\tau_{\mathrm{launch}}$ — Per-kernel CPU dispatch latency (typical: ~1.5 μs with CUDA Graphs, ~7 μs without).
+- $k$ — Kernel launches per layer per microbatch: $k = k_{\mathrm{compute}} + k_{\mathrm{collective}} \cdot (n_{\mathrm{TP}}^{\mathrm{eff}} + n_{\mathrm{EP}}^{\mathrm{eff}} + n_{\mathrm{SP}}^{\mathrm{eff}})$. Collective counts are 0 when the corresponding parallelism axis is 1.
+- $t_{\mathrm{SW}}$ — Per-round CPU dispatch budget on each device: $t_{\mathrm{SW}} = L \cdot k \cdot \tau_{\mathrm{launch}}$ (kernel_launch_overhead.md §5).
+- $\rho_{\mathrm{SW}}$ — SW-overlap factor $\in [0, 1]$: fraction of $t_{\mathrm{stage}}$ that hides $t_{\mathrm{SW}}$ via async kernel dispatch. Default 1 (full overlap).
 - $\gamma_{\text{pp}}$ — Pipeline-bubble multiplier:
   $$\gamma_{\text{pp}} = \max\left(1,\; \frac{PP}{B}\right)$$
   Equal to 1 when the pipeline is kept full ($B \ge PP$); greater than 1 when a single microbatch must traverse all PP stages sequentially ($B < PP$).
 - $t_{\text{step,user}}$ — User-observed per-step decode time:
-  $$t_{\text{step,user}} = t_{\text{stage}} \cdot \gamma_{\text{pp}}$$
-- $\rho$ — Overlap factor $\in [0,1]$: fraction of $t_{\text{local}}$ that hides $t_{\text{comm}}$.
+  $$t_{\text{step,user}} = \max\!\bigl(t_{\text{stage}},\ \rho_{\mathrm{SW}} \cdot t_{\text{stage}} + (1 - \rho_{\mathrm{SW}}) \cdot (t_{\text{stage}} + t_{\mathrm{SW}}),\ t_{\mathrm{SW}}\bigr) \cdot \gamma_{\text{pp}}$$
+  Reduces to $t_{\text{stage}} \cdot \gamma_{\text{pp}}$ when $t_{\mathrm{SW}} = 0$ (SW disabled).
+- $\rho$ — Compute-comm overlap factor $\in [0,1]$: fraction of $t_{\text{local}}$ that hides $t_{\text{comm}}$.
 - $TPS_{\text{single}}$ — Per-DP-replica decode throughput: $B / t_{\text{step,user}}$ (tokens/s).
 - $TTPS$ — Global decode throughput across all DP replicas: $DP \cdot B / t_{\text{step,user}}$ (tokens/s).
 

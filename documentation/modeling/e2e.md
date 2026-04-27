@@ -68,6 +68,8 @@ $$
 
 where $t_{\text{KV-transfer}} = 0$ for co-located prefill+decode. The prefill latency $t_{\text{prefill}}$ is derived in full in `prefill.md §3`; framework overhead terms $t_{\text{sched}}$ and $t_{\text{tok}}$ are defined in `framework.md §2`.
 
+> **SW dispatch overhead.** As of the kernel-launch refactor (`framework.md §2.2`), both $t_{\text{prefill}}$ and $t_{\text{step,user}}$ already incorporate per-stage / per-round CPU dispatch budget through their respective roofline compositions (see `prefill.md §3.4` for prefill, `decode.md §6.3.2` for decode). The legacy per-step constant $t_{\text{graph}}$ from `OverheadSpec` is therefore *not* added separately to TTFT when the derived $t_{\mathrm{SW}}$ path is active — the E2E calculator suppresses double-counting automatically. Setting `kernel_launch_us = 0` in the tuner falls back to the original additive $t_{\text{graph}}$ accounting.
+
 **Key property.** TTFT is a *latency-to-first-byte* (TTFB) metric. For interactive applications, a high TTFT produces a blank screen during prefill — the most perceptible user experience degradation for long prompts.
 
 ---
