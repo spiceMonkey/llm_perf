@@ -52,26 +52,30 @@ def _close(label: str, got: float, want: float, rel_tol: float = 1e-12) -> None:
 def test_squadrack_pp_tier_assignment() -> None:
     print("\ntest_squadrack_pp_tier_assignment")
     s = load_system_spec("llm_perf/database/system/dmatrix.squadrack.json")
-    # Tier chain: 16 (pair-of-cards) → 4 (PCIe) → 8 (Ethernet); cumulative 16,64,512.
+    # 5-tier chain: package(4) → DMX(16) → PCIe-A(32) → PCIe-B(64) → Ethernet(512).
 
-    # PP=2 × TP=8 = 16 → fits tier 0
-    a = assign_tier_per_axis(PartitionSpec(PP=2, TP=8, EP=1, SP=1), s)
-    _eq("PP=2 TP=8: PP→tier 0", a["PP"], 0)
+    # PP=2 × TP=2 = 4 → fits tier 0 (package)
+    a = assign_tier_per_axis(PartitionSpec(PP=2, TP=2, EP=1, SP=1), s)
+    _eq("PP=2 TP=2: PP→tier 0", a["PP"], 0)
 
-    # PP=8 × TP=8 = 64 → fits tier 1 cumulative
+    # PP=4 × TP=4 = 16 → fits tier 1 cumulative (DMX Bridge)
+    a = assign_tier_per_axis(PartitionSpec(PP=4, TP=4, EP=1, SP=1), s)
+    _eq("PP=4 TP=4: PP→tier 1", a["PP"], 1)
+
+    # PP=8 × TP=8 = 64 → fits tier 3 cumulative (PCIe-B inter-hemisphere)
     a = assign_tier_per_axis(PartitionSpec(PP=8, TP=8, EP=1, SP=1), s)
-    _eq("PP=8 TP=8: PP→tier 1", a["PP"], 1)
+    _eq("PP=8 TP=8: PP→tier 3", a["PP"], 3)
 
-    # PP=16 × TP=8 = 128 → needs tier 2 (cumulative 512)
+    # PP=16 × TP=8 = 128 → needs tier 4 (Ethernet, cumulative 512)
     a = assign_tier_per_axis(PartitionSpec(PP=16, TP=8, EP=1, SP=1), s)
-    _eq("PP=16 TP=8: PP→tier 2", a["PP"], 2)
+    _eq("PP=16 TP=8: PP→tier 4", a["PP"], 4)
 
-    # EP=4 between TP=16 and PP=8: TP=16 fills tier 0; EP=4 needs tier 1
-    # (16 × 4 = 64 == tier-1 cumulative); PP=8 × 64 = 512 fits tier 2.
+    # PP=8 × TP=16 × EP=4 = 512: TP=16 needs tier 1 (cumul 16); EP=4 needs
+    # tier 3 (cumul 16·4=64 ≤ 64); PP=8 needs tier 4 (cumul 64·8=512 ≤ 512).
     a = assign_tier_per_axis(PartitionSpec(PP=8, TP=16, EP=4, SP=1), s)
-    _eq("TP=16 EP=4 PP=8: TP→0 EP→1 PP→2",
+    _eq("TP=16 EP=4 PP=8: TP→1 EP→3 PP→4",
         (a["TP"], a["EP"], a["PP"]),
-        (0, 1, 2))
+        (1, 3, 4))
 
 
 # ────────────────────────────────────────────────────────────
@@ -120,7 +124,7 @@ def test_trivial_axes() -> None:
 def test_out_of_range_clamps() -> None:
     print("\ntest_out_of_range_clamps")
     s = load_system_spec("llm_perf/database/system/dmatrix.squadrack.json")
-    # Squadrack max cumulative reach = 16 × 4 × 8 = 512. Force a partition
+    # Squadrack max cumulative reach = 4·4·2·2·8 = 512. Force a partition
     # whose group exceeds 512 by setting absurd values via override.
     p = PartitionSpec(PP=64, TP=16, EP=4, SP=1)  # 64*16*4 = 4096 > 512
     a = assign_tier_per_axis(p, s)
@@ -141,11 +145,13 @@ def test_decode_pp_uses_assigned_tier() -> None:
     t.S_decode = 8192
     t.B_decode = 32
 
-    # Three shapes spanning all three tiers
+    # Shapes spanning multiple tiers of the 5-tier squadrack chain
+    # (package 4 → DMX 16 → PCIe-A 32 → PCIe-B 64 → Ethernet 512).
     cases = [
-        (PartitionSpec(PP=2, TP=8, EP=1, SP=1),  0),  # tier 0
-        (PartitionSpec(PP=8, TP=8, EP=1, SP=1),  1),  # tier 1
-        (PartitionSpec(PP=32, TP=8, EP=1, SP=1), 2),  # tier 2
+        (PartitionSpec(PP=2, TP=2, EP=1, SP=1),  0),  # tier 0 (cumul 4)
+        (PartitionSpec(PP=4, TP=4, EP=1, SP=1),  1),  # tier 1 (cumul 16)
+        (PartitionSpec(PP=8, TP=8, EP=1, SP=1),  3),  # tier 3 (cumul 64)
+        (PartitionSpec(PP=32, TP=8, EP=1, SP=1), 4),  # tier 4 (cumul 256, fits 512)
     ]
     H = m.H
     b = m.bytes_per_param
