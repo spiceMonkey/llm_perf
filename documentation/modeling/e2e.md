@@ -41,7 +41,7 @@ LLM inference, TTFT, time-to-first-token, TPOT, time-per-output-token, throughpu
 - [6. Throughput–Latency Pareto Frontier](#6-throughputlatency-pareto-frontier)
   - [6.1 Levers Shaping the Pareto Curve](#61-levers-shaping-the-pareto-curve)
   - [6.2 Three Zones of the Pareto Frontier](#62-three-zones-of-the-pareto-frontier)
-  - [6.3 Roofline Ceiling on Pareto Efficiency](#63-roofline-ceiling-on-pareto-efficiency)
+  - [6.3 Throughput–Latency Identity](#63-throughputlatency-identity)
   - [6.4 Throughput–Interactivity Axis Mapping](#64-throughputinteractivity-axis-mapping)
 
 - [Symbol Summary](#symbol-summary)
@@ -68,7 +68,9 @@ $$
 
 where $t_{\text{KV-transfer}} = 0$ for co-located prefill+decode. The prefill latency $t_{\text{prefill}}$ is derived in full in `prefill.md §3`; framework overhead terms $t_{\text{sched}}$ and $t_{\text{tok}}$ are defined in `framework.md §2`.
 
-> **SW dispatch overhead.** As of the kernel-launch refactor (`framework.md §2.2`), both $t_{\text{prefill}}$ and $t_{\text{step,user}}$ already incorporate per-stage / per-round CPU dispatch budget through their respective roofline compositions (see `prefill.md §3.4` for prefill, `decode.md §6.3.2` for decode). The legacy per-step constant $t_{\text{graph}}$ from `OverheadSpec` is therefore *not* added separately to TTFT when the derived $t_{\mathrm{SW}}$ path is active — the E2E calculator suppresses double-counting automatically. Setting `kernel_launch_us = 0` in the tuner falls back to the original additive $t_{\text{graph}}$ accounting.
+> **SW dispatch overhead.** Both $t_{\text{prefill}}$ and $t_{\text{step,user}}$ already incorporate per-stage CPU/host dispatch budget through their respective roofline compositions — see `decode.md §7.1` for the canonical definition of $t_{\text{stage,sw}}$ and `prefill.md §3.4` for how prefill consumes it. The TTFT formula above does not add a separate kernel-launch term to avoid double counting; the legacy per-step `OverheadSpec.t_graph_us` / `t_launch_us` constants are only used when `kernel_launch_us = 0` in the tuner (SW modeling explicitly disabled).
+
+> **LM head.** Both $t_{\text{prefill}}$ and $t_{\text{step,user}}$ also subsume the LM head $H \to V$ projection — a once-per-pass GPU-side roofline term on the last PP stage (`prefill.md §3.4` / `decode.md §6.2 / §7.2`). It is not a separate add-on at the TTFT level. The post-LM-head sampling kernel is folded into the same $t_{\text{LM,hw}}$ surcharge, not into $t_{\text{framework}}$.
 
 **Key property.** TTFT is a *latency-to-first-byte* (TTFB) metric. For interactive applications, a high TTFT produces a blank screen during prefill — the most perceptible user experience degradation for long prompts.
 
@@ -76,13 +78,13 @@ where $t_{\text{KV-transfer}} = 0$ for co-located prefill+decode. The prefill la
 
 ## 1.2 Time Per Output Token (TPOT)
 
-**Definition.** $\text{TPOT}$ is the **user-observed inter-token latency** for tokens 2 through $N_{\text{out}}$ of a single response (the decode phase). Each decode step produces exactly one new token per active sequence, so a user's TPOT equals the full step time $t_{\text{step,user}}$ — **not** amortized across the $B$ parallel sequences:
+**Definition.** $\text{TPOT}$ is the **user-observed inter-token latency** for tokens 2 through $N_{\text{out}}$ of a single response (the decode phase). Each decode step produces exactly one new token per active sequence, so a user's TPOT equals the full step time $t_{\text{step,user}}$ — **not** amortized across the $B$ parallel sequences. The full form from `decode.md §7.2` composes the per-stage HW roofline, the SW dispatch budget, the pipeline bubble multiplier, and the once-per-step LM head surcharge:
 
 $$
-\text{TPOT} = t_{\text{step,user}}(B) = t_{\text{stage}}(B) \cdot \max\left(1,\; \frac{PP}{B}\right)
+\text{TPOT} = t_{\text{step,user}}(B) = \gamma_{\text{pp}} \cdot \bigl[ t_{\text{stage,hw}}(B) + \max\!\bigl(0,\; t_{\text{stage,sw}} - \rho_{\text{SW}} \cdot t_{\text{stage,hw}}(B)\bigr) \bigr] + t_{\text{LM,hw}}(B)
 $$
 
-where $B$ is the number of sequences decoded concurrently, $t_{\text{stage}}(B)$ is the overlap-aware per-stage step time (`decode.md §6.3.1`), and the $\max(1, PP/B)$ factor is the pipeline bubble correction (`decode.md §6.3.2`): at $B \ge PP$ the pipeline is kept full and the factor is 1; at $B < PP$ the single microbatch pays full pipeline depth per token.
+where $B$ is the number of sequences decoded concurrently, $t_{\text{stage,hw}}(B)$ is the overlap-aware per-stage HW step time (`decode.md §6.2`), $t_{\text{stage,sw}}$ is the per-stage CPU/host dispatch budget composed via $\rho_{\text{SW}}$ (`decode.md §7.1`), $\gamma_{\text{pp}} = \max(1, PP/B)$ is the pipeline bubble correction (`decode.md §7.2`) — at $B \ge PP$ the pipeline is kept full and the factor is 1; at $B < PP$ the single microbatch pays full pipeline depth per token — and $t_{\text{LM,hw}}(B)$ is the LM head $H \to V$ projection roofline on stage $PP{-}1$ (added outside $\gamma_{\text{pp}}$ since it fires once per step, not per stage).
 
 **Key property.** TPOT is the *streaming rate* perceived by the user. A TPOT of 50 ms means one new token appears every 50 ms — a rate of 20 tokens/s. Human reading comprehension speed is approximately 5–15 tokens/s; TPOT below 100 ms (>10 tokens/s) is a common production SLA threshold.
 
@@ -96,7 +98,7 @@ $$
 \text{Tput/GPU} = \frac{TTPS}{N_{\text{GPUs}}}
 $$
 
-where $TTPS$ is the global cluster token throughput (tokens/s, all sequences) defined in `decode.md §6.3`, and $N_{\text{GPUs}}$ is the total number of GPUs in the cluster. This is the standard X-axis of throughput–latency benchmark plots.
+where $TTPS$ is the global cluster token throughput (tokens/s, all sequences) defined in `decode.md §7.2`, and $N_{\text{GPUs}}$ is the total number of GPUs in the cluster. This is the standard X-axis of throughput–latency benchmark plots.
 
 ---
 
@@ -154,19 +156,21 @@ For a single request on a **co-located** prefill+decode cluster (no disaggregati
 
 2. **$t_{\text{tok}}$** — Tokenization latency: raw text is converted to token IDs on CPU. From `framework.md §2.1`, $t_{\text{tok}} \sim 0.1\text{–}2$ ms and is often pipelined with the previous request's decode tail, making it negligible in steady-state batch serving. We retain it for single-request analysis.
 
-3. **$t_{\text{prefill}}$** — Prefill forward pass latency: the model processes all $S_{\text{input}}$ tokens in a single GEMM-dominated pass. The full derivation is in `prefill.md §3`; the boxed result is:
+3. **$t_{\text{prefill}}$** — Prefill forward pass latency: the model processes all $S_{\text{input}}$ tokens in a single GEMM-dominated pass. The full derivation is in `prefill.md §3.4`; the boxed result is:
 
    $$
-   t_{\text{prefill}} = t_{\text{prefill,local}} + \max\left(0,\; t_{\text{prefill,comm}} - \rho\, t_{\text{prefill,local}}\right) + t_{\text{pipeline,warmup}}
+   t_{\text{prefill}} = t_{\text{prefill,local}} + \max\left(0,\; t_{\text{prefill,comm}} - \rho\, t_{\text{prefill,local}}\right) + t_{\text{pipeline,warmup}} + t_{\text{LM,prefill,hw}}
    $$
 
-   where $t_{\text{prefill,local}} = \max(t_{\text{prefill,compute}},\; t_{\text{prefill,mem}})$ is the per-stage roofline time, $t_{\text{prefill,comm}}$ is the collective communication time during prefill (same TP/EP/SP structure as decode, scaled by $S_{\text{input}}$), $\rho$ is the overlap factor (same as in decode, `decode.md §6.2`), and $t_{\text{pipeline,warmup}} = (PP - 1) \times t_{\text{stage,max}}$ is the time for the prefill pass to fill the pipeline (`prefill.md §3.3`).
+   where $t_{\text{prefill,local}}$ is the per-stage roofline time including SW composition (`prefill.md §3.4`), $t_{\text{prefill,comm}}$ is the collective communication time during prefill (same TP/EP/SP structure as decode, scaled by $S_{\text{input}}$), $\rho$ is the overlap factor (same as in decode, `decode.md §6.2`), $t_{\text{pipeline,warmup}} = (PP - 1) \times t_{\text{stage,max}}$ is the time for the prefill pass to fill the pipeline (`prefill.md §3.3`), and $t_{\text{LM,prefill,hw}}$ is the once-per-pass LM head $H \to V$ projection on stage $PP{-}1$ (`prefill.md §3.4`) — added outside the warmup since it fires once at the end of the traversal, not per stage.
 
-4. **$t_{\text{step,user}}$** — First decode step: one forward pass of the decode kernel, generating token 1. From `decode.md §6.2`:
+4. **$t_{\text{step,user}}$** — First decode step: one forward pass of the decode kernel, generating token 1. From `decode.md §7.2`:
 
    $$
-   t_{\text{step,user}} = t_{\text{local}} + \max\left(0,\; t_{\text{comm}} - \rho\, t_{\text{local}}\right)
+   t_{\text{step,user}} = \gamma_{\text{pp}} \cdot \bigl[ t_{\text{stage,hw}} + \max\!\bigl(0,\; t_{\text{stage,sw}} - \rho_{\text{SW}} \cdot t_{\text{stage,hw}}\bigr) \bigr] + t_{\text{LM,hw}}
    $$
+
+   This is the same formula as the steady-state TPOT (§1.2) — the first decode step is just the first invocation of the per-step decode kernel.
 
 ### Boxed result (co-located)
 
@@ -239,10 +243,12 @@ The KV write traffic $T_{\text{KV,write,device}}$ scales with $B_{\text{prefill}
 From a user's perspective, the worst-case TTFT applies to the **last request** admitted to the prefill batch — that request waits for the entire joint prefill to complete before its first token is produced:
 
 $$
-TTFT_{\text{batched}} = t_{\text{sched}} + t_{\text{prefill,local}}(B_{\text{prefill}}) + \max\left(0,\; t_{\text{prefill,comm}} - \rho\, t_{\text{prefill,local}}\right) + t_{\text{pipeline,warmup}} + t_{\text{step,user}}
+TTFT_{\text{batched}} = t_{\text{sched}} + t_{\text{prefill,local}}(B_{\text{prefill}}) + \max\left(0,\; t_{\text{prefill,comm}} - \rho\, t_{\text{prefill,local}}\right) + t_{\text{pipeline,warmup}} + t_{\text{LM,prefill,hw}}(B_{\text{prefill}}) + t_{\text{step,user}}
 $$
 
-Batching prefill requests improves GPU utilization (higher arithmetic intensity → better hardware efficiency) at the cost of increased TTFT for late arrivals in the batch. The optimal $B_{\text{prefill}}$ balances throughput and tail TTFT latency; see `prefill.md §4.3` for the batch-size optimization.
+where $t_{\text{LM,prefill,hw}}(B_{\text{prefill}})$ scales with **only $B_{\text{prefill}}$** (one $H \to V$ projection per request, last position only — see `prefill.md §1.5`), not with $B_{\text{prefill}} \cdot S_{\text{input}}$.
+
+Batching prefill requests improves GPU utilization (higher arithmetic intensity → better hardware efficiency) at the cost of increased TTFT for late arrivals in the batch. The optimal $B_{\text{prefill}}$ balances throughput and tail TTFT latency; see `prefill.md §4` for the batch-size optimization.
 
 ---
 
@@ -273,11 +279,11 @@ For small $C$ (e.g., $C = 256$), the chunk is likely memory-bound (weight traffi
 The new request's TTFT is the time to process all $N_{\text{chunks}}$ chunks sequentially (each occupying one decode slot), plus scheduling overhead:
 
 $$
-TTFT_{\text{chunked}} = t_{\text{sched}} + N_{\text{chunks}} \times t_{\text{chunk}} + t_{\text{step,user}}
-\approx t_{\text{sched}} + \left\lceil \frac{S_{\text{input}}}{C} \right\rceil \times t_{\text{chunk}} + t_{\text{step,user}}
+TTFT_{\text{chunked}} = t_{\text{sched}} + N_{\text{chunks}} \times t_{\text{chunk}} + t_{\text{LM,prefill,hw}} + t_{\text{step,user}}
+\approx t_{\text{sched}} + \left\lceil \frac{S_{\text{input}}}{C} \right\rceil \times t_{\text{chunk}} + t_{\text{LM,prefill,hw}} + t_{\text{step,user}}
 $$
 
-The pipeline warmup $t_{\text{pipeline,warmup}}$ applies once across the entire prefill sequence rather than per chunk (the pipeline is kept warm by the ongoing decode traffic), so it does not multiply by $N_{\text{chunks}}$.
+The pipeline warmup $t_{\text{pipeline,warmup}}$ applies once across the entire prefill sequence rather than per chunk (the pipeline is kept warm by the ongoing decode traffic), so it does not multiply by $N_{\text{chunks}}$. Likewise, the LM head $t_{\text{LM,prefill,hw}}$ fires **once** after the last chunk produces the final position's hidden state — not once per chunk (`prefill.md §3.4`).
 
 ### Tradeoff
 
@@ -295,7 +301,7 @@ The optimal $C$ depends on the SLA balance between new-request TTFT and existing
 
 # 3. TPOT Assembly
 
-TPOT is the per-sequence inter-token latency during the decode phase. Its derivation from the roofline model was developed in detail in `decode.md §6.4.2`; this section assembles the result for both static and continuous batching, and explains the steady-state behavior under each scheduling policy.
+TPOT is the per-sequence inter-token latency during the decode phase. Its derivation from the roofline model was developed in detail in `decode.md §7.2`; this section assembles the result for both static and continuous batching, and explains the steady-state behavior under each scheduling policy.
 
 ---
 
@@ -305,13 +311,13 @@ In **static batching**, all $B$ requests in the batch start together, are padded
 
 ### Per-step wall-clock time
 
-At each decode step, the model processes $B$ tokens simultaneously (one per sequence). The overlap-aware per-stage step time from `decode.md §6.3.1` is:
+At each decode step, the model processes $B$ tokens simultaneously (one per sequence). The overlap-aware per-stage HW step time from `decode.md §6.2` is:
 
 $$
-t_{\text{stage}}(B) = t_{\text{local}}(B) + \max\left(0,\; t_{\text{comm}}(B) - \rho \cdot t_{\text{local}}(B)\right)
+t_{\text{stage,hw}}(B) = t_{\text{local}}(B) + \max\left(0,\; t_{\text{comm}}(B) - \rho \cdot t_{\text{local}}(B)\right)
 $$
 
-where the batched local time is (`decode.md §6.4.2`):
+where the batched local time is (`decode.md §7.2`):
 
 $$
 t_{\text{local}}(B) =
@@ -321,10 +327,10 @@ t_{\text{local}}(B) =
 \right)
 $$
 
-Applying the pipeline bubble correction (`decode.md §6.3.2`) gives the user-observed step time:
+Composing with the per-stage SW dispatch budget $t_{\text{stage,sw}}$ (`decode.md §7.1`), applying the pipeline bubble correction $\gamma_{\text{pp}} = \max(1, PP/B)$, and adding the once-per-step LM head $t_{\text{LM,hw}}(B)$ on stage $PP{-}1$ (`decode.md §6.2 / §7.2`) gives the user-observed step time:
 
 $$
-t_{\text{step,user}}(B) = t_{\text{stage}}(B) \cdot \max\left(1,\; \frac{PP}{B}\right)
+t_{\text{step,user}}(B) = \gamma_{\text{pp}} \cdot \bigl[ t_{\text{stage,hw}}(B) + \max\!\bigl(0,\; t_{\text{stage,sw}} - \rho_{\text{SW}} \cdot t_{\text{stage,hw}}(B)\bigr) \bigr] + t_{\text{LM,hw}}(B)
 $$
 
 ### TPOT definition
@@ -335,11 +341,11 @@ $$
 \text{TPOT}_{\text{static}}(B) = t_{\text{step,user}}(B)
 $$
 
-Consistency with §1.2 and `decode.md §6.4.2`: the user observes one token per decode step per sequence, and the step time is set by the slowest pipeline stage (plus any bubble for $B < PP$). The throughput metric $B/t_{\text{step,user}}$ (tokens/s across the replica) is what is divided by $N_{\text{GPUs}}$ to get Throughput/GPU.
+Consistency with §1.2 and `decode.md §7.2`: the user observes one token per decode step per sequence, and the step time is set by the slowest pipeline stage (plus any bubble for $B < PP$). The throughput metric $B/t_{\text{step,user}}$ (tokens/s across the replica) is what is divided by $N_{\text{GPUs}}$ to get Throughput/GPU.
 
 ### Regime behavior
 
-From the batch-size analysis in `decode.md §6.4.2` (assuming $B \ge PP$ so bubble factor is 1):
+From the batch-size analysis in `decode.md §7.2` (assuming $B \ge PP$ so bubble factor is 1):
 
 **Memory-bound regime** ($B \ll B^*$, weight traffic dominates):
 $$
@@ -371,7 +377,7 @@ In **continuous batching** [VLLM], requests arrive and depart asynchronously. At
 
 ### Per-request average TPOT
 
-A request that requires $N_{\text{out}}$ decode steps experiences a different $B_{\text{eff},i}$ at each step $i$. Using $\text{TPOT}(B) = t_{\text{step,user}}(B)$ (§1.2, `decode.md §6.3.2`), the average TPOT over the full response is the mean step time:
+A request that requires $N_{\text{out}}$ decode steps experiences a different $B_{\text{eff},i}$ at each step $i$. Using $\text{TPOT}(B) = t_{\text{step,user}}(B)$ (§1.2, `decode.md §7.2`), the average TPOT over the full response is the mean step time:
 
 $$
 \overline{\text{TPOT}} = \frac{1}{N_{\text{out}}} \sum_{i=1}^{N_{\text{out}}} t_{\text{step,user}}(B_{\text{eff},i})
@@ -405,7 +411,7 @@ This is self-referential ($\overline{\text{TPOT}}$ depends on $\overline{B_{\tex
 
 ### The efficiency–load relationship
 
-With TPOT defined as the user-observed step time ($t_{\text{step,user}}$), **higher load improves throughput at constant TPOT** through Zone 1, then trades TPOT for throughput beyond $B^*$. The throughput axis saturates at a hard compute ceiling; the TPOT axis has no ceiling and grows linearly past $B^*$. The throughput–TPOT hyperbola $\text{Tput/GPU} \times \text{TPOT} = B / N_{\text{GPUs,per-replica}}$ is parameterized by $B$: in Zone 1 the ratio slides along increasing $B$ (more throughput, same TPOT); in Zone 3 it tracks the compute bound. This tradeoff is developed in full in §6.
+With TPOT defined as the user-observed step time ($t_{\text{step,user}}$), **higher load improves throughput at constant TPOT** through Zone 1, then trades TPOT for throughput beyond $B^*$. The throughput axis saturates at a hard compute ceiling; the TPOT axis has no ceiling and grows linearly past $B^*$. The throughput–latency identity $\text{Tput/GPU} \times \text{TPOT} = B / N_{\text{GPUs,per-replica}}$ (§6.3) is linear in $B$: in Zone 1, $B$ rises while $\text{TPOT}$ stays at the memory-bound floor (so $\text{Tput/GPU}$ rises proportionally); in Zone 3, $\text{Tput/GPU}$ pins at the compute ceiling while $\text{TPOT}$ grows with $B$. This tradeoff is developed in full in §6.
 
 ---
 
@@ -445,11 +451,13 @@ $TTFT \approx 100 + 20 = 120$ ms gives $N_{\text{out}}^{\star} = 120/20 + 1 = 7$
 
 ## 5.1 Throughput/GPU Derivation
 
-From `decode.md §6.3`, the global decode throughput across all DP replicas is:
+From `decode.md §7.2`, the global decode throughput across all DP replicas is:
 
 $$
-TTPS = DP \cdot TPS_{\text{single}} = DP \cdot \frac{1}{\max_j t_{\text{stage},j}}
+TTPS(B) = DP \cdot TPS_{\text{single}}(B) = DP \cdot \frac{B}{t_{\text{step,user}}(B)}
 $$
+
+where $t_{\text{step,user}}(B)$ is the full per-step decode time including SW composition, pipeline bubble, and LM head (§1.2 / `decode.md §7.2`). Each step emits $B$ tokens (one per active sequence), so the per-replica rate is $B / t_{\text{step,user}}$ tokens/s.
 
 The total GPU count in the cluster is:
 
@@ -461,12 +469,12 @@ Substituting into the Tput/GPU definition:
 
 $$
 \text{Tput/GPU}
-= \frac{TTPS}{N_{\text{GPUs}}}
-= \frac{DP \cdot TPS_{\text{single}}}{DP \cdot PP \cdot TP \cdot EP \cdot SP}
+= \frac{TTPS(B)}{N_{\text{GPUs}}}
+= \frac{DP \cdot TPS_{\text{single}}(B)}{DP \cdot PP \cdot TP \cdot EP \cdot SP}
 $$
 
 $$
-\text{Tput/GPU} = \frac{TPS_{\text{single}}}{PP \cdot TP \cdot EP \cdot SP}
+\text{Tput/GPU} = \frac{TPS_{\text{single}}(B)}{PP \cdot TP \cdot EP \cdot SP} = \frac{B}{t_{\text{step,user}}(B) \cdot PP \cdot TP \cdot EP \cdot SP}
 $$
 
 ### Insight: DP is the only "free" dimension
@@ -482,25 +490,27 @@ Pipeline ($PP$), Tensor ($TP$), Expert ($EP$), and Sequence ($SP$) parallelism a
 
 ## 5.2 Interactivity (per-request streaming rate)
 
-From §1.4, Interactivity = $1/\text{TPOT}$. Expanding with the static batching result from §3.1 ($\text{TPOT}(B) = t_{\text{step,user}}(B)/B$):
+From §1.4, Interactivity = $1/\text{TPOT}$. From §3.1, $\text{TPOT}(B) = t_{\text{step,user}}(B)$ (no division by $B$ — every step emits one token per user, so a single user waits one full step for their next token regardless of how many other users share the batch):
 
 $$
-\text{Interactivity} = \frac{1}{\text{TPOT}_{\text{static}}(B)} = \frac{B}{t_{\text{step,user}}(B)}
+\text{Interactivity}(B) = \frac{1}{t_{\text{step,user}}(B)}
 $$
 
-**At the memory-bound operating point** ($B \ll B^*$, $t_{\text{step,user}} \approx T_{\theta}/BW_{\text{mem}}$):
+The factor of $B$ does **not** appear in the numerator: each decode step produces $B$ tokens — one for each of the $B$ active users — so $1/t_{\text{step,user}}(B)$ is already the per-user streaming rate. The aggregate per-replica rate $B / t_{\text{step,user}}(B)$ is $TPS_{\text{single}}$ (§5.1), a throughput quantity, not interactivity.
+
+**At the memory-bound operating point** ($B \ll B^*$, $t_{\text{step,user}} \approx T_{\theta,\text{device}}/BW_{\text{mem}}$):
 $$
-\text{Interactivity} \approx \frac{B \times BW_{\text{mem}}}{T_{\theta,\text{device}}} \quad\propto\quad B
+\text{Interactivity}(B) \approx \frac{BW_{\text{mem}}}{T_{\theta,\text{device}}} \qquad (\text{flat in } B)
 $$
 
-Interactivity **grows** with $B$ in the memory-bound regime: amortizing the fixed weight-load cost over more sequences benefits each sequence's streaming rate. Both Tput/GPU and Interactivity improve together in this zone.
+Interactivity is **constant in $B$** in the memory-bound regime: weights stream once per step regardless of $B$, so per-user latency stays pinned at the weight-streaming floor. Adding more sequences grows Tput/GPU at no cost to per-user latency, but each user's streaming rate does **not** improve.
 
-**At the compute-bound operating point** ($B \gg B^*$, $t_{\text{step,user}} \approx B \times F/R_{\text{GPU}}$):
+**At the compute-bound operating point** ($B \gg B^*$, $t_{\text{step,user}} \approx B \times F_{\text{token,device}} / R_{\text{GPU}}$):
 $$
-\text{Interactivity} \approx \frac{R_{\text{GPU}}}{F_{\text{token,device}}} \qquad (\text{constant in } B)
+\text{Interactivity}(B) \approx \frac{R_{\text{GPU}}}{B \times F_{\text{token,device}}} \quad\propto\quad \frac{1}{B}
 $$
 
-Interactivity **plateaus** in the compute-bound regime: the step time grows proportionally with $B$, and dividing the $B$ tokens across that longer step leaves the per-sequence rate unchanged. This is the **maximum interactivity** achievable on the given hardware for this model, set entirely by the compute rate and per-token FLOPs.
+Interactivity **degrades as $1/B$** in the compute-bound regime: each added sequence extends the step time, slowing every user proportionally. Tput/GPU saturates at the compute ceiling while per-user latency continues to worsen with $B$.
 
 **Human reading threshold.** For streaming LLM output to feel "live" to a human reader, interactivity above approximately 5–15 tokens/s (TPOT below 67–200 ms) is required. This maps to a specific constraint on $t_{\text{step,user}}$ — a maximum allowable step time — which, through the roofline model, constrains the maximum batch size $B$ that can be served while meeting the SLA.
 
@@ -510,9 +520,9 @@ Interactivity **plateaus** in the compute-bound regime: the step time grows prop
 
 # 6. Throughput–Latency Pareto Frontier
 
-The Pareto frontier is the set of (Tput/GPU, Interactivity) pairs that are achievable without waste: no point on the frontier can improve both metrics simultaneously. This section assembles the frontier from the roofline model, identifies the three operating zones, derives the roofline efficiency ceiling, and maps the result onto the standard throughput–interactivity axes used by production LLM inference benchmarks.
+The Pareto frontier is the set of (Tput/GPU, Interactivity) pairs that are achievable without waste: no point on the frontier can improve both metrics simultaneously. This section assembles the frontier from the roofline model, identifies the three operating zones, derives the throughput–latency identity, and maps the result onto the standard throughput–interactivity axes used by production LLM inference benchmarks.
 
-> **Terminology note:** In this model, Tput/GPU and Interactivity both improve monotonically as $B$ increases through the memory-bound regime, because their product is the constant $1/N_{\text{GPUs,per-replica}}$ (§6.3). The curve therefore traces one arm of a hyperbola rather than exhibiting a classical multi-objective Pareto tradeoff. We use "Pareto frontier" in the ML systems sense — the set of efficient operating points.
+> **Terminology note:** In this model, Tput/GPU rises with $B$ throughout the memory-bound regime while per-user Interactivity stays pinned at the weight-streaming floor; in the compute-bound regime, Tput/GPU saturates while Interactivity falls as $1/B$. The frontier traced by sweeping $B$ is therefore an L-shape (flat-top, vertical-right-edge) rather than a hyperbola — the classical multi-objective tradeoff appears only past $B^*$. We use "Pareto frontier" in the ML systems sense — the set of efficient operating points.
 
 ---
 
@@ -520,9 +530,9 @@ The Pareto frontier is the set of (Tput/GPU, Interactivity) pairs that are achie
 
 Three principal levers shift the operating point along the Pareto frontier, or move the frontier itself:
 
-1. **Batch size $B$ (or $B_{\text{eff}}$ under continuous batching).** Moving along the frontier. Increasing $B$ increases Tput/GPU (more tokens processed per step) but also increases TPOT (each step takes longer), reducing Interactivity. Decreasing $B$ improves Interactivity at the cost of lower Tput/GPU.
+1. **Batch size $B$ (or $B_{\text{eff}}$ under continuous batching).** Moving along the frontier. Increasing $B$ in the memory-bound regime ($B < B^*$) raises Tput/GPU at no cost to Interactivity (which sits at the weight-streaming floor). Increasing $B$ past $B^*$ saturates Tput/GPU and starts degrading Interactivity as $1/B$. Decreasing $B$ in the compute-bound regime improves Interactivity at the cost of lower Tput/GPU; decreasing $B$ within Zone 1 lowers Tput/GPU without buying any per-user latency improvement.
 
-2. **Parallelism configuration (TP, PP, EP, SP; fixed DP).** Shifting the frontier. TP/PP/EP/SP change $t_{\text{step,user}}(B)$ by altering per-device FLOPs, traffic, and communication overhead. They also change $B^*$ (the crossover batch size from `decode.md §6.4.1`). Better parallelism configurations can push the frontier outward (higher Tput/GPU for the same Interactivity).
+2. **Parallelism configuration (TP, PP, EP, SP; fixed DP).** Shifting the frontier. TP/PP/EP/SP change $t_{\text{step,user}}(B)$ by altering per-device FLOPs, traffic, and communication overhead. They also change $B^*$ (the crossover batch size from `decode.md §4`). Better parallelism configurations can push the frontier outward (higher Tput/GPU for the same Interactivity).
 
 3. **Context length $S$.** Shifting the frontier inward. Longer decode contexts $S$ increase KV cache traffic $T_{\text{KV,device}}$, which lowers $B^*$ (the system becomes compute-bound at smaller batches) and increases $t_{\text{step,user}}$ for all $B$, shrinking both Tput/GPU and Interactivity simultaneously.
 
@@ -530,7 +540,7 @@ Three principal levers shift the operating point along the Pareto frontier, or m
 
 ## 6.2 Three Zones of the Pareto Frontier
 
-The Pareto curve sweeps $B$ from $1$ to $\infty$. Its shape is inherited directly from `decode.md §6.4.3`; we express it here in the (Tput/GPU, Interactivity) coordinate system used by throughput–latency benchmark plots.
+The Pareto curve sweeps $B$ from $1$ to $\infty$. We derive its shape here in the (Tput/GPU, Interactivity) coordinate system used by throughput–latency benchmark plots, building on the per-step roofline from `decode.md §4`.
 
 Define Tput/GPU and Interactivity as explicit functions of $B$:
 
@@ -542,11 +552,11 @@ $$
 \text{Interactivity}(B) = \frac{1}{t_{\text{step,user}}(B)}
 $$
 
-where $N_{\text{GPUs,per-replica}} = PP \cdot TP \cdot EP \cdot SP$ is the number of GPUs per DP replica.
+where $N_{\text{GPUs,per-replica}} = PP \cdot TP \cdot EP \cdot SP$ is the number of GPUs per DP replica. (Tput/GPU has a $B$ in the numerator because it counts all $B$ tokens emitted per step across the replica; Interactivity does not, because each user receives just one of those tokens per step — see §5.2.)
 
 ### Zone 1 — Memory-bound ($B < B^*$)
 
-Weight traffic dominates. From `decode.md §6.4.3`:
+Weight traffic dominates the per-step memory term:
 
 $$
 t_{\text{step,user}}(B) \approx \frac{T_{\theta,\text{device}}}{BW_{\text{mem}}}
@@ -560,18 +570,18 @@ $$
 $$
 
 $$
-\text{Interactivity}(B) = \frac{B}{t_{\text{step,user}}(B)} \approx \frac{B \times BW_{\text{mem}}}{T_{\theta,\text{device}}} \quad\propto\quad B
+\text{Interactivity}(B) = \frac{1}{t_{\text{step,user}}(B)} \approx \frac{BW_{\text{mem}}}{T_{\theta,\text{device}}} \qquad (\text{flat in } B)
 $$
 
-**Zone 1 behavior:** Both Tput/GPU and Interactivity grow linearly with $B$. This is the ideal operating regime — increasing batch size improves *both* system efficiency *and* per-user streaming speed simultaneously. The system is underutilizing compute; adding more sequences amortizes the fixed weight-load cost over more outputs, benefiting every axis.
+**Zone 1 behavior:** Tput/GPU grows linearly with $B$ while Interactivity stays at the weight-streaming floor. This is the **free-lunch zone for throughput**: weight loads amortize over more sequences, so aggregate efficiency improves at no cost to per-user latency. Per-user streaming speed does *not* improve here — every user already waits one full weight-streaming step per token, and adding sequences cannot make that wait shorter.
 
 ### Zone 2 — Crossover ($B \approx B^*$)
 
-The system operates near the ridge point. Both throughput and TPOT transition. This is the "knee" of the Pareto curve — the operating point with the best throughput-per-unit-TPOT ratio, and the natural SLA operating point for production deployments balancing GPU utilization with latency SLAs.
+The system operates near the ridge point. Tput/GPU is approaching its compute ceiling; Interactivity is leaving the memory-bound floor. This is the **knee** of the curve — the highest throughput attainable before per-user latency starts degrading, and the natural SLA operating point for production deployments balancing GPU utilization with latency SLAs.
 
 ### Zone 3 — Compute-bound ($B > B^*$)
 
-KV cache traffic (or equivalently, compute) dominates. From `decode.md §6.4.3`:
+KV cache traffic (or equivalently, compute) dominates the per-step roofline:
 
 $$
 t_{\text{step,user}}(B) \approx \frac{B \times F_{\text{token,device}}}{R_{\text{GPU}}}
@@ -581,46 +591,49 @@ $$
 The step time grows linearly with $B$. Therefore:
 
 $$
-\text{Tput/GPU}(B) \approx \frac{R_{\text{GPU}}}{F_{\text{token,device}} \cdot N_{\text{GPUs,per-replica}}} \quad (\text{constant in } B)
+\text{Tput/GPU}(B) \approx \frac{R_{\text{GPU}}}{F_{\text{token,device}} \cdot N_{\text{GPUs,per-replica}}} \qquad (\text{constant in } B)
 $$
 
 $$
-\text{Interactivity}(B) = \frac{B}{t_{\text{step,user}}(B)} \approx \frac{R_{\text{GPU}}}{F_{\text{token,device}}} \quad (\text{constant in } B)
+\text{Interactivity}(B) = \frac{1}{t_{\text{step,user}}(B)} \approx \frac{R_{\text{GPU}}}{B \times F_{\text{token,device}}} \quad\propto\quad \frac{1}{B}
 $$
 
-**Zone 3 behavior:** Throughput plateaus at the compute ceiling; Interactivity also plateaus. Both metrics saturate — adding more sequences changes neither per-user streaming speed nor per-GPU token production rate. The system is compute-saturated; the Pareto frontier "flattens out" and further increases in $B$ yield no benefit on either axis.
+**Zone 3 behavior:** Throughput plateaus at the compute ceiling, but Interactivity now **degrades as $1/B$**: every added sequence extends the step time and slows every user proportionally. The Pareto curve turns down — past $B^*$, adding more $B$ buys nothing on the throughput axis and actively hurts per-user latency.
 
 ### Summary table
 
 | Zone | Condition | $\text{Tput/GPU}(B)$ | $\text{Interactivity}(B)$ |
 |------|-----------|----------------------|---------------------------|
-| 1 — Memory-bound | $B \ll B^*$ | $\propto B$ (growing) | $\propto B$ (growing) |
-| 2 — Crossover | $B \approx B^*$ | near maximum | near maximum |
-| 3 — Compute-bound | $B \gg B^*$ | $\approx R_{\text{GPU}} / (F \cdot N)$ (flat) | $\approx R_{\text{GPU}} / F$ (flat) |
+| 1 — Memory-bound | $B \ll B^*$ | $\propto B$ (growing) | $\approx BW_{\text{mem}} / T_{\theta,\text{device}}$ (flat) |
+| 2 — Crossover | $B \approx B^*$ | near compute ceiling | leaving memory-bound floor |
+| 3 — Compute-bound | $B \gg B^*$ | $\approx R_{\text{GPU}} / (F \cdot N)$ (flat) | $\approx R_{\text{GPU}} / (B \cdot F)$ ($\propto 1/B$, degrading) |
 
 ---
 
-## 6.3 Roofline Ceiling on Pareto Efficiency
+## 6.3 Throughput–Latency Identity
 
-A fundamental property of the Pareto frontier emerges when we compute the product $\text{Tput/GPU} \times \text{TPOT} = \text{Tput/GPU} / \text{Interactivity}$ at a given operating point. Using $\text{Tput/GPU}(B) = B / (t_{\text{step,user}}(B) \cdot N_{\text{GPUs,per-replica}})$ and $\text{TPOT}(B) = t_{\text{step,user}}(B) / B$:
+A useful identity emerges when we compute the product $\text{Tput/GPU} \times \text{TPOT}$ at a given operating point. Using $\text{Tput/GPU}(B) = B / (t_{\text{step,user}}(B) \cdot N_{\text{GPUs,per-replica}})$ and $\text{TPOT}(B) = t_{\text{step,user}}(B)$ (§1.2 / §3.1, no division by $B$):
 
 $$
 \text{Tput/GPU}(B) \times \text{TPOT}(B)
-= \frac{B}{t_{\text{step,user}}(B) \cdot N_{\text{GPUs,per-replica}}} \times \frac{t_{\text{step,user}}(B)}{B}
-= \frac{1}{N_{\text{GPUs,per-replica}}}
+= \frac{B}{t_{\text{step,user}}(B) \cdot N_{\text{GPUs,per-replica}}} \times t_{\text{step,user}}(B)
+= \frac{B}{N_{\text{GPUs,per-replica}}}
 $$
 
-This identity holds for **any $B$** and any regime — the $B$ and $t_{\text{step,user}}$ terms cancel exactly:
+The $t_{\text{step,user}}$ terms cancel, leaving:
 
 $$
-\text{Tput/GPU} \times \text{TPOT} = \frac{1}{N_{\text{GPUs,per-replica}}}
+\text{Tput/GPU} \times \text{TPOT} = \frac{B}{N_{\text{GPUs,per-replica}}}
 $$
 
-This is the **roofline ceiling** on Pareto efficiency: it is a constant determined entirely by the number of GPUs per DP replica ($N_{\text{GPUs,per-replica}} = PP \cdot TP \cdot EP \cdot SP$). It does not depend on batch size, hardware speed, model size, or serving policy.
+Unlike a true ridge-style ceiling, this product is **not constant** — it scales linearly with $B$. The intuition: at a fixed parallelism configuration, every additional sequence adds one token per step to the per-replica output (raising $\text{Tput/GPU}$) while also extending the per-step time in Zone 3 (raising $\text{TPOT}$); both effects compound into the linear-in-$B$ product.
 
-**Implication.** No serving strategy can change the product $\text{Tput/GPU} \times \text{TPOT}$ — it is fixed by the parallelism configuration. The only way to improve this product is to use fewer GPUs per replica (tighter model sharding). This gives a clean hardware-model co-design objective: **minimize $N_{\text{GPUs,per-replica}}$** subject to fitting the model in HBM.
+**What this identity does and does not say.**
 
-Equivalently, for a fixed hardware configuration: higher Tput/GPU always implies lower Interactivity (higher TPOT) in exact proportion, and vice versa. The serving policy (batch size, scheduling algorithm) only determines where on the hyperbola $\text{Tput/GPU} = 1 / (N_{\text{GPUs,per-replica}} \cdot \text{TPOT})$ the system operates.
+- *Does say* — given any two of $\{\text{Tput/GPU},\, \text{TPOT},\, B\}$ and the parallelism configuration $N_{\text{GPUs,per-replica}}$, the third is fixed. This is a powerful operational consistency check on benchmark numbers.
+- *Does not say* — that the curve is a hyperbola, or that $B$ alone trades $\text{Tput/GPU}$ for $\text{Interactivity}$. The actual Pareto curve has the L-shape described in §6.2: a **flat top** (Zone 1, Tput/GPU rises while Interactivity sits at the memory-bound floor) and a **vertical right edge** (Zone 3, Tput/GPU saturates while Interactivity falls as $1/B$).
+
+**Hardware-model co-design implication.** Reducing $N_{\text{GPUs,per-replica}}$ — i.e. fitting the model with less inner sharding (lower $PP \cdot TP \cdot EP \cdot SP$) — lifts $\text{Tput/GPU}$ at every $\text{TPOT}$ along the Pareto curve. The objective stays the same as before: **minimize $N_{\text{GPUs,per-replica}}$ subject to fitting the model in HBM**.
 
 ---
 
@@ -633,21 +646,21 @@ Production LLM inference benchmarks typically organize performance on a two-axis
 
 A system at a single operating point (fixed hardware, model, parallelism, and batch size) appears as one point on this plot. As batch size $B$ varies:
 
-- **Zone 1** (increasing $B$ from 1 toward $B^*$): both Tput/GPU and Interactivity grow together — the operating point moves toward the **upper-right**. This is the free-lunch zone: weight traffic is amortized across more sequences, benefiting both axes simultaneously.
-- **Zone 2** (near $B^*$): both metrics approach their combined maximum — the **knee** of the curve.
-- **Zone 3** (beyond $B^*$): both Tput/GPU and Interactivity plateau — the operating point stops moving. Compute is saturated; further increases in $B$ neither help nor hurt either axis.
+- **Zone 1** (increasing $B$ from 1 toward $B^*$): Tput/GPU grows linearly while Interactivity stays flat at the memory-bound floor — the operating point moves **rightward** along a horizontal line. This is the free-lunch zone for *throughput*: weight traffic amortizes across more sequences, raising aggregate efficiency at no cost to per-user latency.
+- **Zone 2** (near $B^*$): Tput/GPU approaches its compute ceiling; Interactivity begins to leave the memory-bound floor — the **knee** of the curve.
+- **Zone 3** (beyond $B^*$): Tput/GPU plateaus while Interactivity drops as $1/B$ — the operating point moves **straight down** along a vertical line. Adding $B$ no longer helps throughput and actively hurts per-user latency.
 
-The Pareto frontier traced by sweeping $B$ from 1 to $\infty$ has the characteristic shape:
+The Pareto frontier traced by sweeping $B$ from 1 to $\infty$ therefore has an **L-shape** (rotated):
 
-1. **Zone 1 segment**: diagonal — both axes increase together (moving upper-right).
-2. **Zone 2 knee**: the curve flattens as both axes approach their ceiling.
-3. **Zone 3 plateau**: the curve saturates — Tput/GPU and Interactivity are both approximately constant.
+1. **Zone 1 segment**: horizontal — Tput/GPU rises rightward, Interactivity sits at the memory-bound floor.
+2. **Zone 2 knee**: the corner of the L, where Tput/GPU saturates and Interactivity starts falling.
+3. **Zone 3 segment**: vertical — Tput/GPU stays at its ceiling, Interactivity falls as $1/B$.
 
-**The ideal operating point** is at or near $B^*$: the system is at the knee of the curve, maximizing both axes simultaneously.
+**The ideal operating point** is at or near $B^*$: the corner of the L, where Tput/GPU has just reached its ceiling and Interactivity has not yet started degrading.
 
-Different hardware configurations (H100 vs. A100), model sizes (7B vs. 70B vs. 405B), and parallelism choices shift the frontier outward or inward. A 3D-stacked accelerator with higher HBM bandwidth [ACCELSTACK] increases $BW_{\text{mem}}$, which raises the Zone 1 slope and pushes $B^*$ higher — expanding the diagonal Zone 1 segment and increasing the Zone 3 plateau level.
+Different hardware configurations (H100 vs. A100), model sizes (7B vs. 70B vs. 405B), and parallelism choices shift the L outward or inward. A 3D-stacked accelerator with higher HBM bandwidth [ACCELSTACK] increases $BW_{\text{mem}}$, which raises the Zone 1 floor (per-user interactivity floor) and pushes $B^*$ higher — extending the horizontal Zone 1 segment to the right before Tput/GPU saturates.
 
-The roofline ceiling from §6.3 — $\text{Tput/GPU} \times \text{TPOT} = 1 / N_{\text{GPUs,per-replica}}$ — constrains every operating point: all systems lie on the hyperbola $\text{Tput/GPU} = 1 / (N_{\text{GPUs,per-replica}} \cdot \text{TPOT})$ defined by their parallelism configuration, regardless of batch size or serving policy. Systems with smaller $N_{\text{GPUs,per-replica}}$ (more aggressive model sharding) operate on a higher hyperbola — a better hardware-efficiency frontier.
+The §6.3 identity — $\text{Tput/GPU} \times \text{TPOT} = B / N_{\text{GPUs,per-replica}}$ — constrains every operating point in $B$: given any two of $\{\text{Tput/GPU},\, \text{TPOT},\, B\}$, the third is determined by the parallelism configuration. Systems with smaller $N_{\text{GPUs,per-replica}}$ (more aggressive model sharding) achieve higher Tput/GPU at every $(\text{TPOT}, B)$ point — a better hardware-efficiency Pareto curve.
 
 ---
 
@@ -680,16 +693,22 @@ The following existing symbols from `notation.md` are used extensively; they are
 | Symbol | Defined in | Meaning |
 |--------|-----------|---------|
 | $TTFT$ | `notation.md §11` | Time To First Token |
-| $t_{\text{prefill}}$ | `notation.md §11` | Full prefill latency (roofline + comm + pipeline warmup) |
-| $t_{\text{prefill,local}}$ | `notation.md §11` | Per-stage prefill local roofline time |
+| $t_{\text{prefill}}$ | `notation.md §11` | Full prefill latency (roofline + comm + pipeline warmup + LM head) |
+| $t_{\text{prefill,local}}$ | `notation.md §11` | Per-stage prefill local roofline time (incl. SW composition) |
 | $t_{\text{prefill,comm}}$ | `notation.md §11` | Prefill communication time |
-| $t_{\text{step,user}}$ | `notation.md §9` | Overlap-aware per-step decode time |
+| $t_{\text{LM,prefill,hw}}$ | `prefill.md §3.4` | LM head one-shot roofline on stage $PP{-}1$ during prefill |
+| $t_{\text{step,user}}$ | `notation.md §9` | User-observed per-step decode time (HW + SW + bubble + LM head) |
+| $t_{\text{stage,hw}}$ | `decode.md §6.2` | Per-stage HW step time (compute + comm + overlap) |
+| $t_{\text{stage,sw}}$ | `decode.md §7.1` | Per-stage CPU/host kernel-launch dispatch budget |
+| $t_{\text{LM,hw}}$ | `decode.md §6.2` | LM head one-shot roofline on stage $PP{-}1$ during decode |
+| $\gamma_{\text{pp}}$ | `decode.md §7.2` | Pipeline bubble factor $\max(1, PP/B)$ |
+| $\rho_{\text{SW}}$ | `decode.md §7.1` | CPU/GPU dispatch overlap factor |
 | $TPS_{\text{single}}$ | `notation.md §9` | Single-replica decode throughput (tokens/s) |
 | $TTPS$ | `notation.md §9` | Global decode throughput (tokens/s) |
 | $t_{\text{sched}}$ | `notation.md §13` | Request scheduling / batch assembly latency |
 | $t_{\text{KV-transfer}}$ | `notation.md §13` | Disaggregated KV cache transfer latency |
 | $B_{\text{eff}}$ | `notation.md §4` | Effective batch size under continuous batching |
-| $B^*$ | `decode.md §6.4.1` | Crossover batch size (memory-bound → compute-bound) |
+| $B^*$ | `decode.md §4` | Crossover batch size (memory-bound → compute-bound) |
 | $\rho$ | `notation.md §9` | Compute–communication overlap factor |
 
 ---

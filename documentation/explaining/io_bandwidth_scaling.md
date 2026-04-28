@@ -57,7 +57,7 @@ This document derives the closed-form sensitivities — equivalently, log-log el
 
 The analytical decode model is developed in `documentation/modeling/decode.md`. We summarize the minimal set of identities used here.
 
-**Per-stage step time** (`decode.md §6.3.1`):
+**Per-stage step time** (`decode.md §6.2`):
 $$
 t_{\text{stage}}(B) = t_{\text{local}}(B) + \max\!\bigl(0,\; t_{\text{comm}}(B) - \rho \cdot t_{\text{local}}(B)\bigr)
 $$
@@ -78,7 +78,7 @@ $$
 
 For decode, message sizes $m(B)$ scale linearly with $B$ (see `decode.md §5`: $m_{TP}, m_{EP}, m_{PP}, m_{SP}$ all carry a $B$ factor).
 
-**User-observed TPOT** (bubble-corrected; `decode.md §6.3.2`):
+**User-observed TPOT** (bubble-corrected; `decode.md §7.2`):
 $$
 \mathrm{TPOT}(B) = t_{\text{stage}}(B) \cdot \max\!\left(1, \frac{PP}{B}\right)
 $$

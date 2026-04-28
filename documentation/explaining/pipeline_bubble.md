@@ -54,7 +54,7 @@ $$
 
 Each stage hands its output activations to the next stage over a point-to-point link (the PP hop; see [decode.md §5.1](../modeling/decode.md#51-pipeline-parallel-pp-hop)).
 
-The cost of one stage processing one microbatch is the **per-stage step time** $t_{\text{stage}}$, defined in [decode.md §6.3.1](../modeling/decode.md#631-per-stage-step-time). This is the overlap-aware sum of local compute/memory time and any unhidden communication inside that stage.
+The cost of one stage processing one microbatch is the **per-stage step time** $t_{\text{stage}}$, defined in [decode.md §6.2](../modeling/decode.md#62-local-and-networking-per-token-latency). This is the overlap-aware sum of local compute/memory time and any unhidden communication inside that stage.
 
 Because each stage only holds $L/PP$ layers, $t_{\text{stage}}$ scales as $1/PP$ (fewer layers per stage → less weight traffic and compute per stage). This is where the "PP makes things faster" intuition comes from.
 
@@ -206,7 +206,7 @@ where $\gamma_{\text{pp}} \equiv \max(1, PP/B)$. The two regimes are:
 
 - **$B < PP$:** factor = $PP/B$, $t_{\text{step,user}} = (PP/B) \cdot t_{\text{stage}}$. At $B=1$ this is $PP \cdot t_{\text{stage}}$ — the full pipeline depth per emitted token.
 
-From a user's perspective, TPOT = $t_{\text{step,user}}$ (one token per decode step, per user — see [decode.md §6.3.2](../modeling/decode.md#632-pipeline-bubble-correction-user-observed-step-time)).
+From a user's perspective, TPOT = $t_{\text{step,user}}$ (one token per decode step, per user — see [decode.md §7.2](../modeling/decode.md#72-user-observed-step-time-and-throughput)).
 
 ## 5.2 Why It Is Only First-Order
 
@@ -376,7 +376,7 @@ NVIDIA Technical Blog.
 
 ## Cross-References
 
-- [../modeling/decode.md §6.3](../modeling/decode.md#63-pipeline-bubble-tps-and-ttps) — Formal equations for $t_{\text{stage}}$, bubble factor, $t_{\text{step,user}}$.
+- [../modeling/decode.md §7](../modeling/decode.md#7-pipeline-bubble-kernel-launch-overhead-and-throughput) — Formal equations for $t_{\text{stage}}$, bubble factor, $t_{\text{step,user}}$.
 - [../modeling/e2e.md §1.2](../modeling/e2e.md#12-time-per-output-token-tpot) — TPOT definition from user perspective.
 - [../modeling/notation.md §9](../modeling/notation.md#9-decode-timing-and-throughput) — Symbol reference.
 - [batched_decode.md](batched_decode.md) — Companion: why batching ($B \ge PP$) is the primary escape from the bubble regime.

@@ -89,11 +89,12 @@ def _old_path(op: str, tiers, M: float, G: int, algorithm: str) -> float:
         if algorithm == "tree":
             return tree_all_reduce(M, G, alpha_s, bw_Bps)
     if op == "moe_a2a":
-        # Dispatcher applies the 2× Dispatch+Combine wrap uniformly;
-        # mirror it here. tree A2A is no longer supported (upstream removed
-        # `tree_moe_all_to_all` per scratch/collectives_cost_CHANGES.md §3).
+        # Dispatcher returns single-direction A2A cost; the per-MoE-layer
+        # accumulator scales by n_EP=2 (Dispatch + Combine). tree A2A is no
+        # longer supported (upstream removed `tree_moe_all_to_all` per
+        # scratch/collectives_cost_CHANGES.md §3).
         if algorithm == "ring":
-            return 2 * pairwise_a2a(M, G, alpha_s, bw_Bps)
+            return pairwise_a2a(M, G, alpha_s, bw_Bps)
     if op == "all_reduce" and algorithm == "tree_pipelined":
         return tree_all_reduce(M, G, alpha_s, bw_Bps, pipelined=True)
     raise ValueError(f"bad op/algorithm: {op!r}/{algorithm!r}")
@@ -164,7 +165,7 @@ def _hier_a2a_ref(M: float, G: int, crossed) -> float:
         n_outer * (alpha_outer_s + chunk / bw_outer_Bps)
         if (n_outer > 0 and bw_outer_Bps > 0) else 0
     )
-    return 2 * (t_intra + t_outer)
+    return t_intra + t_outer  # single-direction; n_EP=2 wraps at the per-MoE-layer accumulator
 
 
 # ────────────────────────────────────────────────────────────
@@ -351,9 +352,10 @@ def test_T6_inc_dispatch():
     _check("AG G=64 inc on", got, want)
 
     # (d) MoE A2A on an INC tier must stay on ring (no structural INC win).
-    # Dispatcher applies 2× Dispatch+Combine wrap on the underlying primitive.
+    # Dispatcher returns single-direction A2A; per-MoE-layer accumulator
+    # scales by n_EP=2 (Dispatch + Combine).
     got = cost_collective([inc_tier], "moe_a2a", M, 64, algorithm="ring")
-    want = 2 * pairwise_a2a(M, 64, alpha_s_endpoint, bw_Bps)
+    want = pairwise_a2a(M, 64, alpha_s_endpoint, bw_Bps)
     _check("A2A G=64 inc tier → ring", got, want)
 
     # (e) p2p on an INC tier stays on single-hop.
@@ -410,7 +412,7 @@ def test_T6_inc_dispatch():
         inc="hw_a2a", inc_alpha_us=alpha_switch,
     )
     got = cost_collective([hw_a2a_tier], "moe_a2a", M, 64, algorithm="ring")
-    want = 2 * inc_a2a(M, 64, alpha_s_switch, bw_Bps)
+    want = inc_a2a(M, 64, alpha_s_switch, bw_Bps)
     _check("A2A G=64 hw_a2a tier → inc_a2a", got, want)
 
     # (k) sharp_class tier with A2A — must NOT route through inc_a2a; falls through
@@ -420,7 +422,7 @@ def test_T6_inc_dispatch():
         inc="sharp_class", inc_alpha_us=alpha_switch,
     )
     got = cost_collective([sharp_tier], "moe_a2a", M, 64, algorithm="ring")
-    want = 2 * pairwise_a2a(M, 64, alpha_s_endpoint, bw_Bps)
+    want = pairwise_a2a(M, 64, alpha_s_endpoint, bw_Bps)
     _check("A2A G=64 sharp_class tier → pairwise (no INC for A2A)", got, want)
 
     # (l) HW A2A tier with AR/AG — also routes through SHARP-class INC paths
@@ -439,7 +441,7 @@ def test_T6_inc_dispatch():
 
     # (n) inc_enabled=False forces software fallback even on hw_a2a tier.
     got = cost_collective([hw_a2a_tier], "moe_a2a", M, 64, inc_enabled=False, algorithm="ring")
-    want = 2 * pairwise_a2a(M, 64, alpha_s_endpoint, bw_Bps)
+    want = pairwise_a2a(M, 64, alpha_s_endpoint, bw_Bps)
     _check("A2A hw_a2a tier inc_enabled=False → pairwise", got, want)
 
 
@@ -789,11 +791,11 @@ def test_T9_hierarchical_crossbar():
 
     # ─── (g) MoE A2A on multi-tier uses per-destination-class accounting (§5.3).
     # See T10 for the cell-level formula check; here just confirm the dispatcher
-    # routes to the hierarchical-A2A path (cost ≠ flat pairwise wrapped 2×).
+    # routes to the hierarchical-A2A path (cost ≠ flat pairwise).
     got = cost_collective(chain, "moe_a2a", M, G, algorithm="ring")
     alpha_total_s = alpha_inner_s + alpha_outer_s
     bw_min_Bps = min(bw_inner_Bps, bw_outer_Bps)
-    flat_a2a = 2 * pairwise_a2a(M, G, alpha_total_s, bw_min_Bps)
+    flat_a2a = pairwise_a2a(M, G, alpha_total_s, bw_min_Bps)
     if got == flat_a2a:
         _failures.append(
             f"T9g: multi-tier A2A should use hierarchical path, got flat ({got!r})"
@@ -1023,7 +1025,7 @@ def test_T11_per_phase_tuner():
         "schema": "llm_perf.tuner",
         "S_decode": 2048,
         "n_TP_collectives": 2,
-        "n_EP_collectives": 1,
+        "n_EP_collectives": 2,
         "n_SP_collectives": 1,
         "overlap_factor": 0.0,
     }
@@ -1094,7 +1096,7 @@ def test_T10_hierarchical_a2a():
     chunk = M / G
     n_intra = G_inner - 1
     n_outer = G - G_inner
-    expected = 2 * (
+    expected = (
         n_intra * (alpha_inner_s + chunk / bw_inner_Bps)
         + n_outer * (alpha_outer_s + chunk / bw_outer_Bps)
     )
@@ -1102,14 +1104,15 @@ def test_T10_hierarchical_a2a():
     _check("hier-A2A 2-tier per-class", got, expected)
 
     # ─── (b) When G ≤ G_inner (stays within pod), n_outer=0; should match
-    # single-tier flat pairwise (with the dispatcher's 2× MoE wrap).
-    intra_only = 2 * pairwise_a2a(M, 64, alpha_inner_s, bw_inner_Bps)
+    # single-tier flat pairwise (single-direction; per-MoE-layer accumulator
+    # multiplies by n_EP=2).
+    intra_only = pairwise_a2a(M, 64, alpha_inner_s, bw_inner_Bps)
     got = cost_collective([inner], "moe_a2a", M, 64, algorithm="ring")
     _check("intra-pod A2A G=64 stays flat (single-tier)", got, intra_only)
 
-    # ─── (c) α-side closed form (M=0): 2·[(G_inner−1)·α_inner + (G−G_inner)·α_outer].
+    # ─── (c) α-side closed form (M=0): (G_inner−1)·α_inner + (G−G_inner)·α_outer.
     got_alpha = cost_collective(chain, "moe_a2a", 0.0, G, algorithm="ring")
-    expected_alpha = 2 * (n_intra * alpha_inner_s + n_outer * alpha_outer_s)
+    expected_alpha = n_intra * alpha_inner_s + n_outer * alpha_outer_s
     if not math.isclose(got_alpha, expected_alpha, rel_tol=1e-12):
         _failures.append(
             f"T10c α closed form: got {got_alpha:.6e}, expected {expected_alpha:.6e}"
@@ -1125,14 +1128,14 @@ def test_T10_hierarchical_a2a():
         CrossbarTier(name="uo", ports=8, bw_per_port_GBps=900.0, alpha_us=0.0),
     ]
     got_beta = cost_collective(uniform, "moe_a2a", M, G, algorithm="ring")
-    # 2 · (G-1) · (M/G) / BW
-    expected_beta = 2 * (G - 1) * (M / G) / 900e9
+    # (G-1) · (M/G) / BW   (single-direction; n_EP=2 wraps at the accumulator)
+    expected_beta = (G - 1) * (M / G) / 900e9
     if not math.isclose(got_beta, expected_beta, rel_tol=1e-12):
         _failures.append(
             f"T10d β-uniform: got {got_beta:.6e}, expected {expected_beta:.6e}"
         )
     else:
-        print("  PASS  hier-A2A β at uniform BW reduces to flat 2(G-1)/G·M/BW")
+        print("  PASS  hier-A2A β at uniform BW reduces to flat (G-1)/G·M/BW")
 
     # ─── (e) enumerate_options surfaces hierarchical A2A.
     opts = enumerate_options(chain, "moe_a2a", M, G)
@@ -1149,7 +1152,7 @@ def test_T10_hierarchical_a2a():
     hw_out = CrossbarTier(name="hw_out", ports=8, bw_per_port_GBps=400.0,
                            alpha_us=2.5, inc="hw_a2a", inc_alpha_us=0.4)
     got = cost_collective([hw_in, hw_out], "moe_a2a", M, G, algorithm="ring")
-    expected_inc = 2 * inc_a2a(M, G, (0.2 + 0.4) * 1e-6, 400e9)
+    expected_inc = inc_a2a(M, G, (0.2 + 0.4) * 1e-6, 400e9)
     _check("hw_a2a multi-tier A2A → inc_a2a (bypasses hierarchical)",
            got, expected_inc)
 
@@ -1193,22 +1196,22 @@ def test_T13_mesh():
     # A2A: mesh and torus differ on TWO axes per upstream's torus_a2a fix:
     #   - diameter:  mesh = Σ(d-1)        ; torus = Σ⌊d/2⌋
     #   - bisection: mesh BW = D_max/4   ; torus BW = D_max/8 (mesh 2× worse)
-    # Dispatcher applies the 2× MoE Dispatch+Combine wrap uniformly.
+    # Dispatcher returns single-direction A2A; n_EP=2 wraps at the per-MoE-layer accumulator.
     got_a2a_kdm = cost_collective([kdm], "moe_a2a", M, 64, algorithm="ring")
     got_a2a_torus = cost_collective([torus], "moe_a2a", M, 64, algorithm="ring")
     diam_mesh = sum(d - 1 for d in (8, 8))      # 7+7=14 (open-line)
     diam_torus = sum(d // 2 for d in (8, 8))    # 4+4=8  (wraparound)
     d_max = 8
-    expected_kdm = 2 * (diam_mesh * alpha_s + d_max * M / (4 * bw_Bps))
-    expected_torus = 2 * (diam_torus * alpha_s + d_max * M / (8 * bw_Bps))
+    expected_kdm = diam_mesh * alpha_s + d_max * M / (4 * bw_Bps)
+    expected_torus = diam_torus * alpha_s + d_max * M / (8 * bw_Bps)
     if not math.isclose(got_a2a_kdm, expected_kdm, rel_tol=1e-12):
         _failures.append(f"T13 k-D mesh A2A: got {got_a2a_kdm}, expected {expected_kdm}")
     elif not math.isclose(got_a2a_torus, expected_torus, rel_tol=1e-12):
         _failures.append(f"T13 torus A2A: got {got_a2a_torus}, expected {expected_torus}")
     else:
-        # k-D mesh BW term = 2× torus BW term (the 2× MoE wrap factors out).
-        bw_term_kdm = got_a2a_kdm - 2 * diam_mesh * alpha_s
-        bw_term_torus = got_a2a_torus - 2 * diam_torus * alpha_s
+        # k-D mesh BW term = 2× torus BW term.
+        bw_term_kdm = got_a2a_kdm - diam_mesh * alpha_s
+        bw_term_torus = got_a2a_torus - diam_torus * alpha_s
         if not math.isclose(bw_term_kdm, 2.0 * bw_term_torus, rel_tol=1e-12):
             _failures.append(
                 f"T13: k-D mesh A2A BW should be 2× torus, got "

@@ -78,8 +78,9 @@ def test_sw_disabled_matches_legacy_roofline() -> None:
     _check("t_SW", r.t_SW, 0.0)
     _check("eta_TC (None curve)", r.eta_TC, 1.0)
     _check("t_compute_eff = t_compute when η_TC=1", r.t_compute_eff, r.t_compute)
-    expected_step = r.t_stage * r.pp_bubble_factor
-    _check_near("t_step_user = t_stage · γ_pp", r.t_step_user, expected_step, rel_tol=1e-12)
+    # LM head fires once per step on stage PP-1, added outside γ_pp (decode.md §7.2).
+    expected_step = r.t_stage * r.pp_bubble_factor + r.t_LM
+    _check_near("t_step_user = t_stage · γ_pp + t_LM", r.t_step_user, expected_step, rel_tol=1e-12)
 
 
 # ────────────────────────────────────────────────────────────
@@ -104,9 +105,10 @@ def test_t_sw_scales_with_collective_count() -> None:
     r_TP = InferenceCalculator(m, s, PartitionSpec(PP=4, TP=2, EP=1, SP=1), t).run().latency
 
     L = m.L
-    pp_term = 4 * 2 * 1.5e-6   # PP·k_pp_hop·τ at PP=4, k_pp_hop=2, τ=1.5 μs
-    expected_nocoll = L * 10 * 1.5e-6 + pp_term
-    expected_TP = L * (10 + 2 * t.n_TP_collectives) * 1.5e-6 + pp_term
+    PP = 4
+    pp_term = 2 * 1.5e-6   # k_pp_hop·τ per microbatch transit; PP-independent for PP>1
+    expected_nocoll = (L / PP) * 10 * 1.5e-6 + pp_term
+    expected_TP = (L / PP) * (10 + 2 * t.n_TP_collectives) * 1.5e-6 + pp_term
 
     _check_near("t_SW (TP=1, no coll)", r_nocoll.t_SW, expected_nocoll, rel_tol=1e-12)
     _check_near("t_SW (TP=2, n_TP=2 collectives)", r_TP.t_SW, expected_TP, rel_tol=1e-12)
@@ -118,7 +120,7 @@ def test_t_sw_scales_with_collective_count() -> None:
 
 
 def test_t_sw_ep_round_trip_expansion() -> None:
-    """EP 'collective count' is round-trips (dispatch+combine); SW counts launches."""
+    """EP fires 2 NCCL launches (dispatch+combine) per MoE layer when EP>1."""
     print("\ntest_t_sw_ep_round_trip_expansion")
     # Need an MoE model so n_EP > 0 actually fires.
     m = load_model_spec("llm_perf/database/model/example.model.moe.json")
@@ -130,21 +132,22 @@ def test_t_sw_ep_round_trip_expansion() -> None:
         kernels_per_layer_compute=10,
         kernels_per_collective_call=2,
         kernels_per_pp_hop=2,
-        n_EP_collectives=1,   # cost-model convention: 1 round-trip per layer
+        n_EP_collectives=2,   # NCCL API calls per MoE layer (dispatch + combine)
     )
 
     # PP=2 keeps t_SW small; EP=1 → no EP collectives fire.
     r_off = InferenceCalculator(m, s, PartitionSpec(PP=2, TP=1, EP=1, SP=1), t).run().latency
-    # EP=2 → MoE A2A fires. SW should add 2 (round-trips) × 2 (kernels/call) per layer
-    # because the cost model's "1 collective" expands to 2 actual NCCL API calls.
+    # EP=2 → MoE A2A fires. SW should add n_EP_collectives (2) × 2 kernels/call per layer.
     r_on = InferenceCalculator(m, s, PartitionSpec(PP=2, TP=1, EP=2, SP=1), t).run().latency
 
     delta = r_on.t_SW - r_off.t_SW
-    L = m.L
-    # With n_EP_collectives=1 (round-trips/layer) → 2 a2a calls × 2 kernels/call × L layers × τ
-    expected_delta = L * (2 * 1) * 2 * 1.5e-6
+    L_moe = m.moe.n_moe_layers if (m.moe is not None and m.moe.n_moe_layers) else m.L
+    PP = 2
+    # Per-microbatch on this stage: (L_moe/PP) · n_EP · k_coll · τ extra when EP fires
+    # (EP launches only happen on MoE layers, mirroring §5.5's L_moe/PP factor).
+    expected_delta = (L_moe / PP) * 2 * 2 * 1.5e-6
     _check_near(
-        "EP=2 vs EP=1 t_SW delta = L · (2·n_EP) · k_coll · τ (2× round-trip expansion)",
+        "EP=2 vs EP=1 t_SW delta = (L_moe/PP) · n_EP · k_coll · τ",
         delta, expected_delta, rel_tol=1e-12,
     )
 
@@ -161,25 +164,33 @@ def test_t_sw_pp_hop_term() -> None:
     )
     L = m.L
 
-    # PP=1 → no inter-stage hops; PP-hop term must be 0.
+    # PP=1 → no inter-stage hops; t_SW = L · 10 · τ exactly (L/1 layers per stage).
     r1 = InferenceCalculator(m, s, PartitionSpec(PP=1, TP=1, EP=1, SP=1), t).run().latency
-    _check_near("t_SW at PP=1 (no PP term)", r1.t_SW, L * 10 * 1.5e-6, rel_tol=1e-12)
+    _check_near("t_SW at PP=1 (no PP-hop term)", r1.t_SW, L * 10 * 1.5e-6, rel_tol=1e-12)
 
-    # PP=8 → adds 8·2·1.5 = 24 μs over the L·k baseline.
+    # PP=8 → (L/8) · 10 · τ layer term + k_pp_hop · τ per-microbatch transit.
     r8 = InferenceCalculator(m, s, PartitionSpec(PP=8, TP=1, EP=1, SP=1), t).run().latency
-    expected_pp8 = L * 10 * 1.5e-6 + 8 * 2 * 1.5e-6
-    _check_near("t_SW at PP=8 includes PP·k_pp_hop·τ", r8.t_SW, expected_pp8, rel_tol=1e-12)
+    expected_pp8 = (L / 8) * 10 * 1.5e-6 + 2 * 1.5e-6
+    _check_near(
+        "t_SW at PP=8 = (L/PP)·k·τ + k_pp_hop·τ",
+        r8.t_SW, expected_pp8, rel_tol=1e-12,
+    )
 
-    # PP scaling: doubling PP doubles the PP-hop term contribution.
+    # PP-hop contribution is PP-independent on middle stages — k_pp_hop · τ per
+    # microbatch regardless of PP. Subtract layer term to isolate PP-hop.
     r4 = InferenceCalculator(m, s, PartitionSpec(PP=4, TP=1, EP=1, SP=1), t).run().latency
-    pp4_extra = r4.t_SW - r1.t_SW
-    pp8_extra = r8.t_SW - r1.t_SW
-    _check_near("PP=8 PP-hop contribution = 2× PP=4 contribution", pp8_extra, 2 * pp4_extra, rel_tol=1e-12)
+    pp4_hop = r4.t_SW - (L / 4) * 10 * 1.5e-6
+    pp8_hop = r8.t_SW - (L / 8) * 10 * 1.5e-6
+    _check_near("PP=4 PP-hop contribution = k_pp_hop · τ", pp4_hop, 2 * 1.5e-6, rel_tol=1e-12)
+    _check_near("PP=8 PP-hop contribution = k_pp_hop · τ (PP-independent)", pp8_hop, 2 * 1.5e-6, rel_tol=1e-12)
 
-    # k_pp_hop=0 disables the PP term.
+    # k_pp_hop=0 zeros the PP-hop term — only layer term remains.
     t_no_pp = replace(t, kernels_per_pp_hop=0)
     r8_no_pp = InferenceCalculator(m, s, PartitionSpec(PP=8, TP=1, EP=1, SP=1), t_no_pp).run().latency
-    _check_near("k_pp_hop=0 disables PP term", r8_no_pp.t_SW, L * 10 * 1.5e-6, rel_tol=1e-12)
+    _check_near(
+        "k_pp_hop=0 disables PP-hop term",
+        r8_no_pp.t_SW, (L / 8) * 10 * 1.5e-6, rel_tol=1e-12,
+    )
 
 
 # ────────────────────────────────────────────────────────────
@@ -230,20 +241,21 @@ def test_sw_overlap_factor_boundaries() -> None:
     p = PartitionSpec(PP=1, TP=1, EP=1, SP=1)
 
     # ρ_SW = 1: full overlap; SW is a floor.
+    # LM head fires once per step on stage PP-1, added outside γ_pp (decode.md §7.2).
     t1 = replace(t_base, sw_overlap_factor=1.0)
     r1 = InferenceCalculator(m, s, p, t1).run().latency
-    expected_ceiling = max(r1.t_stage, r1.t_SW) * r1.pp_bubble_factor
+    expected_ceiling = max(r1.t_stage, r1.t_SW) * r1.pp_bubble_factor + r1.t_LM
     _check_near(
-        "ρ_SW=1 → t_step_user = max(t_stage, t_SW) · γ_pp",
+        "ρ_SW=1 → t_step_user = max(t_stage, t_SW) · γ_pp + t_LM",
         r1.t_step_user, expected_ceiling, rel_tol=1e-12,
     )
 
     # ρ_SW = 0: no overlap; SW adds to t_stage.
     t0 = replace(t_base, sw_overlap_factor=0.0)
     r0 = InferenceCalculator(m, s, p, t0).run().latency
-    expected_sum = (r0.t_stage + r0.t_SW) * r0.pp_bubble_factor
+    expected_sum = (r0.t_stage + r0.t_SW) * r0.pp_bubble_factor + r0.t_LM
     _check_near(
-        "ρ_SW=0 → t_step_user = (t_stage + t_SW) · γ_pp",
+        "ρ_SW=0 → t_step_user = (t_stage + t_SW) · γ_pp + t_LM",
         r0.t_step_user, expected_sum, rel_tol=1e-12,
     )
 

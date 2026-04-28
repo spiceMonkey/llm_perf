@@ -32,16 +32,13 @@ Prefill processes the entire input sequence in a **single forward pass**, produc
   - [2.2 Arithmetic Intensity of Decode](#22-arithmetic-intensity-of-decode)
   - [2.3 Ridge Point and Regime Crossover](#23-ridge-point-and-regime-crossover)
 
-- [3. Single-Request Hardware Prefill Latency](#3-single-request-hardware-prefill-latency)
+- [3. Hardware Prefill Latency](#3-hardware-prefill-latency)
   - [3.1 Prefill Local Time (Roofline)](#31-prefill-local-time-roofline)
   - [3.2 Communication During Prefill](#32-communication-during-prefill)
   - [3.3 Pipeline Warmup Latency](#33-pipeline-warmup-latency)
   - [3.4 Hardware Prefill Latency Formula](#34-hardware-prefill-latency-formula)
 
-- [4. Batched Prefill](#4-batched-prefill)
-  - [4.1 FLOPs and Latency Under Batching](#41-flops-and-latency-under-batching)
-  - [4.2 Prefill Latency Scaling with Batch Size](#42-prefill-latency-scaling-with-batch-size)
-  - [4.3 Optimal Batch Size for GPU Utilization](#43-optimal-batch-size-for-gpu-utilization)
+- [4. Optimal Batch Size for GPU Utilization](#4-optimal-batch-size-for-gpu-utilization)
 
 - [5. Chunked Prefill](#5-chunked-prefill)
   - [5.1 Per-Chunk Latency](#51-per-chunk-latency)
@@ -277,6 +274,36 @@ $$
 
 For a **pure MoE model** ($L_{\text{dense}} = 0$), the router term $2 H N_{\text{exp}} S_{\text{input}}$ stays outside the $TP$ sharding — it is replicated on every TP rank (§1.3.5).
 
+### Per-step (batched) FLOPs
+
+A batched prefill pass concurrently processes $B_{\text{prefill}}$ requests, each carrying $S_{\text{input}}$ tokens. Because every request runs the same forward pass independently — no cross-request attention — FLOPs scale linearly with $B_{\text{prefill}}$:
+
+$$
+F_{\text{prefill,step,device}}(B_{\text{prefill}}) \;=\; B_{\text{prefill}} \cdot F_{\text{prefill,device}}
+$$
+
+Note the attention term scales as $B_{\text{prefill}} \cdot S_{\text{input}}^2$ (each request's $S^2$ independently), **not** $(B_{\text{prefill}} \cdot S_{\text{input}})^2$ — there is no quadratic cross-request term.
+
+This is the per-step, per-device FLOP count consumed in the §3 roofline. All downstream HW latency formulas (§3, §4) carry the $(B_{\text{prefill}})$ argument explicitly.
+
+### LM head FLOPs (prefill)
+
+To emit the first generated token of each prefilled request, the model runs the LM head ($H \to V$ projection) on the **last position's hidden state only** — the intermediate positions' logits are not needed by the sampler. The LM head is **column-parallel sharded by TP** along the vocab dimension and **lives only on the last PP stage** (stage $PP{-}1$); it is not divided by $L$, $PP$, $EP$, or $SP$, mirroring the decode treatment in `decode.md §3`.
+
+$$
+F_{\text{LM,prefill,step,device}}(B_{\text{prefill}}) = \frac{2 \, B_{\text{prefill}} \, H \, V}{TP} \quad \text{(stage } PP{-}1 \text{ only)}
+$$
+
+**Scaling note.** Unlike the prefill body — which scales with $B_{\text{prefill}} \cdot S_{\text{input}}$ — the LM head scales with **only $B_{\text{prefill}}$**, since one $H \to V$ projection per request suffices. For typical $S_{\text{input}} \gtrsim 100$, the LM head is well under 1% of body FLOPs and is included for symmetry with decode rather than because it materially shifts TTFT.
+
+LM head weight + output traffic on stage $PP{-}1$ (mirroring decode's $T_{\text{LM},\theta,\text{device}}$):
+
+$$
+T_{\text{LM,prefill,step,device}}(B_{\text{prefill}}) = \frac{H V \, b}{TP} + B_{\text{prefill}} \, V \, b \quad \text{(stage } PP{-}1 \text{ only)}
+$$
+
+The first term is the TP-sharded weight read; the second is the $B_{\text{prefill}}$ logit rows written to HBM. Both terms feed the LM head roofline introduced in §3.4.
+
 ---
 
 <div style="page-break-before: always;"></div>
@@ -323,13 +350,24 @@ For performance modeling, we treat FlashAttention as the default and note that t
 
 ### Summary
 
-For the projection- and FFN-dominated components of prefill (the $O(S_{\text{input}})$ FLOP terms):
+For the projection- and FFN-dominated components of prefill (the $O(S_{\text{input}})$ FLOP terms), at the per-request baseline ($B_{\text{prefill}} = 1$, weights dominate the traffic denominator):
 
 $$
-\text{OI}_{\text{prefill}}
+\text{OI}_{\text{prefill}}(B_{\text{prefill}} = 1)
 \approx
 \frac{2 S_{\text{input}}}{b}
 $$
+
+For batched prefill in the weight-dominated regime, OI scales linearly with $B_{\text{prefill}}$ (each weight byte serves $B_{\text{prefill}} \cdot S_{\text{input}}$ tokens):
+
+$$
+\text{OI}_{\text{prefill}}(B_{\text{prefill}})
+\approx
+\frac{2 B_{\text{prefill}} \cdot S_{\text{input}}}{b}
+\qquad (\text{weight-dominated})
+$$
+
+In the KV-write-dominated regime (very long $S$), OI saturates at the per-token attention ratio independent of $B_{\text{prefill}}$.
 
 ---
 
@@ -375,10 +413,11 @@ Comparing with OI expressions (bf16, $b = 2$):
 | Phase | OI expression | Regime |
 |-------|--------------|--------|
 | Decode ($B=1$) | $2/b = 1$ | Memory-bound ($1 \ll 295$) |
-| Decode ($B=B$) | $2B/b$ | Compute-bound when $B > 295$ |
-| Prefill | $2 S_{\text{input}}/b$ | Compute-bound when $S_{\text{input}} > 295$ |
+| Decode ($B$) | $2B/b$ | Compute-bound when $B > 295$ |
+| Prefill ($B_{\text{prefill}} = 1$) | $2 S_{\text{input}}/b$ | Compute-bound when $S_{\text{input}} > 295$ |
+| Prefill ($B_{\text{prefill}}$) | $2 B_{\text{prefill}} \cdot S_{\text{input}}/b$ | Compute-bound when $B_{\text{prefill}} \cdot S_{\text{input}} > 295$ |
 
-**Prefill becomes compute-bound for $S_{\text{input}} \gtrsim 295$ tokens** on H100 with bf16.
+**Prefill becomes compute-bound for $B_{\text{prefill}} \cdot S_{\text{input}} \gtrsim 295$ tokens** on H100 with bf16. At single-request prefill, this happens around $S_{\text{input}} = 295$; batching short prompts can push much shorter sequences into the compute-bound zone (see §4).
 
 This is the crossover condition:
 
@@ -394,103 +433,103 @@ In practice, prefill sequences are almost always longer than $S_{\text{input}}^{
 
 <div style="page-break-before: always;"></div>
 
-# 3. Single-Request Hardware Prefill Latency
+# 3. Hardware Prefill Latency
 
-We now derive the hardware prefill latency $t_{\text{prefill}}$ for a single request on a co-located prefill+decode cluster (no disaggregation). The result will be extended in Sections 4–6.
+We now derive the hardware prefill latency $t_{\text{prefill}}(B_{\text{prefill}})$ for a batched prefill pass on a co-located prefill+decode cluster (no disaggregation). The single-request case is recovered at $B_{\text{prefill}} = 1$.
 
-> **Scope note:** This section computes the hardware-only prefill latency $t_{\text{prefill}}$, which is one component of the full Time-To-First-Token (TTFT). The complete TTFT additionally includes scheduling overhead $t_{\text{sched}}$, tokenization $t_{\text{tok}}$, and the first decode step $t_{\text{step,user}}$. See `e2e.md` §2.1 for full TTFT assembly.
+> **Scope note:** This section computes the hardware-only prefill latency $t_{\text{prefill}}(B_{\text{prefill}})$, which is one component of the full Time-To-First-Token (TTFT). The complete TTFT additionally includes scheduling overhead $t_{\text{sched}}$, tokenization $t_{\text{tok}}$, and the first decode step $t_{\text{step,user}}$. See `e2e.md` §2.1 for full TTFT assembly.
 
-$t_{\text{prefill}}$ decomposes into three sequential phases:
+$t_{\text{prefill}}(B_{\text{prefill}})$ decomposes into three sequential phases:
 
 $$
-t_{\text{prefill}} =
-t_{\text{prefill,local}} + \max\left(0,\; t_{\text{prefill,comm}} - \rho\, t_{\text{prefill,local}}\right)
-+
-t_{\text{pipeline,warmup}}
+t_{\text{prefill}}(B_{\text{prefill}}) = t_{\text{prefill,local}}(B_{\text{prefill}}) + \max\!\bigl(0,\; t_{\text{prefill,comm}}(B_{\text{prefill}}) - \rho\, t_{\text{prefill,local}}(B_{\text{prefill}})\bigr) + t_{\text{pipeline,warmup}}(B_{\text{prefill}})
 $$
 
-Each term is derived below.
+Each term is derived below. The structure mirrors decode's per-step roofline; the differences are (i) FLOPs scale with $B_{\text{prefill}} \cdot S_{\text{input}}$ instead of just $B$, (ii) the KV cache is *written* (not read) during prefill, so the per-step memory term has a $B_{\text{prefill}} \cdot T_{\text{KV,write,device}}$ component; (iii) the pipeline must fill from empty, contributing a $(PP-1)$ stage-time warmup.
 
 ---
 
 ## 3.1 Prefill Local Time (Roofline)
 
-The local prefill time on a single PP stage is the roofline of compute and memory time.
+The per-step local prefill time on a single PP stage is the roofline of compute and memory time, both functions of $B_{\text{prefill}}$.
 
 ### Compute time
 
-Given $F_{\text{prefill,device}}$ from Section 1.5:
+Given $F_{\text{prefill,step,device}}(B_{\text{prefill}}) = B_{\text{prefill}} \cdot F_{\text{prefill,device}}$ from Section 1.5:
 
 $$
-t_{\text{prefill,compute}} =
-\frac{F_{\text{prefill,device}}}{R_{\text{GPU}}(b)}
+t_{\text{prefill,compute}}(B_{\text{prefill}}) =
+\frac{F_{\text{prefill,step,device}}(B_{\text{prefill}})}{R_{\text{GPU}}(b)} =
+\frac{B_{\text{prefill}} \cdot F_{\text{prefill,device}}}{R_{\text{GPU}}(b)}
 $$
 
-$R_{\text{GPU}}(b)$ is the **precision-aware compute peak**: the framework convention is to store FP16 dense per chip in `peak_flops_TF` and scale linearly with `bytes_per_param`: $R_{\text{GPU}}(b) = \mathrm{peak\_flops\_TF} \cdot (2 / b)$. See `decode.md §3.1` for the full convention and the d-Matrix INT4 caveat.
+Compute scales linearly with $B_{\text{prefill}}$ — every batched request runs the same forward pass independently. $R_{\text{GPU}}(b)$ is the **precision-aware compute peak**: the framework convention is to store FP16 dense per chip in `peak_flops_TF` and scale linearly with `bytes_per_param`: $R_{\text{GPU}}(b) = \text{peak\_flops\_TF} \cdot (2 / b)$. See `decode.md §4` for the full convention and the d-Matrix INT4 caveat.
 
 ### Memory time
 
-During prefill, weights are read from HBM (same as decode). However, the **KV cache is being written** (not read) for the input tokens — it is not yet present and therefore contributes **write traffic**, not read traffic. We model total prefill traffic as:
+During prefill, weights are read from HBM (same as decode, amortized once per pass regardless of $B_{\text{prefill}}$). However, the **KV cache is being written** (not read) for the input tokens — it is not yet present and therefore contributes **write traffic**, not read traffic, scaling per-request with $B_{\text{prefill}}$:
 
 $$
-T_{\text{prefill,device}} =
+T_{\text{prefill,step,device}}(B_{\text{prefill}}) =
 T_{\theta,\text{device}} +
-T_{\text{KV,write,device}}
+B_{\text{prefill}} \cdot T_{\text{KV,write,device}}
 $$
 
-where:
+where the two components are:
 
-- $T_{\theta,\text{device}}$ — weight read traffic per device (same as decode; see `decode.md §2.1`):
+**Weight read traffic** $T_{\theta,\text{device}}$ — same as decode (see `decode.md §2.1`), $B_{\text{prefill}}$-independent:
 
-  $$
-  T_{\theta,\text{device}}
-  \approx
-  \frac{L}{PP}
-  \left(
-  \frac{(2H^2 + 2 H H_{kv})b}{TP} +
-  \frac{3 H I_{\text{eff}} N_{\text{exp}} b}{TP \cdot EP}
-  \right)
-  $$
+$$
+T_{\theta,\text{device}}
+\approx
+\frac{L}{PP}
+\left(
+\frac{(2H^2 + 2 H H_{kv})b}{TP} +
+\frac{3 H I_{\text{eff}} N_{\text{exp}} b}{TP \cdot EP}
+\right)
+$$
 
-- $T_{\text{KV,write,device}}$ — KV cache write traffic for the $S_{\text{input}}$ tokens being prefilled:
+**Per-request KV cache write traffic** $T_{\text{KV,write,device}}$ — for the $S_{\text{input}}$ tokens being prefilled by one request:
 
-  $$
-  T_{\text{KV,write,device}} =
-  \frac{L}{PP}
-  \cdot
-  \frac{2 S_{\text{input}} H_{kv}\, b}{TP \cdot SP}
-  $$
+$$
+T_{\text{KV,write,device}} =
+\frac{L}{PP}
+\cdot
+\frac{2 S_{\text{input}} H_{kv}\, b}{TP \cdot SP}
+\quad \text{(per request)}
+$$
 
-  This is the cost of writing the keys and values for all $S_{\text{input}}$ tokens to HBM. Because HBM write bandwidth equals read bandwidth, we use $BW_{\text{mem}}$ for both.
+This is the cost of writing the keys and values for all $S_{\text{input}}$ tokens to HBM for one request; with $B_{\text{prefill}}$ batched requests, total per-step write traffic is $B_{\text{prefill}}$ times this. Because HBM write bandwidth equals read bandwidth, we use $BW_{\text{mem}}$ for both.
 
 ### FlashAttention reduces attention read traffic
 
-Without FlashAttention, the $S_{\text{input}} \times S_{\text{input}}$ attention score matrix would need to be written to and read from HBM, contributing $O(S_{\text{input}}^2)$ traffic. With FlashAttention [FA1, FA2], the attention computation is fused into SRAM-tiled blocks, and the $S \times S$ matrix is never materialized in HBM. This eliminates the dominant attention traffic term.
+Without FlashAttention, the $S_{\text{input}} \times S_{\text{input}}$ attention score matrix would need to be written to and read from HBM, contributing $O(S_{\text{input}}^2)$ traffic per request. With FlashAttention [FA1, FA2], the attention computation is fused into SRAM-tiled blocks, and the $S \times S$ matrix is never materialized in HBM. This eliminates the dominant attention traffic term.
 
-The effective memory time is:
+The effective per-step memory time is:
 
 $$
-t_{\text{prefill,mem}} =
-\frac{T_{\text{prefill,device}}}{BW_{\text{mem}}}
+t_{\text{prefill,mem}}(B_{\text{prefill}}) =
+\frac{T_{\text{prefill,step,device}}(B_{\text{prefill}})}{BW_{\text{mem}}} =
+\frac{T_{\theta,\text{device}} + B_{\text{prefill}} \cdot T_{\text{KV,write,device}}}{BW_{\text{mem}}}
 $$
 
 ### Roofline local time
 
 $$
-t_{\text{prefill,local}} =
-\max\left(
-t_{\text{prefill,compute}},\;
-t_{\text{prefill,mem}}
-\right)
+t_{\text{prefill,local}}(B_{\text{prefill}}) =
+\max\bigl(
+t_{\text{prefill,compute}}(B_{\text{prefill}}),\;
+t_{\text{prefill,mem}}(B_{\text{prefill}})
+\bigr)
 $$
 
-At typical prefill lengths (compute-bound regime, Section 2.3): $t_{\text{prefill,compute}} \gg t_{\text{prefill,mem}}$, so $t_{\text{prefill,local}} \approx t_{\text{prefill,compute}}$.
+At typical prefill lengths and modest $B_{\text{prefill}}$ (compute-bound regime, Section 2.3): $t_{\text{prefill,compute}} \gg t_{\text{prefill,mem}}$, so $t_{\text{prefill,local}}(B_{\text{prefill}}) \approx t_{\text{prefill,compute}}(B_{\text{prefill}}) = B_{\text{prefill}} \cdot t_{\text{prefill,compute}}(1)$ — linear in $B_{\text{prefill}}$.
 
 ---
 
 ## 3.2 Communication During Prefill
 
-The communication collectives required during prefill are structurally the same as during decode (same TP/EP/SP/PP operations per layer), but **message sizes scale with the sequence dimension** because outputs have shape $[S_{\text{input}} \times H]$ rather than $[1 \times H]$. The single-request formulas below use $S_{\text{input}}$ as the step token count; under batched prefill (§4), the per-collective payload scales by $B_{\text{prefill}} \cdot S_{\text{input}}$ instead — the same step-token factor that drives flops and KV-write traffic in §4.1.
+The communication collectives required during prefill are structurally the same as during decode (same TP/EP/SP/PP operations per layer), but **message sizes scale with the per-step token count** $B_{\text{prefill}} \cdot S_{\text{input}}$ — each batched request contributes $S_{\text{input}}$ tokens to every collective payload. Each per-collective $t_*(B_{\text{prefill}})$ below carries the $(B_{\text{prefill}})$ argument explicitly: α-side stays constant, β-side scales linearly with $B_{\text{prefill}} \cdot S_{\text{input}}$.
 
 All collective latencies follow the $\alpha$–$\beta$ model [ALPHA-BETA]:
 
@@ -498,73 +537,73 @@ $$
 t = \alpha + \frac{\text{message size}}{B_{\text{eff}}}
 $$
 
-**Delegation to `collectives.md`.** Shipped-primitive cost formulas (ring AR, DBT AR, ring AG / RS, pairwise A2A on star; dim-decomposed ring and bisection-bound A2A on torus; hierarchical RS → sub-AR → AG; in-network reduction via NVLS / Quantum SHARP / Tomahawk Ultra) are documented in `collectives/00_summary.md §4–§7`, with contention coefficients $(\eta_\alpha, \eta_\beta)$ in `collectives/05_contention_and_congestion.md`. This section substitutes the prefill per-rank message sizes (scaled by $S_{\text{input}}$) into those primitives; the $\alpha_{XP}$ and $BW_{XP}$ values are fabric-chain span quantities per `notation.md §7`.
+**Delegation to the `collectives/` explainer subseries.** Shipped-primitive cost formulas (ring AR, DBT AR, ring AG / RS, pairwise A2A on star; dim-decomposed ring and bisection-bound A2A on torus; hierarchical RS → sub-AR → AG; in-network reduction via NVLS / Quantum SHARP / Tomahawk Ultra) are documented in `collectives/01_collective_algorithms.md` (per-algorithm derivations) and `collectives/02_topology_mapping.md` (star / torus / mesh specializations), with hierarchical composition in `collectives/03_hierarchical_topologies.md`, in-network primitives in `collectives/04_in_network_collectives.md`, and contention coefficients $(\eta_\alpha, \eta_\beta)$ in `collectives/05_contention_and_congestion.md`. The cheatsheet at `collectives/00_summary.md` indexes all of these. This section substitutes the prefill per-rank message sizes (scaled by $B_{\text{prefill}} \cdot S_{\text{input}}$) into those primitives; the $\alpha_{XP}$ and $BW_{XP}$ values are fabric-chain span quantities per `notation.md §7`.
 
 ### TP All-Reduce (prefill)
 
-The TP All-Reduce synchronizes the partial hidden-state outputs after Row-Parallel matrix multiplications. During prefill, the output has shape $[S_{\text{input}} \times H]$, so the message size is $M_{TP}^\mathrm{prefill} = H \cdot S_{\text{input}} \cdot b$ (vs. $H \cdot b$ during decode). NCCL ships ring (large-$M$) and DBT (small-$M$) AR on a star fabric, selected via `tuner.ar_algorithm` (`collectives/02_topology_mapping.md §2`). Substituting $M_{TP}^\mathrm{prefill}$ into `collectives/02_topology_mapping.md §2`:
+The TP All-Reduce synchronizes the partial hidden-state outputs after Row-Parallel matrix multiplications. During prefill, the output has shape $[B_{\text{prefill}} \cdot S_{\text{input}} \times H]$, so the message size is $M_{TP}^{\text{prefill}}(B_{\text{prefill}}) = B_{\text{prefill}} \cdot S_{\text{input}} \cdot H \cdot b$ (vs. $H \cdot b$ during single-token decode). NCCL ships ring (large-$M$) and DBT (small-$M$) AR on a star fabric, selected via `tuner.ar_algorithm` (`collectives/02_topology_mapping.md §2`). Substituting $M_{TP}^{\text{prefill}}(B_{\text{prefill}})$ into the star AR cost form:
 
 $$
-t_{TP}^{\text{prefill,ring}} \;=\; 2(TP-1)\,\alpha_{TP} \;+\; 2 \cdot \frac{TP-1}{TP} \cdot \frac{H \cdot S_{\text{input}} \cdot b}{BW_{\text{TP}}}
+t_{TP}^{\text{prefill,ring}}(B_{\text{prefill}}) \;=\; 2(TP-1)\,\alpha_{TP} \;+\; 2 \cdot \frac{TP-1}{TP} \cdot \frac{B_{\text{prefill}} \cdot S_{\text{input}} \cdot H \cdot b}{BW_{\text{TP}}}
 $$
 
 $$
-t_{TP}^{\text{prefill,DBT}} \;=\; 2\,\lceil \log_2 TP \rceil \cdot \alpha_{TP} \;+\; 2 \cdot \frac{TP-1}{TP} \cdot \frac{H \cdot S_{\text{input}} \cdot b}{BW_{\text{TP}}}
+t_{TP}^{\text{prefill,DBT}}(B_{\text{prefill}}) \;=\; 2\,\lceil \log_2 TP \rceil \cdot \alpha_{TP} \;+\; 2 \cdot \frac{TP-1}{TP} \cdot \frac{B_{\text{prefill}} \cdot S_{\text{input}} \cdot H \cdot b}{BW_{\text{TP}}}
 $$
 
-Torus TP fabrics (dim-decomposed ring, TPU / Trainium) use the torus AR form of `collectives/02_topology_mapping.md §3` with the same $M_{TP}^\mathrm{prefill}$. The $S_{\text{input}}$ factor in the bandwidth term means TP communication during prefill is substantially larger than during decode — for $S_{\text{input}} = 4096$, the per-collective payload is $4096\times$ that of single-token decode.
+Torus TP fabrics (dim-decomposed ring, TPU / Trainium) use the torus AR form of `collectives/02_topology_mapping.md §3` with the same $M_{TP}^{\text{prefill}}(B_{\text{prefill}})$. The $B_{\text{prefill}} \cdot S_{\text{input}}$ factor in the bandwidth term means TP communication during prefill is substantially larger than during decode — for $S_{\text{input}} = 4096$ and $B_{\text{prefill}} = 4$, the per-collective payload is $\sim 16{,}000\times$ that of single-token decode.
 
 > **Implementation note — tiled prefill and $\alpha_{TP}$ accumulation:** In practice, large-$S_{\text{input}}$ prefill is often processed in $k$ sub-sequence tiles (e.g., to fit within SRAM or network buffer limits). Each tile launches an independent all-reduce, accumulating the $\alpha_{TP}$ startup latency $k$ times. The total un-hidden $\alpha$ overhead is $k \times \max(0,\, \alpha_{TP} - \rho \cdot t_{\text{tile,compute}})$, where $t_{\text{tile,compute}}$ is the compute time for a single tile. For fine-grained tiling with small tiles, each tile's compute-to-communication ratio mirrors the full-sequence overlap structure, so the $\rho$ factor still absorbs the hiding benefit. However, for very large $S_{\text{input}}$ and small tile sizes, the accumulated $k \cdot \alpha_{TP}$ term can become non-negligible even when each individual $\alpha_{TP}$ is fully hidden. The formulas above model a single collective per layer; the tiling multiplier $k$ can be incorporated when tile size is a known design parameter.
 
 ### EP All-to-All (prefill, MoE)
 
-For MoE layers, the Dispatch + Combine payload per direction is $k \cdot H \cdot S_{\text{input}} \cdot b$ (vs. $k \cdot H \cdot b$ during decode). The shipped A2A primitive is pairwise direct-send (NCCL on star; bisection-bound pairwise on torus) — see `collectives/01_collective_algorithms.md §7`. Substituting $M_{EP}^\mathrm{prefill} = k H \cdot S_{\text{input}} \cdot b$ into the star pairwise form with the $\times 2$ Dispatch + Combine factor:
+For MoE layers, the Dispatch + Combine payload per direction is $B_{\text{prefill}} \cdot S_{\text{input}} \cdot k \cdot H \cdot b$ (vs. $k \cdot H \cdot b$ during single-token decode). The shipped A2A primitive is pairwise direct-send (NCCL on star; bisection-bound pairwise on torus) — see `collectives/01_collective_algorithms.md §7`. Substituting $M_{EP}^{\text{prefill}}(B_{\text{prefill}}) = B_{\text{prefill}} \cdot S_{\text{input}} \cdot k H \cdot b$ into the star pairwise form (the $\times 2$ Dispatch + Combine factor is recovered via $n_{EP} = 2$ in the per-layer accumulator below):
 
 $$
-t_{EP}^{\text{prefill}} \;=\; 2(EP-1)\,\alpha_{EP} \;+\; 2 \cdot \frac{EP-1}{EP} \cdot \frac{k H \cdot S_{\text{input}} \cdot b}{BW_{\text{EP}}}
+t_{EP}^{\text{prefill}}(B_{\text{prefill}}) \;=\; (EP-1)\,\alpha_{EP} \;+\; \frac{EP-1}{EP} \cdot \frac{B_{\text{prefill}} \cdot S_{\text{input}} \cdot k H \cdot b}{BW_{\text{EP}}}
 $$
 
-For torus EP fabrics, use the torus A2A form of `collectives/02_topology_mapping.md §3` with $M = k H \cdot S_{\text{input}} \cdot b$.
+For torus EP fabrics, use the torus A2A form of `collectives/02_topology_mapping.md §3` with $M = B_{\text{prefill}} \cdot S_{\text{input}} \cdot k H \cdot b$.
 
 ### PP Hop (prefill)
 
-The PP hop forwards the hidden-state shard to the next stage. With TP rank alignment, each device forwards its local shard of shape $[S_{\text{input}} \times H/TP]$; this is a single point-to-point transfer (see `decode.md §5.1` for the p2p rationale):
+The PP hop forwards the hidden-state shard to the next stage. With TP rank alignment, each device forwards its local shard of shape $[B_{\text{prefill}} \cdot S_{\text{input}} \times H/TP]$; this is a single point-to-point transfer (see `decode.md §5.1` for the p2p rationale):
 
 $$
-t_{PP}^{\text{prefill}} \;=\; \alpha_{PP} \;+\; \frac{(H/TP) \cdot S_{\text{input}} \cdot b}{BW_{\text{PP}}}
+t_{PP}^{\text{prefill}}(B_{\text{prefill}}) \;=\; \alpha_{PP} \;+\; \frac{B_{\text{prefill}} \cdot S_{\text{input}} \cdot (H/TP) \cdot b}{BW_{\text{PP}}}
 $$
 
-$\alpha_{PP}$ and $\mathrm{BW}_{PP}$ are tier-aware: under the nested-layout convention (`DP → PP → EP → TP → SP`, fast axes inner), the PP boundary uses the fabric tier whose cumulative reach holds `PP × inner-axes-product`. See `decode.md §5.1` for the full convention; the `partition_layout.assign_tier_per_axis` helper resolves the tier index per partition.
+$\alpha_{PP}$ and $BW_{PP}$ are tier-aware: under the nested-layout convention (`DP → PP → EP → TP → SP`, fast axes inner), the PP boundary uses the fabric tier whose cumulative reach holds `PP × inner-axes-product`. See `decode.md §5.1` for the full convention; the `partition_layout.assign_tier_per_axis` helper resolves the tier index per partition.
 
 ### SP All-Gather (prefill)
 
-During prefill with SP, each SP rank holds $S_{\text{input}}/SP$ of the input sequence. Ring Attention circulates KV shards so each device's query block can attend to the full input; the shipped primitive is ring AG per `collectives/01_collective_algorithms.md §6`. Substituting the per-rank KV shard $M_{SP}^\mathrm{prefill} = (S_{\text{input}} / SP) \cdot (2 H_{kv} / TP) \cdot b$:
+During prefill with SP, each SP rank holds $S_{\text{input}}/SP$ of each request's input sequence. Ring Attention circulates KV shards so each device's query block can attend to the full input; the shipped primitive is ring AG per `collectives/01_collective_algorithms.md §6`. Each batched request streams its own KV shard, so the per-rank payload is $M_{SP}^{\text{prefill}}(B_{\text{prefill}}) = B_{\text{prefill}} \cdot (S_{\text{input}} / SP) \cdot (2 H_{kv} / TP) \cdot b$:
 
 $$
-t_{SP}^{\text{prefill}} \;=\; (SP-1)\,\alpha_{SP} \;+\; (SP-1) \cdot \frac{(S_{\text{input}} / SP) \cdot (2 H_{kv} / TP) \cdot b}{BW_{\text{SP}}}
+t_{SP}^{\text{prefill}}(B_{\text{prefill}}) \;=\; (SP-1)\,\alpha_{SP} \;+\; (SP-1) \cdot \frac{B_{\text{prefill}} \cdot (S_{\text{input}} / SP) \cdot (2 H_{kv} / TP) \cdot b}{BW_{\text{SP}}}
 $$
 
-For torus SP fabrics, use the torus AG form of `collectives/02_topology_mapping.md §3` with the same $M_{SP}^\mathrm{prefill}$.
+For torus SP fabrics, use the torus AG form of `collectives/02_topology_mapping.md §3` with the same $M_{SP}^{\text{prefill}}(B_{\text{prefill}})$.
 
 ### Total per-stage communication time (prefill)
 
-Following the same structure as `decode.md §5.5`, collectives within each layer are sequential:
+Following the same structure as `decode.md §5.5`, collectives within each layer are sequential, and the per-axis call counts $n_{TP}, n_{EP}, n_{SP}$ are the same NCCL API call counts used by decode (see `decode.md §5.5`):
 
 $$
-t_{\text{prefill,comm}} =
+t_{\text{prefill,comm}}(B_{\text{prefill}}) =
 \frac{L}{PP}
-(
-n_{TP}\, t_{TP}^{\text{prefill}} +
-n_{SP}\, t_{SP}^{\text{prefill}}
-) +
+\bigl(
+n_{TP}\, t_{TP}^{\text{prefill}}(B_{\text{prefill}}) +
+n_{SP}\, t_{SP}^{\text{prefill}}(B_{\text{prefill}})
+\bigr) +
 \frac{L_{\text{moe}}}{PP}
-(
-n_{EP}\, t_{EP}^{\text{prefill}}
-) +
-t_{PP}^{\text{prefill}}
+\bigl(
+n_{EP}\, t_{EP}^{\text{prefill}}(B_{\text{prefill}})
+\bigr) +
+t_{PP}^{\text{prefill}}(B_{\text{prefill}})
 $$
 
-where $n_{TP} = 2$ (attention + FFN), $n_{SP} = 1$ (attention), $n_{EP} = 1$ (MoE FFN dispatch/combine).
+where $n_{TP} = 2$ (attention + FFN), $n_{SP} = 1$ (attention), $n_{EP} = 2$ for MoE layers (Dispatch + Combine, each costing one single-direction A2A) and $0$ for dense.
 
 ---
 
@@ -573,118 +612,89 @@ where $n_{TP} = 2$ (attention + FFN), $n_{SP} = 1$ (attention), $n_{EP} = 1$ (Mo
 With $PP$ pipeline stages, the first token's hidden state must traverse all stages **sequentially** before the first decoded token can be emitted. Since the pipeline is empty at the start of prefill, there is no parallel filling:
 
 $$
-t_{\text{pipeline,warmup}} =
-(PP - 1) \cdot t_{\text{stage}}
+t_{\text{pipeline,warmup}}(B_{\text{prefill}}) =
+(PP - 1) \cdot t_{\text{stage}}(B_{\text{prefill}})
 $$
 
-where $t_{\text{stage}}$ is the latency to process one prefill batch through a single PP stage (approximately $t_{\text{prefill,local}}$ for the bottleneck stage, plus its inter-stage PP hop $t_{PP}^{\text{prefill}}$). For uniform PP stages:
+where $t_{\text{stage}}(B_{\text{prefill}})$ is the latency to process one prefill batch through a single PP stage (approximately $t_{\text{prefill,local}}(B_{\text{prefill}})$ for the bottleneck stage, plus its inter-stage PP hop $t_{PP}^{\text{prefill}}(B_{\text{prefill}})$). For uniform PP stages:
 
 $$
-t_{\text{pipeline,warmup}}
+t_{\text{pipeline,warmup}}(B_{\text{prefill}})
 \approx
 (PP - 1) \cdot
-(t_{\text{prefill,local}} + t_{PP}^{\text{prefill}})
+\bigl(t_{\text{prefill,local}}(B_{\text{prefill}}) + t_{PP}^{\text{prefill}}(B_{\text{prefill}})\bigr)
 $$
 
-For $PP = 1$ (no pipeline parallelism), $t_{\text{pipeline,warmup}} = 0$.
+For $PP = 1$ (no pipeline parallelism), $t_{\text{pipeline,warmup}}(B_{\text{prefill}}) = 0$.
 
 ---
 
 ## 3.4 Hardware Prefill Latency Formula
 
-Combining all three phases, with overlap factor $\rho \in [0, 1]$ capturing the fraction of prefill communication that can be hidden behind compute, and an SW dispatch budget $t_{\mathrm{SW}}^{\mathrm{stage}}$ for per-stage CPU kernel-launch overhead:
+Combining all three phases, with overlap factor $\rho \in [0, 1]$ capturing the fraction of prefill communication that can be hidden behind compute, an SW dispatch budget $t_{\text{stage,sw}}$ for per-stage CPU kernel-launch overhead, and the once-per-pass LM head roofline $t_{\text{LM,prefill,hw}}$ on stage $PP{-}1$:
 
 $$
-t_{\text{prefill}} =
-t_{\text{prefill,local}}
-+
-\max\left(0,\; t_{\text{prefill,comm}} - \rho\, t_{\text{prefill,local}}\right)
-+
-t_{\text{pipeline,warmup}}
+t_{\text{prefill}}(B_{\text{prefill}}) = t_{\text{prefill,local}}(B_{\text{prefill}}) + \max\!\bigl(0,\; t_{\text{prefill,comm}}(B_{\text{prefill}}) - \rho\, t_{\text{prefill,local}}(B_{\text{prefill}})\bigr) + t_{\text{pipeline,warmup}}(B_{\text{prefill}}) + t_{\text{LM,prefill,hw}}(B_{\text{prefill}})
 $$
 
 **Interpretation of each term:**
 
-- $t_{\text{prefill,local}}$: roofline local time, *with two corrections* added to the legacy $\max(t_{\text{compute}}, t_{\text{mem}})$ form:
-  - $t_{\text{compute}}^{\mathrm{eff}} = t_{\text{compute}} / \eta_{\mathrm{TC}}(\mathrm{mb}_{\mathrm{prefill}})$ — Tensor Core efficiency derate at small effective microbatch (notation.md §9). For prefill, $\mathrm{mb}_{\mathrm{prefill}} = B_{\text{prefill}} \cdot S_{\text{input}} / PP$ is large enough at typical $S$ that $\eta_{\mathrm{TC}} \approx 1$; the term is included for consistency with decode and to capture small-$S$ corner cases.
-  - SW composition with the per-stage CPU dispatch budget $t_{\mathrm{SW}}^{\mathrm{stage}} = (L/PP) \cdot k \cdot \tau_{\mathrm{launch}} + k_{\mathrm{pp\_hop}} \cdot \tau_{\mathrm{launch}}$ (the second term counts the recv + send P2P kernels at this stage's PP boundary, inert when $PP = 1$), where $k$ uses the same per-axis NCCL API call counts as decode — including the $n_{\mathrm{EP}}^{\mathrm{calls}} = 2 \cdot n_{\mathrm{EP\_collectives}}$ expansion for the MoE dispatch+combine round-trip; applied via the SW-overlap factor $\rho_{\mathrm{SW}}$:
-  
-  $$
-  t_{\text{prefill,local}} = \max\!\bigl(\max(t_{\text{compute}}^{\mathrm{eff}}, t_{\text{mem}}),\ \rho_{\mathrm{SW}} \cdot \max(t_{\text{compute}}^{\mathrm{eff}}, t_{\text{mem}}) + (1 - \rho_{\mathrm{SW}}) \cdot (\max(t_{\text{compute}}^{\mathrm{eff}}, t_{\text{mem}}) + t_{\mathrm{SW}}^{\mathrm{stage}}),\ t_{\mathrm{SW}}^{\mathrm{stage}}\bigr)
-  $$
-  
-  Note the prefill SW formula is per stage rather than per round: each forward pass through the pipeline is a single end-to-end sweep with no microbatch round structure (cf. decode.md §6.3.2). See [framework.md §2.2](framework.md#22-cuda-kernel-launch--cuda-graph-replay-t_mathrmsw) for the full derivation. With `kernel_launch_us = 0` the term vanishes (legacy roofline).
-- $\max(0,\, t_{\text{prefill,comm}} - \rho\, t_{\text{prefill,local}})$: residual communication after compute–communication overlap. In the compute-bound prefill regime, $t_{\text{prefill,local}}$ is large, so significant communication hiding ($\rho \approx 0.8$–$1.0$) is achievable.
-- $t_{\text{pipeline,warmup}}$: pipeline fill penalty; grows with $PP$ and with $S_{\text{input}}$ (since $t_{PP}^{\text{prefill}}$ scales with $S_{\text{input}}$).
+- **$t_{\text{prefill,local}}(B_{\text{prefill}})$** is the roofline local time with two corrections added to the legacy $\max(t_{\text{compute}}, t_{\text{mem}})$ form: a Tensor Core efficiency derate at small effective microbatch, and an SW composition for per-stage CPU kernel-launch overhead. Both are detailed below.
+- **$\max(0,\, t_{\text{prefill,comm}}(B_{\text{prefill}}) - \rho\, t_{\text{prefill,local}}(B_{\text{prefill}}))$** is residual communication after compute–communication overlap. In the compute-bound prefill regime, $t_{\text{prefill,local}}$ is large, so significant communication hiding ($\rho \approx 0.8$–$1.0$) is achievable.
+- **$t_{\text{pipeline,warmup}}(B_{\text{prefill}})$** is the pipeline fill penalty; grows with $PP$ and with $B_{\text{prefill}} \cdot S_{\text{input}}$ since both $t_{PP}^{\text{prefill}}$ and $t_{\text{prefill,local}}$ scale with the per-step token count.
+- **$t_{\text{LM,prefill,hw}}(B_{\text{prefill}})$** is the once-per-pass LM head roofline on stage $PP{-}1$, defined below. It is added outside the warmup because it fires once at the end of the prefill traversal (after the pipeline is filled), not per stage.
 
-> **Overlap note:** The overlap factor $\rho$ is an original parameterization (this work); see `references.md`. In the compute-bound prefill regime, compute and communication can be overlapped aggressively by pipelining GEMM tiles with collective operations (e.g., using NCCL + CUDA stream concurrency). Practical $\rho$ values are system-dependent but commonly 0.5–0.9. The independent $\rho_{\mathrm{SW}}$ governs CPU-GPU dispatch overlap; default $\rho_{\mathrm{SW}} = 1$ assumes async dispatch keeps the GPU command queue full.
+### LM head latency (stage PP-1 only)
+
+Mirroring `decode.md §6.2`, the LM head $H \to V$ projection is a per-pass one-shot kernel on stage $PP{-}1$ that uses the FLOPs and traffic from §1.5:
+
+$$
+t_{\text{LM,prefill,hw}}(B_{\text{prefill}}) =
+\max\!\left(
+  \frac{2 B_{\text{prefill}} H V / TP}{R_{\text{GPU}}},\;
+  \frac{H V b / TP + B_{\text{prefill}} V b}{BW_{\text{mem}}}
+\right)
+$$
+
+For chunked prefill (§5), the LM head only fires on the **last chunk** — once per request, after the final position's hidden state is available — so $t_{\text{LM,prefill,hw}}$ adds the same one-shot term to the chunked total rather than once per chunk. In typical prefill regimes ($S_{\text{input}} \gtrsim 100$) this term is well under 1% of the body cost.
+
+### Tensor Core efficiency derate
+
+The compute term is corrected for small effective microbatch (notation.md §9):
+
+$$
+t_{\text{compute}}^{\text{eff}}(B_{\text{prefill}}) = \frac{t_{\text{compute}}(B_{\text{prefill}})}{\eta_{\text{TC}}(\text{mb}_{\text{prefill}})}, \qquad \text{mb}_{\text{prefill}} = \frac{B_{\text{prefill}} \cdot S_{\text{input}}}{PP}
+$$
+
+For prefill, $\text{mb}_{\text{prefill}}$ is large enough at typical $S$ that $\eta_{\text{TC}} \approx 1$; the term is included for consistency with decode and to capture small-$S$ corner cases.
+
+### SW composition
+
+The per-stage CPU dispatch budget $t_{\text{stage,sw}}$ is applied via the SW-overlap factor $\rho_{\text{SW}}$ in the same base + unhidden-overflow form as decode (`decode.md §7.2`). Let $t_{\text{prefill,GPU}}(B_{\text{prefill}}) = \max\bigl(t_{\text{compute}}^{\text{eff}}(B_{\text{prefill}}),\, t_{\text{mem}}(B_{\text{prefill}})\bigr)$ denote the GPU-side roofline:
+
+$$
+t_{\text{prefill,local}}(B_{\text{prefill}}) = t_{\text{prefill,GPU}}(B_{\text{prefill}}) + \max\!\bigl(0,\; t_{\text{stage,sw}} - \rho_{\text{SW}} \cdot t_{\text{prefill,GPU}}(B_{\text{prefill}})\bigr)
+$$
+
+$t_{\text{stage,sw}}$ is the same per-stage launch budget as decode (`decode.md §7.1`):
+
+$$
+t_{\text{stage,sw}} = \tau_{\text{launch}} \cdot \left[ \frac{L}{PP} \bigl( k_{\text{compute}} + k_{\text{collective}}(n_{TP} + n_{SP}) \bigr) + \frac{L_{\text{moe}}}{PP} \cdot k_{\text{collective}} \cdot n_{EP} + k_{\text{pp\_hop}} \right]
+$$
+
+with the unified $n_{EP} = 2$ for MoE layers (Dispatch + Combine). $t_{\text{stage,sw}}$ is $B_{\text{prefill}}$-independent — kernel launches pay $\tau_{\text{launch}}$ once per launch event regardless of payload. Each prefill forward pass is a single end-to-end sweep with no microbatch round structure (cf. decode's pipelined steady state); the per-stage formula applies once per stage per prefill pass. With `kernel_launch_us = 0` the term vanishes (legacy roofline).
+
+> **Overlap note:** The overlap factor $\rho$ is an original parameterization (this work); see `references.md`. In the compute-bound prefill regime, compute and communication can be overlapped aggressively by pipelining GEMM tiles with collective operations (e.g., using NCCL + CUDA stream concurrency). Practical $\rho$ values are system-dependent but commonly 0.5–0.9. The independent $\rho_{\text{SW}}$ governs CPU-GPU dispatch overlap; default $\rho_{\text{SW}} = 1$ assumes async dispatch keeps the GPU command queue full.
 
 ---
 
 <div style="page-break-before: always;"></div>
 
-# 4. Batched Prefill
+# 4. Optimal Batch Size for GPU Utilization
 
-Multiple requests can be prefilled simultaneously by stacking their input tokens into a single padded batch of dimension $B_{\text{prefill}} \times S_{\text{input}}$. (In continuous batching, the sequences may have different lengths, but we model the uniform-length case for clarity; the analysis generalizes by replacing $S_{\text{input}}$ with the average padded length.)
+§3 derived $t_{\text{prefill}}(B_{\text{prefill}})$ with $B_{\text{prefill}}$ threaded through the compute, memory, communication, and warmup terms. This section translates that scaling into a serving-side design rule: pick the batch size that keeps the GPU compute-bound while respecting the prefill latency SLO.
 
----
-
-## 4.1 FLOPs and Latency Under Batching
-
-All projection and FFN GEMMs grow proportionally with $B_{\text{prefill}}$:
-
-$$
-F_{\text{prefill,device}}^{(B_{\text{prefill}})} =
-B_{\text{prefill}} \cdot F_{\text{prefill,device}}
-|_{B_{\text{prefill}}=1}
-$$
-
-For the attention score and value terms, the $S_{\text{input}}^2$ computation is **independent across requests** (each request's query attends only to its own key/value cache, not to other requests' tokens). Thus:
-
-$$
-F_{\text{attn,KV,prefill,device}}^{(B_{\text{prefill}})} =
-B_{\text{prefill}} \cdot \frac{4 S_{\text{input}}^2 H}{TP \cdot SP}
-$$
-
-Unlike batched **decode** — where the weight matrices are shared and reused across all $B$ output tokens in the GEMV — batched prefill increases both FLOPs and compute time proportionally. In the compute-bound regime:
-
-$$
-t_{\text{prefill,compute}}^{(B_{\text{prefill}})}
-\approx
-B_{\text{prefill}} \cdot t_{\text{prefill,compute}}
-|_{B_{\text{prefill}}=1}
-$$
-
----
-
-## 4.2 Prefill Latency Scaling with Batch Size
-
-All $B_{\text{prefill}}$ requests must wait for the **entire batched prefill pass** to complete before any of them receives their first token. Therefore:
-
-$$
-t_{\text{prefill}}(B_{\text{prefill}})
-\approx
-t_{\text{prefill,local}}^{(B_{\text{prefill}})}
-+
-\max\left(0,\; t_{\text{prefill,comm}}^{(B_{\text{prefill}})} - \rho\, t_{\text{prefill,local}}^{(B_{\text{prefill}})}\right)
-+
-t_{\text{pipeline,warmup}}
-$$
-
-In the compute-bound regime, $t_{\text{prefill,local}} \propto B_{\text{prefill}}$, so $t_{\text{prefill}}$ grows **roughly linearly** with $B_{\text{prefill}}$:
-
-$$
-t_{\text{prefill}}(B_{\text{prefill}}) \approx B_{\text{prefill}} \cdot t_{\text{prefill}}(1)
-\quad (\text{compute-bound approximation})
-$$
-
-Note: communication time also scales with $B_{\text{prefill}}$ (all message sizes acquire a $B_{\text{prefill}}$ factor), so the growth is strictly linear when both compute and communication are proportional to batch size.
-
----
-
-## 4.3 Optimal Batch Size for GPU Utilization
-
-The goal of batched prefill is to maximize **GPU utilization** (keep the compute units fully loaded) while satisfying a prefill latency service-level objective (SLO), $t_{\text{prefill,SLO}}$.
+In continuous batching, requests may have different lengths; we model the uniform-length case ($B_{\text{prefill}}$ requests of $S_{\text{input}}$ tokens each) for clarity. The analysis generalizes by replacing $S_{\text{input}}$ with the average padded length.
 
 ### Minimum batch size for compute saturation
 
@@ -695,7 +705,7 @@ $$
 \ge R_{\text{ridge}}
 $$
 
-Using $\text{OI}_{\text{prefill}} \approx 2 S_{\text{input}} / b$ (Section 2.1), single-request prefill is already compute-bound for $S_{\text{input}} \gtrsim S_{\text{input}}^{\star}$ (Section 2.3). Batching primarily helps when $S_{\text{input}} < S_{\text{input}}^{\star}$, in which case the minimum batch size to enter the compute-bound regime is:
+Using $\text{OI}_{\text{prefill}} \approx 2 S_{\text{input}} / b$ (§2.1), single-request prefill is already compute-bound for $S_{\text{input}} \gtrsim S_{\text{input}}^{\star}$ (§2.3). Batching primarily helps when $S_{\text{input}} < S_{\text{input}}^{\star}$, in which case the minimum batch size to enter the compute-bound regime is:
 
 $$
 B_{\text{prefill}}^{\min} =
@@ -707,7 +717,7 @@ For H100 and $S_{\text{input}} = 64$ tokens (a very short prompt): $B_{\text{pre
 
 ### Maximum batch size from prefill latency SLO
 
-The prefill latency SLO constrains the maximum allowable batch size. In the compute-bound regime:
+The prefill latency SLO constrains the maximum allowable batch size. In the compute-bound regime, $t_{\text{prefill}}(B_{\text{prefill}}) \approx B_{\text{prefill}} \cdot t_{\text{prefill}}(1)$ — every batched request waits for the full pass before getting its first token — so:
 
 $$
 B_{\text{prefill}}^{\max} =
@@ -718,7 +728,7 @@ $$
 
 $$
 B_{\text{prefill}}^{\text{opt}} =
-\min\left(B_{\text{prefill}}^{\max},\; B_{\text{avail}}\right)
+\min\!\bigl(B_{\text{prefill}}^{\max},\; B_{\text{avail}}\bigr)
 $$
 
 where $B_{\text{avail}}$ is the number of requests available in the queue. Batching beyond $B_{\text{prefill}}^{\max}$ violates the prefill latency SLO; batching below $B_{\text{prefill}}^{\min}$ leaves the GPU under-utilized.
@@ -738,15 +748,7 @@ For very long prompts ($S_{\text{input}} \gg 1$), prefilling the entire sequence
 Each chunk processes $C$ tokens. The **linear terms** (projections + FFN) are independent of position and identical for every chunk. However, the **attention term** is chunk-index-dependent: chunk $k$ (processing tokens $[(k{-}1)C,\; kC)$) has its $C$ queries attend to the **full accumulated KV cache** of $kC$ positions [SARATHI], not just the $C$ tokens within the chunk itself. The per-chunk FLOPs for chunk $k = 1, 2, \ldots, N_{\text{chunks}}$:
 
 $$
-F_{\text{chunk,device}}^{(k)} =
-\frac{L}{PP}
-\left[
-\frac{(4H^2 + 4 H H_{kv}) C}{TP}
-+
-\frac{6 H I_{\text{eff}} C}{TP \cdot EP}
-+
-\frac{4 \cdot C \cdot kC \cdot H}{TP \cdot SP}
-\right]
+F_{\text{chunk,device}}^{(k)} = \frac{L}{PP} \left[ \frac{(4H^2 + 4 H H_{kv}) C}{TP} + \frac{6 H I_{\text{eff}} C}{TP \cdot EP} + \frac{4 \cdot C \cdot kC \cdot H}{TP \cdot SP} \right]
 $$
 
 The first two terms inside the brackets are **linear** (projections + FFN, constant across chunks). The third term is the **attention** component, which grows with chunk index $k$ since chunk $k$ attends to $kC$ accumulated KV positions.
@@ -781,10 +783,7 @@ $$
 Per-chunk overlap-adjusted latency:
 
 $$
-t_{\text{chunk}}^{(k)} =
-t_{\text{chunk,local}}^{(k)}
-+
-\max\left(0,\; t_{\text{chunk,comm}} - \rho\, t_{\text{chunk,local}}^{(k)}\right)
+t_{\text{chunk}}^{(k)} = t_{\text{chunk,local}}^{(k)} + \max\!\left(0,\; t_{\text{chunk,comm}} - \rho\, t_{\text{chunk,local}}^{(k)}\right)
 $$
 
 ---
@@ -825,11 +824,7 @@ The chunked attention total ($\approx 2S^2H$) is half the unchunked convention (
 Hardware prefill latency for a chunked-prefill request:
 
 $$
-t_{\text{prefill,chunked}}^{\text{total}}
-\approx
-t_{\text{prefill,chunked}}
-+
-t_{\text{pipeline,warmup}}
+t_{\text{prefill,chunked}}^{\text{total}} \approx t_{\text{prefill,chunked}} + t_{\text{pipeline,warmup}}
 $$
 
 Because the prefill is spread over $N_{\text{chunks}}$ scheduler iterations, the observed prefill latency from the requesting client is the time until all chunks complete and the first token is generated — longer than unchunked prefill for the same request in isolation (due to inter-chunk scheduling overhead and interleaved decode iterations).
@@ -941,12 +936,7 @@ In practice all three differ simultaneously: prefill clusters favor low TP and l
 Treat the layout transition as a single **all-gather-equivalent** collective over the decode-cluster scale-up fabric, with effective per-device bandwidth $BW_{\text{intra}}$ (NVLink, ≈900 GB/s on H100/B200; ≈1.8 TB/s on GB200 NVL72):
 
 $$
-t_{\text{handoff,colo}} =
-\alpha_{\text{intra}}
-+
-\frac{M_{\text{KV,total}}}{BW_{\text{intra}}}
-\cdot
-\eta_{\text{repack}}
+t_{\text{handoff,colo}} = \alpha_{\text{intra}} + \frac{M_{\text{KV,total}}}{BW_{\text{intra}}} \cdot \eta_{\text{repack}}
 $$
 
 where:
@@ -970,10 +960,7 @@ In a disaggregated architecture, the prefill cluster's KV cache must be moved ac
 The textbook bound [ALPHA-BETA] for one bulk transfer of the full KV cache:
 
 $$
-t_{\text{KV-transfer}}^{\text{bulk}} =
-\alpha_{\text{inter}}
-+
-\frac{M_{\text{KV,total}}}{BW_{\text{inter}}}
+t_{\text{KV-transfer}}^{\text{bulk}} = \alpha_{\text{inter}} + \frac{M_{\text{KV,total}}}{BW_{\text{inter}}}
 $$
 
 Reference NIC line rates: InfiniBand HDR (200 Gb/s per port) → ≈20 GB/s unidirectional; ConnectX-7 (400 Gb/s) → ≈50 GB/s; NVLink-C2C (Grace–Hopper) → ≈900 GB/s. The *delivered* $BW_{\text{inter}}$ is typically a fraction of these (see below).
@@ -1047,12 +1034,7 @@ Let the prefill cluster have hardware parameters $R_{\text{GPU,pre}}$ and $BW_{\
 ### Phase 1: Prefill on the prefill cluster
 
 $$
-t_{\text{prefill}} =
-t_{\text{prefill,local,pre}}
-+
-\max\!\left(0,\; t_{\text{prefill,comm,pre}} - \rho_{\text{pre}}\, t_{\text{prefill,local,pre}}\right)
-+
-t_{\text{pipeline,warmup,pre}}
+t_{\text{prefill}} = t_{\text{prefill,local,pre}} + \max\!\left(0,\; t_{\text{prefill,comm,pre}} - \rho_{\text{pre}}\, t_{\text{prefill,local,pre}}\right) + t_{\text{pipeline,warmup,pre}}
 $$
 
 All "pre" subscripts refer to the prefill cluster's hardware and partition. In a co-located deployment, the prefill cluster *is* the same physical cluster as the decode cluster, but typically running on a different worker pool with its own partition.
@@ -1081,12 +1063,7 @@ $$
 ### Total hardware prefill latency
 
 $$
-t_{\text{prefill,total}} =
-t_{\text{prefill}}
-+
-t_{\text{handoff}}
-+
-t_{\text{pipeline,warmup,dec}}
+t_{\text{prefill,total}} = t_{\text{prefill}} + t_{\text{handoff}} + t_{\text{pipeline,warmup,dec}}
 $$
 
 System knobs for each term:

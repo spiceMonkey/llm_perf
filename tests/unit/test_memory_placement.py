@@ -294,7 +294,7 @@ def _load_temp_tuner(cfg: dict):
     """Inject the required collective-count fields if absent so each test
     can stay focused on the placement block."""
     cfg.setdefault("n_TP_collectives", 2)
-    cfg.setdefault("n_EP_collectives", 1)
+    cfg.setdefault("n_EP_collectives", 2)
     cfg.setdefault("n_SP_collectives", 1)
     cfg.setdefault("overlap_factor", 0.0)
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:

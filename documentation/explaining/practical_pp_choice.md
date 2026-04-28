@@ -36,7 +36,7 @@ The short answer: the steady-state decode roofline assumes a regime that is hard
 
 # 2. The Steady-State Decode Lens (Where the Roofline Lives)
 
-The decode roofline this framework implements (see [decode.md §6.3](../modeling/decode.md#63-pipeline-bubble-tps-and-ttps)) computes $t_{\mathrm{step,user}} = t_{\mathrm{stage}} \cdot \max(1, PP/B)$. At $B \ge PP$ the bubble factor is one, and $t_{\mathrm{stage}}$ scales as $1/PP$ because each stage holds only $L/PP$ layers' worth of weights. The roofline therefore rewards PP almost as effectively as TP for the inflight-batched, post-prefill, decode-only operating point — which is exactly the operating point the formula is *for*.
+The decode roofline this framework implements (see [decode.md §7](../modeling/decode.md#7-pipeline-bubble-kernel-launch-overhead-and-throughput)) computes $t_{\mathrm{step,user}} = t_{\mathrm{stage}} \cdot \max(1, PP/B)$. At $B \ge PP$ the bubble factor is one, and $t_{\mathrm{stage}}$ scales as $1/PP$ because each stage holds only $L/PP$ layers' worth of weights. The roofline therefore rewards PP almost as effectively as TP for the inflight-batched, post-prefill, decode-only operating point — which is exactly the operating point the formula is *for*.
 
 Three implicit assumptions underpin this favorable accounting:
 
@@ -260,5 +260,5 @@ arXiv:2412.19437.
 - [batched_decode.md](batched_decode.md) — Why $B \ge PP$ is the primary escape from the bubble regime.
 - [why_flops_doesnt_help_at_long_context.md](why_flops_doesnt_help_at_long_context.md) — The KV-traffic-dominance regime referenced in §3.4.
 - [when_hierarchical_scale_up_matters.md](when_hierarchical_scale_up_matters.md) — Companion: another case where the optimizer routes around a cost the roofline doesn't price.
-- [../modeling/decode.md §6.3](../modeling/decode.md#63-pipeline-bubble-tps-and-ttps) — Formal decode roofline.
+- [../modeling/decode.md §7](../modeling/decode.md#7-pipeline-bubble-kernel-launch-overhead-and-throughput) — Formal decode roofline.
 - [../modeling/e2e.md](../modeling/e2e.md) — End-to-end metric that does include prefill TTFT.

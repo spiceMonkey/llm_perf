@@ -5,7 +5,7 @@
 
 ---
 
-The hardware roofline model in `decode.md` establishes a lower bound on per-token decode latency, governed by compute throughput and HBM bandwidth. Real serving systems, however, introduce additional latency above this bound that lives entirely on the host CPU and serving-software path: tokenization at request entry, CUDA kernel launch or graph replay per decode step, request scheduling and batch assembly, token sampling, and response streaming. These are empirical constants that require profiling on the target system — they cannot be derived from hardware specifications alone. This document catalogs the CPU / software-stack overhead terms, explains where each comes from, and defines the per-request framework overhead $t_{\text{framework}}$ that enters end-to-end cost accounting in `e2e.md`. Hardware-level overheads tied to the network fabric (e.g., disaggregated KV transfer) are covered in `prefill.md §6`; memory-traffic calibration constants (e.g., the activation I/O residual) are covered in `decode.md`.
+The hardware roofline model in `decode.md` establishes a lower bound on per-token decode latency, governed by compute throughput and HBM bandwidth. Real serving systems, however, introduce additional latency above this bound that lives entirely on the host CPU and serving-software path: tokenization at request entry, request scheduling and batch assembly, token sampling, and response streaming. These are empirical constants that require profiling on the target system — they cannot be derived from hardware specifications alone. This document catalogs the CPU / software-stack overhead terms, explains where each comes from, and defines the per-request framework overhead $t_{\text{framework}}$ that enters end-to-end cost accounting in `e2e.md`. Kernel-launch and CUDA-Graph dispatch overheads are folded into the per-stage HW model (`decode.md §7.1`), not catalogued here. Hardware-level overheads tied to the network fabric (e.g., disaggregated KV transfer) are covered in `prefill.md §6`; memory-traffic calibration constants live in `decode.md`.
 
 ---
 
@@ -14,10 +14,8 @@ The hardware roofline model in `decode.md` establishes a lower bound on per-toke
 - [1. Overhead Classification](#1-overhead-classification)
 - [2. CPU / Software-Stack Overhead Terms](#2-cpu--software-stack-overhead-terms)
   - [2.1 Tokenization Latency ($t_{\text{tok}}$)](#21-tokenization-latency-t_texttok)
-  - [2.2 CUDA Kernel Launch / CUDA Graph Replay ($t_{\mathrm{SW}}$)](#22-cuda-kernel-launch--cuda-graph-replay-t_mathrmsw)
-  - [2.4 Request Scheduling / Batch Assembly ($t_{\text{sched}}$)](#24-request-scheduling--batch-assembly-t_textsched)
-  - [2.5 Token Sampling ($t_{\text{sample}}$)](#25-token-sampling-t_textsample)
-  - [2.6 Response Streaming / Detokenization ($t_{\text{detok}}$)](#26-response-streaming--detokenization-t_textdetok)
+  - [2.2 Request Scheduling / Batch Assembly ($t_{\text{sched}}$)](#22-request-scheduling--batch-assembly-t_textsched)
+  - [2.3 Response Streaming / Detokenization ($t_{\text{detok}}$)](#23-response-streaming--detokenization-t_textdetok)
 - [3. Total Framework Overhead Per Request](#3-total-framework-overhead-per-request)
 - [4. Symbol Summary](#4-symbol-summary)
 
@@ -32,13 +30,10 @@ The table below catalogs the CPU / software-stack overhead terms, organized by t
 | Overhead | Phase | Symbol | Typical Range |
 |----------|-------|--------|---------------|
 | Tokenization | Prefill entry | $t_{\text{tok}}$ | ~0.1–2 ms |
-| CUDA kernel launch | Decode per-step | $t_{\text{launch}}$ | ~5–50 µs/step |
-| CUDA graph replay | Decode per-step | $t_{\text{graph}}$ | ~10–100 µs/step |
 | Request scheduling / batch assembly | Serving | $t_{\text{sched}}$ | ~10–200 µs |
-| Token sampling | Decode per-step | $t_{\text{sample}}$ | ~20–200 µs |
 | Response streaming / detokenization | Decode per-token | $t_{\text{detok}}$ | ~1–10 µs/token |
 
-> **Out of scope for this document.** Disaggregated KV transfer latency (an α–β network-fabric term) is derived in `prefill.md §6.4`. Memory-traffic calibration constants used by the decode traffic model live in `decode.md` (implemented in `core/decode_model.py`).
+> **Out of scope for this document.** Kernel-launch / CUDA-Graph dispatch overhead is folded into the per-stage HW model and lives in `decode.md §7.1` (the $t_{\text{stage,sw}}$ term, composed inside $t_{\text{step,user}}$). The LM head $H \to V$ projection plus the post-LM-head sampling kernel (softmax + optional top-$k$/top-$p$ + multinomial draw) are similarly GPU-side per-step work and are modeled inside the per-step HW roofline as the once-per-step $t_{\text{LM,hw}}$ term on the last PP stage (`decode.md §2.1 / §3 / §6.2 / §7.2`). Disaggregated KV transfer latency (an α–β network-fabric term) is derived in `prefill.md §6.4`. Memory-traffic calibration constants used by the decode traffic model live in `decode.md` (implemented in `core/decode_model.py`).
 
 ---
 
@@ -62,52 +57,7 @@ Each subsection below describes what the term measures, why it exists at the sys
 
 ---
 
-### §2.2 CUDA Kernel Launch / CUDA Graph Replay ($t_{\mathrm{SW}}$)
-
-**Note (2026-04, framework_update PR).** §2.2 and §2.3 were originally separate empirical constants ($t_{\mathrm{launch}}$ and $t_{\mathrm{graph}}$). They are now merged into a single derived per-round dispatch budget, $t_{\mathrm{SW}}$, computed inside the decode latency model from `TuningSpec` knobs rather than supplied as a flat scalar. The derivation lives in [kernel_launch_overhead.md §5](../explaining/kernel_launch_overhead.md#5-mapping-the-overhead-to-the-llm_perf-framework); this section summarises the modeling surface.
-
-**What it measures.** $t_{\mathrm{SW}}$ is the cumulative CPU→GPU kernel submission latency incurred per pipeline round on each device. In steady-state inflight batching ($B \ge PP$), a round contains exactly $PP$ microbatches per stage, each launching $L/PP$ layers' worth of kernels plus $k_{\mathrm{pp\_hop}}$ P2P send/recv kernels per microbatch boundary; summing across the round gives:
-
-$$
-t_{\mathrm{SW}} = L \cdot k \cdot \tau_{\mathrm{launch}} + PP \cdot k_{\mathrm{pp\_hop}} \cdot \tau_{\mathrm{launch}}, \qquad k = k_{\mathrm{compute}} + k_{\mathrm{collective}} \cdot (n_{\mathrm{TP}}^{\mathrm{eff}} + n_{\mathrm{EP}}^{\mathrm{eff}} + n_{\mathrm{SP}}^{\mathrm{eff}})
-$$
-
-where $\tau_{\mathrm{launch}}$ is the per-kernel dispatch latency, $k_{\mathrm{compute}}$ is the per-layer compute kernel count (≈10 after typical fusion), $k_{\mathrm{collective}}$ is the per-NCCL-call kernel count (≈2), $k_{\mathrm{pp\_hop}}$ is the kernel count per PP boundary on each device per microbatch (default 2 = 1 recv + 1 send; set to 1 if `ncclSendRecv` or a custom kernel fuses the pair), and the $n_{*}^{\mathrm{calls}}$ terms are the per-layer NCCL API call counts that actually fire for the current shape (zero on axes where the parallelism is 1). For TP and SP, $n_{*}^{\mathrm{calls}} = n_{*\mathrm{\_collectives}}$. For EP, $n_{\mathrm{EP}}^{\mathrm{calls}} = 2 \cdot n_{\mathrm{EP\_collectives}}$ — the cost model's "1 MoE A2A round-trip" expands to 2 actual NCCL calls (dispatch + combine), because each call is its own kernel-launch event paying its own $\tau$. The PP-hop term sums $PP$ microbatches per round × $k_{\mathrm{pp\_hop}}$ launches per microbatch on this device; inert when $PP = 1$ (no inter-stage hops).
-
-**Why it exists.** Every kernel the model launches incurs a fixed CPU-side dispatch cost: `cudaLaunchKernel` driver call, parameter marshalling, command-buffer dispatch. CUDA Graphs collapse the framework / driver portion of this cost by replaying a pre-captured DAG with one API call instead of $L \cdot k$. The framework parameterises the difference via $\tau_{\mathrm{launch}}$:
-
-- **CUDA Graphs on (production default):** $\tau_{\mathrm{launch}} \approx 1.5\,\mu s$.
-- **Eager / no graphs:** $\tau_{\mathrm{launch}} \approx 7\,\mu s$ (range 5–10).
-
-**How it enters the roofline.** Through the SW-overlap factor $\rho_{\mathrm{SW}}$:
-
-$$
-t_{\mathrm{step,user}} = \max\!\bigl(t_{\mathrm{stage}},\ \rho_{\mathrm{SW}} \cdot t_{\mathrm{stage}} + (1 - \rho_{\mathrm{SW}}) \cdot (t_{\mathrm{stage}} + t_{\mathrm{SW}}),\ t_{\mathrm{SW}}\bigr) \cdot \gamma_{\mathrm{pp}}
-$$
-
-At $\rho_{\mathrm{SW}} = 1$ (default — async dispatch fully overlaps with GPU work), $t_{\mathrm{SW}}$ acts as a *floor*: it kicks in only when the GPU's $t_{\mathrm{stage}}$ is shorter than the round's launch budget. At $\rho_{\mathrm{SW}} = 0$ (synchronous worst case), $t_{\mathrm{SW}}$ adds linearly. Setting `kernel_launch_us = 0` in the tuner disables the term entirely (legacy roofline behavior).
-
-**Caveat — is $\rho_{\mathrm{SW}} = 1$ realistic?** Strictly: it is the upper-end case, not the empirical average. It accurately models CUDA-Graphs-replayed steady-state on production stacks (TensorRT-LLM, vLLM, SGLang), where the CPU's cost is one `cudaGraphLaunch` API call per microbatch (~1.5 μs) and the GPU's command queue is non-empty for the entire pipeline round, giving the CPU multiple orders of magnitude of slack. Empirically these stacks measure $\rho_{\mathrm{SW}} \approx 0.85$–$0.95$ — close to but not exactly 1. Eager-mode PyTorch / Python serving paths sit at $\rho_{\mathrm{SW}} \approx 0.3$–$0.6$ because Python interpreter overhead between kernel launches breaks the CPU-runs-ahead invariant. The framework's 1.0 default matches its roofline philosophy (give the optimistic upper bound; users dial down to model deployment imperfections). Crucially, $t_{\mathrm{SW}}$ is still a *hard floor* when $t_{\mathrm{SW}} > t_{\mathrm{stage}}$ regardless of $\rho_{\mathrm{SW}}$, so the optimistic default does not hide the dispatch tax in the SW-bound regime — only in the GPU-bound regime where the launch budget *can* in principle be hidden.
-
-**Calibration.** Two independent profiles:
-
-1. Count $k_{\mathrm{compute}}$ and $k_{\mathrm{collective}}$ from a Nsight Systems timeline of one decode step (count distinct kernels per layer; group collectives via NCCL marker ranges).
-2. Measure $\tau_{\mathrm{launch}}$ from the gap between consecutive kernel starts on the CPU timeline (eager mode) or graph-launch elapsed time (graph mode).
-
-**Typical values on H100 SXM5 / B200.**
-
-| Mode | $\tau_{\mathrm{launch}}$ | $t_{\mathrm{SW}}$ for $L = 120$, $k = 12$ |
-|---|---:|---:|
-| Eager / no graphs | ~7 μs | ~10 ms per round |
-| CUDA Graphs (production default) | ~1.5 μs | ~2.16 ms per round |
-
-Compared with a typical mb=1 decode $t_{\mathrm{stage}}$ of ~1.8–2.2 ms, this floor is order-of-magnitude relevant; production systems rely on the CUDA-Graphs path to keep $t_{\mathrm{SW}} \le t_{\mathrm{stage}}$ at deployable batch sizes.
-
-**Legacy fallback.** The opaque per-step constants `OverheadSpec.t_graph_us` (and the older `t_launch`) remain in the schema for back-compat. The E2E calculator uses them only when the derived $t_{\mathrm{SW}}$ is zero (i.e., SW modeling explicitly disabled). New deployments should leave the legacy constants at 0 and tune via the TuningSpec fields.
-
----
-
-### §2.4 Request Scheduling / Batch Assembly ($t_{\text{sched}}$)
+### §2.2 Request Scheduling / Batch Assembly ($t_{\text{sched}}$)
 
 **What it measures.** $t_{\text{sched}}$ is the time the serving scheduler spends at the start of each decode iteration selecting which requests to include in the next batch, allocating or reclaiming KV cache pages, and preparing the batch metadata tensors (token IDs, position IDs, block tables).
 
@@ -127,23 +77,7 @@ All of this runs on CPU and must complete before the GPU decode kernel can launc
 
 ---
 
-### §2.5 Token Sampling ($t_{\text{sample}}$)
-
-**What it measures.** $t_{\text{sample}}$ is the time required to select the next token from the logit distribution output by the LM head, after the final linear projection and softmax.
-
-**Why it exists.** Sampling involves operations on the vocabulary dimension $V$ (typically 32K–128K tokens). These are not GEMM-bound and do not benefit from tensor parallelism in the same way as weight projections. Depending on the sampling strategy:
-
-- **Greedy decoding** (argmax over $V$): a reduction over $V$ values, roughly $\mathcal{O}(V)$ comparisons → ~5–20 µs on H100.
-- **Temperature + top-$p$/top-$k$ sampling**: requires sorting or partial sort over $V$ to find the nucleus, followed by a multinomial draw → ~20–200 µs.
-- **Nucleus sampling on large vocabularies**: without optimized sorted-topk kernels (e.g., those in TensorRT-LLM [TENSORRT-LLM]), can reach 100–500 µs per step.
-
-**Calibration.** Profile the decode step with Nsight Systems or `torch.cuda.Event` timing. Isolate the sampling kernel (distinct from the LM head GEMM). Measure across vocabulary sizes and sampling strategies.
-
-**Typical values.** Greedy: ~5–20 µs. Temperature + top-$p$: ~20–200 µs. Nucleus sampling with unoptimized kernels: ~100–500 µs. TensorRT-LLM's fused sampling kernels achieve ~10–30 µs across strategies [TENSORRT-LLM].
-
----
-
-### §2.6 Response Streaming / Detokenization ($t_{\text{detok}}$)
+### §2.3 Response Streaming / Detokenization ($t_{\text{detok}}$)
 
 **What it measures.** $t_{\text{detok}}$ is the per-token cost of converting the sampled token ID back to a UTF-8 string fragment and transmitting it to the client (via HTTP chunked transfer or server-sent events).
 
@@ -151,7 +85,7 @@ All of this runs on CPU and must complete before the GPU decode kernel can launc
 
 **Scaling behavior.** $t_{\text{detok}}$ applies once per generated token and is effectively constant in token output length (it does not grow with $T_{\text{out}}$, only accumulates). The cumulative detokenization cost is $T_{\text{out}} \times t_{\text{detok}}$, which is small relative to the total decode time for any non-trivially sized model.
 
-**Calibration.** Measure round-trip latency from GPU token ID to client receipt at the application layer, minus network round-trip time (RTT). The residual is approximately $t_{\text{detok}} + t_{\text{sample}}$.
+**Calibration.** Measure round-trip latency from GPU token ID to client receipt at the application layer, minus network round-trip time (RTT). The residual is approximately $t_{\text{detok}}$ (the post-LM-head sampling kernel is folded into $t_{\text{LM,hw}}$ on the GPU side, not into this term).
 
 **Typical values.** ~1–10 µs per token for the detokenization lookup itself. Socket write latency varies with network configuration and is separate from this constant.
 
@@ -162,18 +96,16 @@ All of this runs on CPU and must complete before the GPU decode kernel can launc
 Combining all CPU / software-stack overhead terms, the total framework latency for a complete request consisting of a prefill pass followed by $T_{\text{out}}$ decode steps is:
 
 $$
-t_{\text{framework}} = t_{\text{tok}} + t_{\text{sched}} + T_{\text{out}} \cdot (t_{\text{graph}} + t_{\text{sample}} + t_{\text{detok}})
+t_{\text{framework}} = t_{\text{tok}} + t_{\text{sched}} + T_{\text{out}} \cdot t_{\text{detok}}
 $$
 
-where the three groups are: tokenization (once, at start), scheduling (once per batch), and per-decode-step overhead (repeated $T_{\text{out}}$ times).
+where the three groups are: tokenization (once, at start), scheduling (once per batch), and per-decode-step overhead (repeated $T_{\text{out}}$ times). Kernel-launch / dispatch overhead is *not* in this sum — it is folded into $t_{\text{step,user}}$ at the HW level via `decode.md §7.1`. The LM head GEMM and the sampling kernel are likewise GPU-side and absorbed into $t_{\text{LM,hw}}$ inside $t_{\text{step,user}}$ (`decode.md §7.2`).
 
 **Notes on this decomposition:**
 
-1. $t_{\text{launch}}$ is replaced by $t_{\text{graph}}$ in graph-capture mode. If running in eager mode without CUDA graphs, replace $t_{\text{graph}}$ with $t_{\text{launch}}$ in the per-step term.
+1. $t_{\text{sched}}$ is charged once per batch assembly event, not once per request. In continuous batching, a new batch is assembled every decode step, so $t_{\text{sched}}$ is effectively per-step for the active batch, not per-request. At the per-request level, it integrates to $T_{\text{out}} \times t_{\text{sched}}$ amortized over all requests in the batch.
 
-2. $t_{\text{sched}}$ is charged once per batch assembly event, not once per request. In continuous batching, a new batch is assembled every decode step, so $t_{\text{sched}}$ is effectively per-step for the active batch, not per-request. At the per-request level, it integrates to $T_{\text{out}} \times t_{\text{sched}}$ amortized over all requests in the batch.
-
-3. Disaggregated KV-transfer latency is **not** included here; it is a network-fabric term handled in `prefill.md §6.4` as part of the prefill→decode handoff.
+2. Disaggregated KV-transfer latency is **not** included here; it is a network-fabric term handled in `prefill.md §6.4` as part of the prefill→decode handoff.
 
 **Relationship to hardware model.** The full per-request latency is:
 
@@ -183,18 +115,16 @@ $$
 
 where $t_{\text{TTFT}}$ and $t_{\text{step,user}}$ are defined in `prefill.md` and `decode.md` respectively. End-to-end assembly is in `e2e.md`.
 
-**Order-of-magnitude comparison.** For a representative decode-heavy workload ($T_{\text{out}} = 512$, graph mode, greedy sampling, co-located):
+**Order-of-magnitude comparison.** For a representative decode-heavy workload ($T_{\text{out}} = 512$, greedy sampling, co-located):
 
 | Term | Per-step | Cumulative ($T_{\text{out}}=512$) |
 |------|----------|----------------------------------|
-| $t_{\text{step,user}}$ (hardware) | ~2–20 ms | 1–10 s |
-| $t_{\text{graph}}$ | ~50 µs | ~26 ms |
-| $t_{\text{sample}}$ | ~10–30 µs | ~5–15 ms |
+| $t_{\text{step,user}}$ (hardware, includes kernel-launch budget per `decode.md §7.1` and $t_{\text{LM,hw}}$ per `decode.md §7.2`) | ~2–20 ms | 1–10 s |
 | $t_{\text{detok}}$ | ~5 µs | ~2.5 ms |
 | $t_{\text{tok}}$ (once) | — | ~0.5 ms |
 | $t_{\text{sched}}$ (once, amortized) | — | ~0.1 ms |
 
-Framework overhead is typically 1–5% of total request latency for well-optimized serving stacks on large models. It becomes more significant for small models (where $t_{\text{step,user}}$ is short) or for deployments without CUDA graph capture.
+Framework overhead is typically 1–5% of total request latency for well-optimized serving stacks on large models.
 
 ---
 
@@ -205,10 +135,7 @@ All symbols introduced in this document; these are consolidated into §13 of `no
 | Symbol | Definition | Units |
 |--------|-----------|-------|
 | $t_{\text{tok}}$ | Tokenization latency (CPU BPE/SP processing) | ms |
-| $t_{\text{launch}}$ | CUDA kernel launch overhead per decode step (no graph) | µs/step |
-| $t_{\text{graph}}$ | CUDA graph replay latency per decode step | µs/step |
 | $t_{\text{sched}}$ | Request scheduling / batch assembly latency | µs |
-| $t_{\text{sample}}$ | Token sampling latency (logits → token ID) | µs/step |
 | $t_{\text{detok}}$ | Response streaming / detokenization latency per token | µs/token |
 | $t_{\text{framework}}$ | Total CPU / software-stack overhead per request (§3) | ms |
 | $T_{\text{out}}$ | Number of output tokens generated per request | tokens |
@@ -221,14 +148,6 @@ All symbols introduced in this document; these are consolidated into §13 of `no
 Kwon et al. (2023). *Efficient Memory Management for Large Language Model Serving with PagedAttention.* SOSP 2023. arXiv:2309.06180.  
 → Scheduling loop latency; PagedAttention block allocation; batch assembly cost.
 
-**[TENSORRT-LLM]**  
-NVIDIA Corporation (2023–2025). *TensorRT-LLM.* <https://github.com/NVIDIA/TensorRT-LLM>  
-→ Optimized sampling kernels; CUDA graph integration.
-
 **[SARATHI]**  
 Agrawal et al. (2023). *SARATHI: Efficient LLM Inference by Piggybacking Decodes with Chunked Prefills.* arXiv:2308.16369.  
 → Chunked prefill scheduling overhead; $t_{\text{sched}}$ characterization under mixed prefill–decode batching.
-
-**[H100-SPEC]**  
-NVIDIA Corporation (2022). *NVIDIA H100 Tensor Core GPU Architecture.* NVIDIA Whitepaper WP-10792-001.  
-→ Kernel launch latency bounds.

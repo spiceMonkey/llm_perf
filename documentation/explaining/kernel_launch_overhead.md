@@ -137,28 +137,25 @@ These are stacked: a model graph is lowered through a compilation IR graph into 
 
 # 5. Mapping the Overhead to the llm_perf Framework
 
-## 5.1 The Per-Round SW Formula
+## 5.1 The Per-Microbatch SW Formula
 
-In a steady-state inflight pipeline ([pipeline_bubble.md §5](pipeline_bubble.md#5-the-first-order-correction)) with $B \ge PP$, microbatch size $\mathrm{mb} = B / PP$, and $PP$ microbatches in flight:
+We cost the dispatch budget at the same granularity as the GPU-side $t_{\mathrm{stage}}$ ([decode.md §6.2](../modeling/decode.md#62-local-and-networking-per-token-latency)): **per microbatch, per stage**. This way the two compose directly without a unit mismatch in the t_step,user formula.
 
-- Each microbatch through one stage requires $(L/PP) \cdot k$ kernel launches for compute / collective work, where $k$ is the number of kernels per layer.
-- Each microbatch additionally fires $k_{\mathrm{pp\_hop}}$ point-to-point send/recv kernels at the stage boundary (default 2 = 1 recv from upstream + 1 send to downstream on a middle stage).
-- Each device sequentially processes all $PP$ microbatches per pipeline round.
-- Per-stage launches per round: $PP \cdot (L/PP) \cdot k = L \cdot k$ for the compute path (**independent of $PP$**), plus $PP \cdot k_{\mathrm{pp\_hop}}$ for the inter-stage hops (**linear in $PP$**, inert when $PP = 1$).
+In a steady-state inflight pipeline ([pipeline_bubble.md §5](pipeline_bubble.md#5-the-first-order-correction)) with $B \ge PP$, microbatch size $\mathrm{mb} = B / PP$, and $PP$ microbatches in flight, on a single stage during one microbatch transit:
 
-The per-round SW (software, host-side dispatch) overhead on each device is therefore:
+- $(L/PP) \cdot \bigl(k_{\mathrm{compute}} + k_{\mathrm{collective}}(n_{TP} + n_{SP})\bigr)$ launches for compute + TP + SP work on all $L/PP$ layers this stage owns.
+- $(L_{\mathrm{moe}}/PP) \cdot k_{\mathrm{collective}} \cdot n_{EP}$ extra EP launches for the MoE layers only — dense layers don't fire MoE A2A. For a pure MoE model $L_{\mathrm{moe}} = L$ and the EP term contributes on every layer; for a pure dense model $L_{\mathrm{moe}} = 0$ and it vanishes.
+- $k_{\mathrm{pp\_hop}}$ point-to-point send/recv kernels at the stage boundary (default 2 = 1 recv from upstream + 1 send to downstream on a middle stage). Inert when $PP = 1$.
+
+The per-microbatch per-stage SW (software, host-side dispatch) overhead is therefore:
 
 $$
-t_{\mathrm{SW}} = L \cdot k \cdot \tau_{\mathrm{launch}} + PP \cdot k_{\mathrm{pp\_hop}} \cdot \tau_{\mathrm{launch}}
+t_{\mathrm{SW}} = \tau_{\mathrm{launch}} \cdot \left[ \frac{L}{PP} \bigl( k_{\mathrm{compute}} + k_{\mathrm{collective}}(n_{TP} + n_{SP}) \bigr) + \frac{L_{\mathrm{moe}}}{PP} \cdot k_{\mathrm{collective}} \cdot n_{EP} + k_{\mathrm{pp\_hop}} \right]
 $$
 
-with $k = k_{\mathrm{compute}} + k_{\mathrm{collective}} \cdot (n_{\mathrm{TP}}^{\mathrm{calls}} + n_{\mathrm{EP}}^{\mathrm{calls}} + n_{\mathrm{SP}}^{\mathrm{calls}})$, where $n_{*}^{\mathrm{calls}}$ are the per-layer NCCL **API call** counts:
+where $n_{TP}, n_{EP}, n_{SP}$ are the per-layer NCCL API call counts from [decode.md §5.5](../modeling/decode.md#55-total-communication-time-per-token-on-a-pp-stage). The cost-model accumulator and the launch counter share a single notation: $n_{EP} = 2$ for MoE layers (Dispatch + Combine) reflects two distinct `cudaLaunchKernel` events, each costing one single-direction A2A. Each $n_*$ becomes zero when the corresponding axis size is 1 (the collective never fires).
 
-- $n_{\mathrm{TP}}^{\mathrm{calls}} = n_{\mathrm{TP\_collectives}}$ (typically 2: post-attn AR + post-FFN AR).
-- $n_{\mathrm{EP}}^{\mathrm{calls}} = 2 \cdot n_{\mathrm{EP\_collectives}}$ — note the **2× expansion**. The `n_EP_collectives` field in TuningSpec follows the cost-model convention of "1 round-trip per MoE layer" because `_cost("moe_a2a", ...)` wraps the dispatch+combine 2× factor internally. The launch counter must expand back to 2 actual NCCL API calls (one for dispatch, one for combine).
-- $n_{\mathrm{SP}}^{\mathrm{calls}} = n_{\mathrm{SP\_collectives}}$ (typically 1: ring AG).
-
-$\tau_{\mathrm{launch}}$ is per-kernel dispatch latency (~7 μs without CUDA Graphs, ~1.5 μs with). $k_{\mathrm{pp\_hop}}$ is the kernel count per PP boundary per microbatch on each device (typically 2 for `ncclSend` + `ncclRecv`; 1 if fused via `ncclSendRecv` or a custom kernel). For typical decode setups the PP-hop term is 1–5% of $L \cdot k \cdot \tau$ — real but second-order. Edge stages (first and last) do only one direction ($k_{\mathrm{pp\_hop}} / 2$ effectively); the formula uses the middle-stage value for simplicity (off by ≈ $PP \cdot \tau$ on edges, negligible at $PP \gg 1$).
+$\tau_{\mathrm{launch}}$ is per-kernel dispatch latency (~7 μs without CUDA Graphs, ~1.5 μs with). $k_{\mathrm{pp\_hop}}$ is the kernel count per PP boundary per microbatch on each device (typically 2 for `ncclSend` + `ncclRecv`; 1 if fused via `ncclSendRecv` or a custom kernel). Edge stages (first and last) do only one direction ($k_{\mathrm{pp\_hop}} / 2$ effectively); the formula uses the middle-stage value for simplicity (off by half a launch on edges — negligible at $PP > 1$).
 
 ## 5.2 Where It Plugs Into the Roofline
 
@@ -192,30 +189,28 @@ For users wanting a more cautious default, $\rho_{\mathrm{SW}} = 0.85$ captures 
 
 ## 5.3 Numerical Mapping for GPT-1.8T MoE on GB200
 
-Plugging the values used elsewhere in this document set ($L = 120$, $k = 12$, $\tau_{\mathrm{launch}} \in \{7, 1.5\}$ μs):
+Plugging the values used elsewhere in this document set ($L = 120$, $k = 12$, $k_{\mathrm{pp\_hop}} = 2$, $\tau_{\mathrm{launch}} \in \{7, 1.5\}$ μs), the per-microbatch per-stage budget $t_{\mathrm{SW}} = (L/PP) \cdot k \cdot \tau + k_{\mathrm{pp\_hop}} \cdot \tau$ for each PP value:
 
-$$
-t_{\mathrm{SW,no\_graphs}} = 120 \cdot 12 \cdot 7\ \mathrm{\mu s} = 10080\ \mathrm{\mu s}
-$$
-
-$$
-t_{\mathrm{SW,graphs}} = 120 \cdot 12 \cdot 1.5\ \mathrm{\mu s} = 2160\ \mathrm{\mu s}
-$$
+| PP | $L/PP$ | $t_{\mathrm{SW,no\_graphs}}$ | $t_{\mathrm{SW,graphs}}$ |
+|---:|---:|---:|---:|
+| 1 | 120 | 10080 μs | 2160 μs |
+| 8 | 15 | 1274 μs | 273 μs |
+| 60 | 2 | 182 μs | 39 μs |
 
 Comparing to the framework's $t_{\mathrm{stage}}$ at representative operating points:
 
 | Shape | mb | $t_{\mathrm{stage}}$ | $t_{\mathrm{SW,no\_graphs}}/t_{\mathrm{stage}}$ | $t_{\mathrm{SW,graphs}}/t_{\mathrm{stage}}$ |
 |---|---:|---:|---:|---:|
-| PP=60 TP=1 | 1 | 2.2 ms | 459% | 98% |
-| PP=60 TP=1 | 16 | 6.9 ms | 146% | 31% |
-| PP=60 TP=1 | 64 | 22.0 ms | 46% | 10% |
-| PP=8 TP=8 | 1 | 1.8 ms | 560% | 120% |
-| PP=8 TP=8 | 64 | 4.3 ms | 236% | 50% |
-| PP=1 TP=64 | 1 | 1.8 ms | 570% | 122% |
+| PP=60 TP=1 | 1 | 2.2 ms | 8% | 2% |
+| PP=60 TP=1 | 16 | 6.9 ms | 3% | 1% |
+| PP=60 TP=1 | 64 | 22.0 ms | <1% | <1% |
+| PP=8 TP=8 | 1 | 1.8 ms | 71% | 15% |
+| PP=8 TP=8 | 64 | 4.3 ms | 30% | 6% |
+| PP=1 TP=64 | 1 | 1.8 ms | 560% | 120% |
 
-Reading the table left-to-right: at fixed PP, increasing mb is the only effective lever — $t_{\mathrm{SW}}$ is constant in mb while $t_{\mathrm{stage}}$ grows roughly linearly. At fixed mb=1 the launch budget exceeds the GPU's per-round work everywhere; at mb=64 with CUDA Graphs the overhead drops to a manageable 10-50%. Reading top-to-bottom: the launch overhead does *not* favor any particular partition shape — the formula cancels $PP$ — so the per-round overhead is shape-independent, and the column-to-column ratios reflect $t_{\mathrm{stage}}$ only.
+Reading the table left-to-right: at fixed PP, increasing mb grows $t_{\mathrm{stage}}$ while $t_{\mathrm{SW}}$ stays fixed — so the SW share shrinks. Reading top-to-bottom: the launch overhead *does* favor higher PP because $L/PP$ shrinks, amortizing the per-microbatch layer-launch budget. PP=1 (no pipelining) is the worst case — every stage owns all $L$ layers. Production stacks rely on **both** CUDA Graphs *and* PP > 1 to keep $t_{\mathrm{SW}} \le t_{\mathrm{stage}}$.
 
-The strong implication: *for any partition shape*, the framework's roofline is meaningful only when mb is large enough to amortize $t_{\mathrm{SW}}$. For decode this means CUDA Graphs *and* $B/PP \ge 16$ in practice. Sweeps that hold $B$ very low ($B < 8 \cdot PP$) are operating in a regime the framework does not currently price.
+The strong implication: PP=1 with mb=1 is launch-bound regardless of CUDA Graphs; deepening the pipeline is a real lever for managing dispatch overhead, not just a memory-fit knob.
 
 ---
 
@@ -225,15 +220,13 @@ For users running partition sweeps:
 
 1. **CUDA Graphs are not optional.** Any production-realistic comparison should assume CUDA Graphs are enabled. The factor-5× difference between the no-graphs and graphs columns dwarfs most partition-shape differences and would otherwise dominate the result.
 
-2. **Decode at mb=1 is launch-bound on this hardware.** The framework's $t_{\mathrm{stage}}$ at mb=1 is ~50% of the actual user-observed step time even with CUDA Graphs. Sweeps that report mb=1 frontiers should be read as upper bounds on throughput, not predicted throughput.
+2. **PP=1 with mb=1 is launch-bound regardless of graphs.** A single stage owning all $L$ layers pays $L \cdot k \cdot \tau$ per microbatch. Even with CUDA Graphs that's ~2 ms for $L=120$, $k=12$ — comparable to or larger than the GPU's $t_{\mathrm{stage}}$ at mb=1. Deepening the pipeline ($PP > 1$) is the cheapest fix because $t_{\mathrm{SW}}$ scales as $1/PP$ in the layer term.
 
-3. **Increasing $B$ amortizes the launch budget linearly.** If the deployment service-level objective (SLO) allows higher mb (e.g., mb=16 or 64), the framework's $t_{\mathrm{stage}}$ becomes a much closer approximation. This is consistent with production guidance to operate at the largest $B$ the latency budget tolerates.
+3. **Increasing $B$ amortizes any residual SW.** If the deployment service-level objective (SLO) allows higher mb (e.g., mb=16 or 64), the framework's $t_{\mathrm{stage}}$ grows linearly while $t_{\mathrm{SW}}$ stays fixed, so the SW share shrinks. This is consistent with production guidance to operate at the largest $B$ the latency budget tolerates.
 
-4. **Partition shape is decoupled from launch overhead** — for the same mb, the per-round SW budget is the same across PP/TP/EP/SP shapes. So when comparing partitions, the framework's existing $t_{\mathrm{stage}}$ ordering is correct *up to a constant offset* that affects all shapes equally; the relative comparison is unchanged. The absolute throughput is what is over-stated.
+4. **PP and graphs trade off against each other.** Either lever can hide the launch budget independently — a deep pipeline (PP=60) pushes $t_{\mathrm{SW}}$ to single-percent overhead even in eager mode; a shallow pipeline (PP=1) needs CUDA Graphs *and* large mb. When evaluating partition shapes, smaller PP costs more in dispatch budget, which the framework now prices in.
 
-5. **Adding $t_{\mathrm{SW}}$ as a TuningSpec knob** is the natural extension if the framework needs to predict absolute TPOT in production-realistic regimes. It is a one-line addition to the latency model (Section 5.2), gated on three new tuner fields.
-
-For framework developers: incorporating $t_{\mathrm{SW}}$ would let the partition optimizer trade off $t_{\mathrm{stage}}$ against $t_{\mathrm{SW}}$ at small mb, which would in turn surface a real preference for moderate $B$ on the Pareto frontier. Currently, with $t_{\mathrm{SW}} = 0$, the optimizer sees no penalty for picking mb=1 partitions, which is not what production sees.
+5. **The model now prices SW directly.** With `kernel_launch_us > 0` (default 1.5 μs, CUDA Graphs), the partition optimizer sees the real $t_{\mathrm{SW}}$ floor and prefers shapes that are both GPU-efficient and dispatch-tolerant. Setting `kernel_launch_us = 0` falls back to the legacy roofline (no SW penalty).
 
 ---
 
@@ -282,5 +275,5 @@ SC '21. arXiv:2104.04473.
 - [pipeline_bubble.md](pipeline_bubble.md) — The pipeline-round semantics underlying the per-round formula in §5.1.
 - [practical_pp_choice.md §3.3](practical_pp_choice.md#33-microbatch-granularity-and-kernel-launch-overhead) — The production-side argument that uses the formula derived here.
 - [batched_decode.md](batched_decode.md) — Why operating at large $B$ is the primary lever for amortizing fixed per-round overheads.
-- [../modeling/decode.md §6.3](../modeling/decode.md#63-pipeline-bubble-tps-and-ttps) — The framework's current $t_{\mathrm{stage}}$ formulation, which §5.2 proposes extending.
+- [../modeling/decode.md §7](../modeling/decode.md#7-pipeline-bubble-kernel-launch-overhead-and-throughput) — The framework's current $t_{\mathrm{stage}}$ formulation, which §5.2 proposes extending.
 - [../../llm_perf/core/decode_model.py](../../llm_perf/core/decode_model.py) — Code where the $t_{\mathrm{SW}}$ term would plug in.

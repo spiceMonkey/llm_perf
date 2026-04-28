@@ -337,7 +337,7 @@ The per-step analysis is identical: at any given step, B_active sequences are in
 
 ## Cross-References
 
-- [../modeling/decode.md §6.4](../modeling/decode.md#64-batch-size-scaling-and-throughputlatency-tradeoff) — Formal derivation of all batched decode equations
+- [../modeling/decode.md §4](../modeling/decode.md#4-compute-vs-memory-bound-roofline-model) — Operational intensity OI(B), B* crossover, and the per-step roofline that drives all batched decode regimes.
 - [../modeling/decode.md §4](../modeling/decode.md#4-compute-vs-memory-bound-roofline-model) — Roofline model and operational intensity
 - [prefill.md](../modeling/prefill.md) — Prefill latency analysis (complementary to decode)
 - [e2e.md](../modeling/e2e.md) — End-to-end metric assembly (TTFT + TPOT)
