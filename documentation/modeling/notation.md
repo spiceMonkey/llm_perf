@@ -125,7 +125,7 @@ Memory traffic (bytes **moved** between HBM and compute per token):
 _(→ decode.md; → dram3d.md for 3D DRAM extensions)_
 
 - $N_{\text{GPUs}}$ — Total devices in the cluster.
-- $R_{\text{GPU}}$ — Peak compute throughput (FLOPs/s).
+- $R_{\text{GPU}}$ — Precision-aware compute throughput (FLOPs/s). System spec stores `peak_flops_TF` as the **FP16 dense per-chip peak** (uniform reference across all systems); the framework derives the working-precision peak by linear byte scaling: $R_{\text{GPU}}(b) = \mathrm{peak\_flops\_TF} \cdot (2 / b)$ for `bytes_per_param = b`. See `decode.md §3.1` for the full convention and the d-Matrix INT4 caveat (block-sparse acceleration not captured by the linear rule).
 - $BW_{\text{mem}}$ — Effective HBM bandwidth (bytes/s).
 
 ---

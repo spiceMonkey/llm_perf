@@ -1061,6 +1061,14 @@ Let:
 
 Both reflect *sustained* performance, not peak specs.
 
+**Precision-aware compute peak.** Across the system database, ``peak_flops_TF`` stores the **FP16 dense per-chip peak** as the uniform reference. The framework derives the working-precision peak via linear byte-ratio scaling:
+
+$$
+R_{\text{GPU}}(b) = \mathrm{peak\_flops\_TF} \cdot \frac{2}{b}
+$$
+
+where $b$ is the model's `bytes_per_param` (FP16 = 2, FP8/INT8 = 1, FP4/INT4 = 0.5). For example, on GB200 NVL72 with peak_FP16 = 2250 TF/GPU, an FP4 model gets 9000 TF/GPU and an INT8 model gets 4500 TF/GPU. This matches Hopper / Blackwell / TPU Tensor Core families exactly. **Known limitation**: d-Matrix MXINT4 throughput is 4× MXINT8 (rather than 2×) due to block-sparse acceleration in the INT4 path; the linear-byte rule under-states d-Matrix INT4 / FP4 by 2× on those systems only.
+
 ---
 
 ## 4.1 Operational Intensity (Ops:Byte)

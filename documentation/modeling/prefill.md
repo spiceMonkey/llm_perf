@@ -423,8 +423,10 @@ Given $F_{\text{prefill,device}}$ from Section 1.5:
 
 $$
 t_{\text{prefill,compute}} =
-\frac{F_{\text{prefill,device}}}{R_{\text{GPU}}}
+\frac{F_{\text{prefill,device}}}{R_{\text{GPU}}(b)}
 $$
+
+$R_{\text{GPU}}(b)$ is the **precision-aware compute peak**: the framework convention is to store FP16 dense per chip in `peak_flops_TF` and scale linearly with `bytes_per_param`: $R_{\text{GPU}}(b) = \mathrm{peak\_flops\_TF} \cdot (2 / b)$. See `decode.md §3.1` for the full convention and the d-Matrix INT4 caveat.
 
 ### Memory time
 
