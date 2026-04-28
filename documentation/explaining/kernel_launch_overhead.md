@@ -152,7 +152,13 @@ $$
 t_{\mathrm{SW}} = L \cdot k \cdot \tau_{\mathrm{launch}} + PP \cdot k_{\mathrm{pp\_hop}} \cdot \tau_{\mathrm{launch}}
 $$
 
-where $\tau_{\mathrm{launch}}$ is per-kernel dispatch latency (~7 μs without CUDA Graphs, ~1.5 μs with), and $k_{\mathrm{pp\_hop}}$ is the kernel count per PP boundary per microbatch on each device (typically 2 for `ncclSend` + `ncclRecv`; 1 if fused via `ncclSendRecv` or a custom kernel). For typical decode setups the PP-hop term is 1–5% of $L \cdot k \cdot \tau$ — real but second-order. Edge stages (first and last) do only one direction (`k_{\mathrm{pp\_hop}} / 2` effectively); the formula uses the middle-stage value for simplicity (off by ≈ $PP \cdot \tau$ on edges, negligible at $PP \gg 1$).
+with $k = k_{\mathrm{compute}} + k_{\mathrm{collective}} \cdot (n_{\mathrm{TP}}^{\mathrm{calls}} + n_{\mathrm{EP}}^{\mathrm{calls}} + n_{\mathrm{SP}}^{\mathrm{calls}})$, where $n_{*}^{\mathrm{calls}}$ are the per-layer NCCL **API call** counts:
+
+- $n_{\mathrm{TP}}^{\mathrm{calls}} = n_{\mathrm{TP\_collectives}}$ (typically 2: post-attn AR + post-FFN AR).
+- $n_{\mathrm{EP}}^{\mathrm{calls}} = 2 \cdot n_{\mathrm{EP\_collectives}}$ — note the **2× expansion**. The `n_EP_collectives` field in TuningSpec follows the cost-model convention of "1 round-trip per MoE layer" because `_cost("moe_a2a", ...)` wraps the dispatch+combine 2× factor internally. The launch counter must expand back to 2 actual NCCL API calls (one for dispatch, one for combine).
+- $n_{\mathrm{SP}}^{\mathrm{calls}} = n_{\mathrm{SP\_collectives}}$ (typically 1: ring AG).
+
+$\tau_{\mathrm{launch}}$ is per-kernel dispatch latency (~7 μs without CUDA Graphs, ~1.5 μs with). $k_{\mathrm{pp\_hop}}$ is the kernel count per PP boundary per microbatch on each device (typically 2 for `ncclSend` + `ncclRecv`; 1 if fused via `ncclSendRecv` or a custom kernel). For typical decode setups the PP-hop term is 1–5% of $L \cdot k \cdot \tau$ — real but second-order. Edge stages (first and last) do only one direction ($k_{\mathrm{pp\_hop}} / 2$ effectively); the formula uses the middle-stage value for simplicity (off by ≈ $PP \cdot \tau$ on edges, negligible at $PP \gg 1$).
 
 ## 5.2 Where It Plugs Into the Roofline
 

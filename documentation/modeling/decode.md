@@ -1592,10 +1592,10 @@ $$
 The user-observed step time also includes the per-round CPU dispatch budget $t_{\mathrm{SW}}$ — the cumulative kernel-launch latency on the host side (kernel_launch_overhead.md §5):
 
 $$
-t_{\mathrm{SW}} = L \cdot k \cdot \tau_{\mathrm{launch}} + PP \cdot k_{\mathrm{pp\_hop}} \cdot \tau_{\mathrm{launch}}, \qquad k = k_{\mathrm{compute}} + k_{\mathrm{collective}} \cdot (n_{\mathrm{TP}}^{\mathrm{eff}} + n_{\mathrm{EP}}^{\mathrm{eff}} + n_{\mathrm{SP}}^{\mathrm{eff}})
+t_{\mathrm{SW}} = L \cdot k \cdot \tau_{\mathrm{launch}} + PP \cdot k_{\mathrm{pp\_hop}} \cdot \tau_{\mathrm{launch}}, \qquad k = k_{\mathrm{compute}} + k_{\mathrm{collective}} \cdot (n_{\mathrm{TP}}^{\mathrm{calls}} + n_{\mathrm{EP}}^{\mathrm{calls}} + n_{\mathrm{SP}}^{\mathrm{calls}})
 $$
 
-where the $n_{*}^{\mathrm{eff}}$ terms are the per-layer collective counts that fire for the current shape (zero when the corresponding axis is 1), and the $PP \cdot k_{\mathrm{pp\_hop}}$ term counts inter-stage point-to-point send/recv launches: each stage handles $k_{\mathrm{pp\_hop}}$ P2P kernels per microbatch (default 2: 1 recv + 1 send) $\times$ $PP$ microbatches per round (inert when $PP = 1$). Composing GPU work and host dispatch via the SW overlap factor $\rho_{\mathrm{SW}}$:
+where $n_{*}^{\mathrm{calls}}$ are the per-layer NCCL API call counts that fire for the current shape (zero when the corresponding axis is 1). For TP and SP, $n_{*}^{\mathrm{calls}} = n_{*\mathrm{\_collectives}}$ directly. For EP, $n_{\mathrm{EP}}^{\mathrm{calls}} = 2 \cdot n_{\mathrm{EP\_collectives}}$ — the cost-model convention is "1 collective per MoE layer = 1 round-trip" (the 2× factor is wrapped inside `_cost("moe_a2a", ...)`), but the launch counter must expand back to 2 actual NCCL API calls (dispatch + combine). The $PP \cdot k_{\mathrm{pp\_hop}}$ term counts inter-stage P2P send/recv launches: each stage handles $k_{\mathrm{pp\_hop}}$ P2P kernels per microbatch (default 2: 1 recv + 1 send) $\times$ $PP$ microbatches per round (inert when $PP = 1$). Composing GPU work and host dispatch via the SW overlap factor $\rho_{\mathrm{SW}}$:
 
 $$
 t_{\mathrm{step,user}} = \max\!\bigl(t_{\mathrm{stage}},\ \rho_{\mathrm{SW}} \cdot t_{\mathrm{stage}} + (1 - \rho_{\mathrm{SW}}) \cdot (t_{\mathrm{stage}} + t_{\mathrm{SW}}),\ t_{\mathrm{SW}}\bigr) \cdot \gamma_{\mathrm{pp}}

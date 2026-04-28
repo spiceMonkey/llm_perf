@@ -117,6 +117,38 @@ def test_t_sw_scales_with_collective_count() -> None:
     )
 
 
+def test_t_sw_ep_round_trip_expansion() -> None:
+    """EP 'collective count' is round-trips (dispatch+combine); SW counts launches."""
+    print("\ntest_t_sw_ep_round_trip_expansion")
+    # Need an MoE model so n_EP > 0 actually fires.
+    m = load_model_spec("llm_perf/database/model/example.model.moe.json")
+    s = load_system_spec("llm_perf/database/system/example.sys.json")
+    t = load_tuning_spec("llm_perf/database/tuner/example.tuner.json")
+    t = replace(
+        t,
+        kernel_launch_us=1.5,
+        kernels_per_layer_compute=10,
+        kernels_per_collective_call=2,
+        kernels_per_pp_hop=2,
+        n_EP_collectives=1,   # cost-model convention: 1 round-trip per layer
+    )
+
+    # PP=2 keeps t_SW small; EP=1 → no EP collectives fire.
+    r_off = InferenceCalculator(m, s, PartitionSpec(PP=2, TP=1, EP=1, SP=1), t).run().latency
+    # EP=2 → MoE A2A fires. SW should add 2 (round-trips) × 2 (kernels/call) per layer
+    # because the cost model's "1 collective" expands to 2 actual NCCL API calls.
+    r_on = InferenceCalculator(m, s, PartitionSpec(PP=2, TP=1, EP=2, SP=1), t).run().latency
+
+    delta = r_on.t_SW - r_off.t_SW
+    L = m.L
+    # With n_EP_collectives=1 (round-trips/layer) → 2 a2a calls × 2 kernels/call × L layers × τ
+    expected_delta = L * (2 * 1) * 2 * 1.5e-6
+    _check_near(
+        "EP=2 vs EP=1 t_SW delta = L · (2·n_EP) · k_coll · τ (2× round-trip expansion)",
+        delta, expected_delta, rel_tol=1e-12,
+    )
+
+
 def test_t_sw_pp_hop_term() -> None:
     print("\ntest_t_sw_pp_hop_term")
     m, s, t = _fixture()
@@ -228,6 +260,7 @@ def test_sw_overlap_factor_boundaries() -> None:
 def main() -> int:
     test_sw_disabled_matches_legacy_roofline()
     test_t_sw_scales_with_collective_count()
+    test_t_sw_ep_round_trip_expansion()
     test_t_sw_pp_hop_term()
     test_eta_tc_derates_compute_at_small_mb()
     test_sw_overlap_factor_boundaries()
