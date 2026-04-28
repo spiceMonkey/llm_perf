@@ -532,6 +532,8 @@ $$
 t_{PP}^{\text{prefill}} \;=\; \alpha_{PP} \;+\; \frac{(H/TP) \cdot S_{\text{input}} \cdot b}{BW_{\text{PP}}}
 $$
 
+$\alpha_{PP}$ and $\mathrm{BW}_{PP}$ are tier-aware: under the nested-layout convention (`DP → PP → EP → TP → SP`, fast axes inner), the PP boundary uses the fabric tier whose cumulative reach holds `PP × inner-axes-product`. See `decode.md §5.1` for the full convention; the `partition_layout.assign_tier_per_axis` helper resolves the tier index per partition.
+
 ### SP All-Gather (prefill)
 
 During prefill with SP, each SP rank holds $S_{\text{input}}/SP$ of the input sequence. Ring Attention circulates KV shards so each device's query block can attend to the full input; the shipped primitive is ring AG per `collectives.md §4.1`. Substituting the per-rank KV shard $M_{SP}^\mathrm{prefill} = (S_{\text{input}} / SP) \cdot (2 H_{kv} / TP) \cdot b$:

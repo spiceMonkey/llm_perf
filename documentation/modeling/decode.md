@@ -1239,6 +1239,14 @@ $$
 
 This shard-preserving PP design avoids the extra TP collectives that would be required if stages exchanged full activations and then re-sharded them. Maintaining TP rank consistency across stages therefore yields a significantly faster pipeline, and is the standard strategy in modern LLM training and inference systems.
 
+**Tier-aware PP cost (nested-layout convention).** $\alpha_{PP}$ and $\mathrm{BW}_{PP}$ above are *not* uniformly tier-0 fabric values. They are the latency and bandwidth of the **specific tier** the PP boundary physically crosses, which depends on where PP sits in the nested layout `DP → PP → EP → TP → SP` (innermost = highest-bandwidth tier). The framework's `partition_layout.assign_tier_per_axis` resolves a `(PartitionSpec, SystemSpec)` pair into a per-axis tier index by walking the fabric chain inner→outer, allocating each axis to the smallest tier whose cumulative reach holds the cumulative product of inner axes × this axis. For example, on d-Matrix squadrack (3-tier chain: 16 × 4 × 8):
+
+- `PP=2, TP=8`: cumulative `8·2 = 16` ≤ tier-0 cap → **PP at tier 0** (pair-of-cards mesh, $\alpha=0.115$ μs, BW=64 GB/s).
+- `PP=8, TP=8`: cumulative `8·8 = 64` ≤ tier-1 cap → **PP at tier 1** (PCIe, $\alpha=0.65$ μs).
+- `PP=32, TP=8`: cumulative `8·32 = 256 > 64` → **PP at tier 2** (Ethernet, $\alpha=2.0$ μs, BW=50 GB/s).
+
+On single-tier systems (e.g., NVL72), every axis collapses to tier 0 and the legacy tier-0 PP pricing is recovered exactly. The implementation is in `core/decode_model.py` and `core/prefill_model.py`; the helper lives at `core/primitives/partition_layout.py`. This is a worst-case-tier model — within a single PP cost call we use the *outermost* tier the boundary could possibly cross. A finer per-hop blend (some boundaries within tier 0, some across tier 1) is left as a future refinement; the worst-case form matches the conservative engineering view that "PP runs across servers" for sweeps where it does.
+
 ---
 
 ## 5.2 Expert Parallel (EP) All-to-All (MoE Dispatch and Combine)
