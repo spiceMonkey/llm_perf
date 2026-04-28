@@ -119,7 +119,7 @@ ax.text(9.1, 5.91, "Scale-up/out Network  (TP / EP / SP / PP / DP)", ha="center"
         fontsize=11, fontweight="bold", color="#1B5E20")
 ax.text(9.1, 5.55, "hierarchical α-β:  pair_mesh / NVLink → PCIe / fat-tree → ethernet  · INC short-circuit on sharp_class / hw_a2a tiers",
         ha="center", va="center", fontsize=8.5, color="#1B5E20", fontstyle="italic")
-ref_text(9.1, 5.25, "modeling/collectives.md · core/{decode_model, collective_algo_opt}.py · primitives/dispatch.py", fontsize=7.5)
+ref_text(9.1, 5.25, "modeling/collectives/00_summary.md · core/{decode_model, collective_algo_opt}.py · primitives/dispatch.py", fontsize=7.5)
 
 # ═══════════════════════════════════════════════════════════════════
 # KV Transfer interconnect (between clusters)

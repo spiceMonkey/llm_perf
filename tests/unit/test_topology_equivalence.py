@@ -52,7 +52,7 @@ def _old_path(op: str, tiers, M: float, G: int, algorithm: str) -> float:
 
     Single-tier or non-AR/AG: flat path (innermost tier α-sum + BW-min, then
     a single primitive call). Multi-tier crossbar AR/AG: hierarchical RS →
-    sub-AR → AG (or inner+outer cascade for AG) per collectives.md §3.3 / §4.3
+    sub-AR → AG (or inner+outer cascade for AG) per collectives/03_hierarchical_topologies.md §2
     — landed in PR2.2.
     """
     if G <= 1 or not tiers:
@@ -144,7 +144,7 @@ def _hier_ref(op: str, M: float, G: int, crossed, outer_alg: str) -> float:
 
 
 def _hier_a2a_ref(M: float, G: int, crossed) -> float:
-    """Hierarchical A2A reference (collectives.md §5.3 per-destination-class)."""
+    """Hierarchical A2A reference (collectives/03_hierarchical_topologies.md §2 per-destination-class)."""
     inner = crossed[0]
     outer_tiers = crossed[1:]
     G_inner = max(1, inner.ports)
@@ -404,7 +404,7 @@ def test_T6_inc_dispatch():
     want = inc_all_reduce(M, alpha_s_endpoint, bw_Bps)
     _check("AR INC with inc_alpha_us=0 sentinel", got, want)
 
-    # (j) HW A2A tier — A2A routes through inc_a2a (collectives.md §5.4).
+    # (j) HW A2A tier — A2A routes through inc_a2a (collectives/04_in_network_collectives.md).
     hw_a2a_tier = CrossbarTier(
         name="tomahawk-ultra", ports=64, bw_per_port_GBps=bw, alpha_us=alpha_endpoint,
         inc="hw_a2a", inc_alpha_us=alpha_switch,
@@ -746,7 +746,7 @@ def test_T9_hierarchical_crossbar():
     got = cost_collective(chain, "all_reduce", M, G, algorithm="tree_pipelined")
     _check("hier-AR tree_pipelined composition", got, expected_ar_tree_p)
 
-    # ─── (c) α-side: matches collectives.md §3.3 closed form
+    # ─── (c) α-side: matches collectives/03_hierarchical_topologies.md §2 closed form
     # 2(G_inner − 1)·α_inner + 2(L − 1)·α_outer for ring-on-ring.
     # Isolate α with M=0.
     got_alpha = cost_collective(chain, "all_reduce", 0.0, G, algorithm="ring")

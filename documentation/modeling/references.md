@@ -171,37 +171,37 @@ SemiAnalysis. https://newsletter.semianalysis.com/p/hybrid-bonding-process-flow-
 Patarasuk, P., & Yuan, X. (2009).  
 *Bandwidth Optimal All-Reduce Algorithms for Clusters of Workstations.*  
 Journal of Parallel and Distributed Computing, 69(2):117–124.  
-→ Ring all-reduce achieves $2(N-1)/N \cdot M/BW$ bandwidth-optimal bound on any tree-connected fabric. Used for the shipped-primitive cost tables in collectives.md §3.1 / §3.2 (star ring + torus dim-decomposed ring).
+→ Ring all-reduce achieves $2(N-1)/N \cdot M/BW$ bandwidth-optimal bound on any tree-connected fabric. Used for the shipped-primitive cost tables in collectives/02_topology_mapping.md (star ring + torus dim-decomposed ring).
 
 **[CHPV07]**  
 Chan, E., Heimlich, M., Purkayastha, A., & van de Geijn, R. (2007).  
 *Collective Communication: Theory, Practice, and Experience.*  
 Concurrency and Computation: Practice and Experience, 19(13):1749–1783.  
-→ Dimension-decomposed all-reduce framework; telescoping derivation of multi-dim ring costs. Used in collectives.md §3.2 / §4.2 for the dim-decomposed ring AR / AG / RS derivation.
+→ Dimension-decomposed all-reduce framework; telescoping derivation of multi-dim ring costs. Used in collectives/02_topology_mapping.md §3 for the dim-decomposed ring AR / AG / RS derivation.
 
 **[SST09]**  
 Sanders, P., Speck, J., & Träff, J.L. (2009).  
 *Two-Tree Algorithms for Full Bandwidth Broadcast, Reduction and Scan.*  
 ICPP 2009, pp. 1–10.  
-→ Double binary tree structure with complementary-role pipelining achieving $2(N-1)/N \cdot M/\mathrm{BW}$ bandwidth (matching ring). Canonical citation for the shipped NCCL DBT AR form in collectives.md §3.1.
+→ Double binary tree structure with complementary-role pipelining achieving $2(N-1)/N \cdot M/\mathrm{BW}$ bandwidth (matching ring). Canonical citation for the shipped NCCL DBT AR form in collectives/02_topology_mapping.md §2.
 
 **[DEMYST-NCCL]**  
 Jeaugey, S., et al. (2025).  
 *Demystifying NCCL: An In-Depth Analysis of GPU Communication Protocols and Algorithms.*  
 arXiv:2507.04786.  
-→ NCCL tuner internals; empirical ring-vs-DBT AR crossover (DBT wins small-$M$, ring wins large-$M$) contrary to the pure-α-β prediction. Supports the `tuner.ar_algorithm` manual-knob design in collectives.md §3.1.
+→ NCCL tuner internals; empirical ring-vs-DBT AR crossover (DBT wins small-$M$, ring wins large-$M$) contrary to the pure-α-β prediction. Supports the `tuner.ar_algorithm` manual-knob design in collectives/02_topology_mapping.md §2.
 
 **[TRN2-ARCH]**  
 AWS. (2024).  
 *AWS Trainium2 Architecture Overview.*  
 AWS Neuron documentation and re:Invent 2024 sessions.  
-→ 2D-per-instance + Z-dim NeuronLink torus; 64-chip UltraServer topology. Motivating hardware for the torus primitives in collectives.md §3.2 / §4.2 / §5.2.
+→ 2D-per-instance + Z-dim NeuronLink torus; 64-chip UltraServer topology. Motivating hardware for the torus primitives in collectives/02_topology_mapping.md §3.
 
 **[NEURON-CC]**  
 AWS. (2024–2025).  
 *AWS Neuron Collective Communication Library.*  
 AWS Neuron documentation, https://awsdocs-neuron.readthedocs-hosted.com/.  
-→ Dim-decomposed ring AR / AG / RS as the default kernel on Trainium torus fabrics. Shipped-algorithm citation for collectives.md §3.2 / §4.2.
+→ Dim-decomposed ring AR / AG / RS as the default kernel on Trainium torus fabrics. Shipped-algorithm citation for collectives/02_topology_mapping.md §3.
 
 **[KDSA08]**  
 Kim, J., Dally, W.J., Scott, S., & Abts, D. (2008).  
@@ -237,7 +237,7 @@ SC 2022.
 Jouppi, N.P., Kurian, G., Li, S., Ma, P., Nagarajan, R., Nai, L., Patil, N., Subramanian, S., Swing, A., Towles, B., Young, C., Zhou, X., Zhou, Z., & Patterson, D. (2023).  
 *TPU v4: An Optically Reconfigurable Supercomputer for Machine Learning with Hardware Support for Embeddings.*  
 ISCA 2023.  
-→ 3D torus with optical circuit switching for slice reconfiguration; twisted-torus 1.63× A2A gain on asymmetric layouts (§V). Motivates the bisection-bound A2A formula and $D_\mathrm{max}$ layout-sensitivity analysis in collectives.md §5.2.
+→ 3D torus with optical circuit switching for slice reconfiguration; twisted-torus 1.63× A2A gain on asymmetric layouts (§V). Motivates the bisection-bound A2A formula and $D_\mathrm{max}$ layout-sensitivity analysis in collectives/02_topology_mapping.md §3.
 
 **[PAARD]**  
 *Proximity-Aware All-Reduce on Dragonfly.*  
@@ -254,26 +254,26 @@ SIAM Journal on Computing, 11(2):350–361.
 NVIDIA Corporation. (2020–2025).  
 *NCCL Performance Tests.*  
 https://github.com/NVIDIA/nccl-tests ; PERFORMANCE.md.  
-→ Canonical busbw/algbw measurement methodology for NCCL collectives; published H100/A100 intra-node AR busbw ≈ 360 GB/s against 450 GB/s peak NVLink4 unidirectional. Calibration source for the crossbar $\eta_\beta \approx 0.80$ entry in collectives.md §7.3.
+→ Canonical busbw/algbw measurement methodology for NCCL collectives; published H100/A100 intra-node AR busbw ≈ 360 GB/s against 450 GB/s peak NVLink4 unidirectional. Calibration source for the crossbar $\eta_\beta \approx 0.80$ entry in collectives/05_contention_and_congestion.md §4.
 
 **[NVLINK-SHARP]**  
 NVIDIA Corporation. (2023–2024).  
 *NVLink SHARP (NVLS) — In-Network All-Reduce Acceleration.*  
 GTC talk S62129; NVIDIA NCCL release notes.  
-→ NVSwitch-based in-network reduction; AR busbw rises from ~360 to 470–480 GB/s (can exceed raw link rate because data volume halves). Used in collectives.md §3.4 for the INC AR cost form and §7.3 for the back-solved $\eta_\beta^\mathrm{INC} \approx 0.52$.
+→ NVSwitch-based in-network reduction; AR busbw rises from ~360 to 470–480 GB/s (can exceed raw link rate because data volume halves). Used in collectives/04_in_network_collectives.md for the INC AR cost form and §7.3 for the back-solved $\eta_\beta^\mathrm{INC} \approx 0.52$.
 
 **[SHARP-IB]**  
 Graham, R.L., Bureddy, D., Lui, P., Rosenstock, H., Shainer, G., Bloch, G., Goldenerg, D., Dubman, M., Kotchubievsky, S., Koushnir, V., Levi, L., Margolin, A., Ronen, T., Shpiner, A., Wertheim, O., & Zahavi, E. (2016).  
 *Scalable Hierarchical Aggregation Protocol (SHArP): A Hardware Architecture for Efficient Data Reduction.*  
 COMHPC Workshop at SC16.  
-→ Original SHARP specification for InfiniBand; hardware-offloaded reduction trees; reports ~95% of network bandwidth utilization and 2–5× speedup over host-based reduction. Referenced in collectives.md §3.4 for the multi-tier scale-out INC AR cost form ($n_\alpha = 2k$, $n_\beta = 1$).
+→ Original SHARP specification for InfiniBand; hardware-offloaded reduction trees; reports ~95% of network bandwidth utilization and 2–5× speedup over host-based reduction. Referenced in collectives/04_in_network_collectives.md for the multi-tier scale-out INC AR cost form ($n_\alpha = 2k$, $n_\beta = 1$).
 
 **[FRONTIER-ARCH]**  
 Holmen, J. (2024).  
 *Frontier Exascale Architecture: AMD MI250X and HPE Slingshot.*  
 ATPESC 2024, Argonne National Laboratory Training Track 2 Talk 2.  
 https://extremecomputingtraining.anl.gov/wp-content/uploads/sites/96/2024/08/ATPESC-2024-Track-2-Talk-2-Holmen-Frontier-Exascale-Architecture-AMD-MI250x-and-HPE-Slingshot.pdf  
-→ Documents Frontier's Slingshot-11 dragonfly structural parameters: 80 groups (74 compute + 5 I/O + 1 management), three-hop minimal routing, and the global-to-injection bandwidth ratio of 57% (total global 270+270 TB/s). Structural calibration reference for the per-tier $\eta_\beta$ cap pattern in `collectives.md §7.3`.
+→ Documents Frontier's Slingshot-11 dragonfly structural parameters: 80 groups (74 compute + 5 I/O + 1 management), three-hop minimal routing, and the global-to-injection bandwidth ratio of 57% (total global 270+270 TB/s). Structural calibration reference for the per-tier $\eta_\beta$ cap pattern in `collectives/05_contention_and_congestion.md §4`.
 
 ---
 

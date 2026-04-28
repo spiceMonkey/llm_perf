@@ -1203,7 +1203,7 @@ where $\alpha$ is the collective or hop latency, and $B_{\text{eff}}$ is the sus
 
 The parameters $\alpha$ and $B_{\text{eff}}$ in this model are not abstract: they are **topology-dependent physical properties** of the underlying interconnect. Different parallelism domains—TP, EP, SP, and PP—may be mapped to **different network fabrics** or different portions of the same physical topology (e.g., NVSwitch star within a node, 2D/3D torus across nodes, or hybrid switch-plus-fabric designs). Consequently, each collective type sees its own communication characteristics, with potentially different latency constants and effective bandwidths. To keep the analysis general, we denote these as $\alpha_{XP}$ and $B_{\text{eff},XP}$ for TP, EP, SP, and PP respectively. Their actual numerical values depend on the system’s physical layout, routing scheme, and bisection bandwidth properties (e.g., constant-hop NVSwitch vs. hop-scaling torus fabrics). The following sections therefore use $\alpha_{XP}$ and $B_{\text{eff},XP}$ as **collective-specific, topology-aware** parameters, to be instantiated according to the actual deployment mapping.
 
-**Delegation to `collectives.md`.** The shipped collective primitives (ring AR, double binary tree AR, ring AG / RS, pairwise A2A on star; dim-decomposed ring and bisection-bound A2A on torus; hierarchical RS → sub-AR → AG; in-network reduction via NVLS / Quantum SHARP / Tomahawk Ultra) are cost-modeled in `collectives.md §3–§6`, with contention coefficients $(\eta_\alpha, \eta_\beta)$ in `collectives.md §7`. This section instantiates those primitives with the decode-scale per-rank message sizes defined below; derivations and the $(\alpha_\mathrm{sum}, BW_\min)$ tier-chain accumulation live there. The $\alpha_{XP}$ and $BW_{XP}$ values used below are the fabric-chain span quantities from `notation.md §7`.
+**Delegation to `collectives.md`.** The shipped collective primitives (ring AR, double binary tree AR, ring AG / RS, pairwise A2A on star; dim-decomposed ring and bisection-bound A2A on torus; hierarchical RS → sub-AR → AG; in-network reduction via NVLS / Quantum SHARP / Tomahawk Ultra) are cost-modeled in `collectives/00_summary.md §4–§7`, with contention coefficients $(\eta_\alpha, \eta_\beta)$ in `collectives/05_contention_and_congestion.md`. This section instantiates those primitives with the decode-scale per-rank message sizes defined below; derivations and the $(\alpha_\mathrm{sum}, BW_\min)$ tier-chain accumulation live there. The $\alpha_{XP}$ and $BW_{XP}$ values used below are the fabric-chain span quantities from `notation.md §7`.
 
 ### Message sizes and their shard structure
 
@@ -1263,13 +1263,13 @@ MoE layers require exchanging token activations across the expert-parallel (EP) 
 
 Let $k$ denote the number of active experts per token. The per-direction message is $k H b$ bytes; the full Dispatch + Combine pair contributes $2 k H b$ bytes per device per token.
 
-The shipped A2A primitive is pairwise direct-send (NCCL on star; bisection-bound pairwise on torus). Bruck / log-hop A2A does **not** ship and does not appear in the cost — see `collectives.md §5` for the primitive derivations. On a star topology, the per-token, per-layer EP A2A cost is:
+The shipped A2A primitive is pairwise direct-send (NCCL on star; bisection-bound pairwise on torus). Bruck / log-hop A2A does **not** ship and does not appear in the cost — see `collectives/01_collective_algorithms.md §7` for the primitive derivations. On a star topology, the per-token, per-layer EP A2A cost is:
 
 $$
 t_{EP} \;=\; 2(EP - 1)\,\alpha_{EP} \;+\; 2 \cdot \frac{EP - 1}{EP} \cdot \frac{k H \, b}{BW_{\text{EP}}}
 $$
 
-The factor of $2$ absorbs Dispatch + Combine; the primitive itself is pairwise direct-send per `collectives.md §5.1`. For torus EP fabrics, substitute the bisection-bound form of `collectives.md §5.2` with $M = k H b$. For dense models ($EP = 1$), $t_{EP} = 0$.
+The factor of $2$ absorbs Dispatch + Combine; the primitive itself is pairwise direct-send per `collectives/01_collective_algorithms.md §7.1`. For torus EP fabrics, substitute the bisection-bound form of `collectives/02_topology_mapping.md §3` with $M = k H b$. For dense models ($EP = 1$), $t_{EP} = 0$.
 
 ---
 
@@ -1279,7 +1279,7 @@ TP groups compute each layer in parallel across $TP$ devices using column- and r
 
 **Critical Note on Message Size:** unlike PP (which sends a shard), the TP All-Reduce operates on the **full hidden state vector** ($H$). Each device owns only a shard of the weights, but the partial output from Row Parallelism is a vector of size $H$ that must be reduced globally; the payload is $H b$ bytes per token, not $(H/TP) b$.
 
-NCCL ships two AR algorithms on a star fabric — ring (large-$M$) and double binary tree (DBT, small-$M$). Selection is a manual tuner knob (`tuner.ar_algorithm`, default `"ring"`; see `collectives.md §3.1`). Both are pipelined and bandwidth-optimal; only the $n_\alpha$ coefficient differs. For the decode payload $M = H b$, the per-token, per-layer cost is:
+NCCL ships two AR algorithms on a star fabric — ring (large-$M$) and double binary tree (DBT, small-$M$). Selection is a manual tuner knob (`tuner.ar_algorithm`, default `"ring"`; see `collectives/02_topology_mapping.md §2`). Both are pipelined and bandwidth-optimal; only the $n_\alpha$ coefficient differs. For the decode payload $M = H b$, the per-token, per-layer cost is:
 
 $$
 t_{TP}^{\text{ring}} \;=\; 2(TP - 1)\,\alpha_{TP} \;+\; 2 \cdot \frac{TP - 1}{TP} \cdot \frac{H b}{BW_{\text{TP}}}
@@ -1289,7 +1289,7 @@ $$
 t_{TP}^{\text{DBT}} \;=\; 2\,\lceil \log_2 TP \rceil \cdot \alpha_{TP} \;+\; 2 \cdot \frac{TP - 1}{TP} \cdot \frac{H b}{BW_{\text{TP}}}
 $$
 
-For torus TP fabrics (dim-decomposed ring, shipped on TPU / Trainium), substitute the torus AR form of `collectives.md §3.2` with $M = H b$. Derivation and the ring-vs-DBT empirical crossover behavior are in `collectives.md §3.1` (cost) and explainer `02 §2`.
+For torus TP fabrics (dim-decomposed ring, shipped on TPU / Trainium), substitute the torus AR form of `collectives/02_topology_mapping.md §3` with $M = H b$. Derivation and the ring-vs-DBT empirical crossover behavior are in `collectives/02_topology_mapping.md §2` (cost) and explainer `02 §2`.
 
 ---
 
@@ -1297,17 +1297,17 @@ For torus TP fabrics (dim-decomposed ring, shipped on TPU / Trainium), substitut
 
 Sequence Parallelism (SP) in inference typically refers to **Ring Attention** [RING-ATTN]. The KV cache is partitioned along the sequence dimension $S$; to compute attention for a new token the Query ($Q$) stays local and KV blocks rotate around the ring so that the local $Q$ attends to the full history. This is a **pass-KV** ring variant — the standard choice for KV-cache-dominated inference where KV is large relative to $Q$. (A pass-Q variant exists for training, where $Q$ is full-sequence; see [HUANG-CP-2024].)
 
-The ring operation is effectively an **All-Gather** (streaming the distributed KV cache to every rank), not an All-Reduce. DeepSpeed-Ulysses [DEEPSPEED-ULYSSES] is an alternative SP approach using all-to-all instead of ring; unlike ring, it is bounded by the number of attention heads rather than the number of devices. Tree-based SP variants are theoretically possible but no production implementation ships them — KV shards are large and must be processed in sequence order. For modeling purposes, we assume **ring-style, pass-KV SP communication**, costed via the ring AG primitive of `collectives.md §4.1`.
+The ring operation is effectively an **All-Gather** (streaming the distributed KV cache to every rank), not an All-Reduce. DeepSpeed-Ulysses [DEEPSPEED-ULYSSES] is an alternative SP approach using all-to-all instead of ring; unlike ring, it is bounded by the number of attention heads rather than the number of devices. Tree-based SP variants are theoretically possible but no production implementation ships them — KV shards are large and must be processed in sequence order. For modeling purposes, we assume **ring-style, pass-KV SP communication**, costed via the ring AG primitive of `collectives/01_collective_algorithms.md §6`.
 
 ### SP Ring Communication Latency
 
-Substituting the decode per-rank KV shard $M_\mathrm{SP} = (S / SP) \cdot (2 H_{kv} / TP) \cdot b$ into the star ring AG cost of `collectives.md §4.1`:
+Substituting the decode per-rank KV shard $M_\mathrm{SP} = (S / SP) \cdot (2 H_{kv} / TP) \cdot b$ into the star ring AG cost of `collectives/01_collective_algorithms.md §6`:
 
 $$
 t_{SP} \;=\; (SP - 1)\,\alpha_{SP} \;+\; (SP - 1) \cdot \frac{(S / SP) \cdot (2 H_{kv} / TP) \cdot b}{BW_{\text{SP}}}
 $$
 
-The message size reflects TP and SP as orthogonal partitions of the head and sequence dimensions. For torus SP fabrics, use the torus AG form of `collectives.md §4.2` with the same $M_\mathrm{SP}$.
+The message size reflects TP and SP as orthogonal partitions of the head and sequence dimensions. For torus SP fabrics, use the torus AG form of `collectives/02_topology_mapping.md §3` with the same $M_\mathrm{SP}$.
 
 **Decode overlap note:** in single-token decode, per-token compute time is small, so communication overlap with compute ($\rho$) is unlikely to be significant for SP. Use $\rho \approx 0$ for SP when modeling decode latency.
 
@@ -1412,13 +1412,13 @@ At $B=1$ these reduce to the classical single-token payloads. The B-factor refle
 
 Each collective in this section uses the algorithm that is actually shipped on the target fabric; other algorithms (Bruck A2A, recursive-doubling AR, PAT AG) are reference-only and live in `modeling/collectives/01 App. B`. Selection rules:
 
-- **TP All-Reduce:** NCCL ships both ring and double binary tree (DBT) on a star fabric; the choice is a manual tuner knob `tuner.ar_algorithm` (`collectives.md §3.1`), default `"ring"`. On torus fabrics (TPU / Trainium), only dim-decomposed ring ships — the knob is ignored. Empirical crossover: DBT wins at small $M$, ring wins at large $M$ ([DEMYST-NCCL]).
+- **TP All-Reduce:** NCCL ships both ring and double binary tree (DBT) on a star fabric; the choice is a manual tuner knob `tuner.ar_algorithm` (`collectives/02_topology_mapping.md §2`), default `"ring"`. On torus fabrics (TPU / Trainium), only dim-decomposed ring ships — the knob is ignored. Empirical crossover: DBT wins at small $M$, ring wins at large $M$ ([DEMYST-NCCL]).
 
-- **EP All-to-All:** NCCL ships pairwise direct-send on a star; TPU / Trainium ships the bisection-bound pairwise form on a torus (`collectives.md §5`). Log-hop (Bruck) A2A is **not** shipped and does not appear in this section's formulas.
+- **EP All-to-All:** NCCL ships pairwise direct-send on a star; TPU / Trainium ships the bisection-bound pairwise form on a torus (`collectives/01_collective_algorithms.md §7`). Log-hop (Bruck) A2A is **not** shipped and does not appear in this section's formulas.
 
-- **SP All-Gather:** Ring AG is the only shipped form in production inference stacks — KV shards are large and must be processed in sequence order, so tree variants are impractical. This applies to both star (`collectives.md §4.1`) and torus (`collectives.md §4.2`).
+- **SP All-Gather:** Ring AG is the only shipped form in production inference stacks — KV shards are large and must be processed in sequence order, so tree variants are impractical. This applies to both star (`collectives/01_collective_algorithms.md §6`) and torus (`collectives/02_topology_mapping.md §3`).
 
-See `collectives.md §3–§6` for the full shipped-primitive inventory and per-topology cost formulas (including hierarchical RS → sub-AR → AG and in-network reduction); `collectives.md §7` for the contention coefficients $(\eta_\alpha, \eta_\beta)$.
+See `collectives/00_summary.md §4–§7` for the full shipped-primitive inventory and per-topology cost formulas (including hierarchical RS → sub-AR → AG and in-network reduction); `collectives/05_contention_and_congestion.md` for the contention coefficients $(\eta_\alpha, \eta_\beta)$.
 
 ---
 

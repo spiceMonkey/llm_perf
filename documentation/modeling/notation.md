@@ -131,14 +131,14 @@ _(→ decode.md; → dram3d.md for 3D DRAM extensions)_
 ---
 
 ## 7. Networking
-_(→ decode.md; → collectives.md §3–§6 for the shipped-primitive cost table consumed by decode.md / prefill.md; → collectives.md §7 for dynamic η_α / η_β)_
+_(→ decode.md; → collectives/00_summary.md §4–§7 for the shipped-primitive cost table consumed by decode.md / prefill.md; → collectives/05_contention_and_congestion.md for dynamic η_α / η_β)_
 
 The system model names physical networks as **fabrics** (`FabricSpec`); each fabric is an ordered list of switching tiers, innermost first. A collective (TP / EP / SP / PP) declares an ordered **fabric chain** via `SystemSpec.collective_fabrics[collective]`. Walking that chain innermost-first yields a single flattened tier list; a collective of group size $G$ spans tiers $0..k$ where $k$ is the smallest index with $\prod_{i=0}^{k} P_i \ge G$.
 
 - $P_{role,i}$ — Reach at tier $i$ along the $role$ collective's fabric chain (ranks reachable within that tier from any single rank). Topology-dependent: crossbar $P_i$ = switch radix; torus $P_i = \prod_j D_j$.
 - $\alpha_{role,i}$ — Per-traversal startup latency of tier $i$ along the $role$ collective's fabric chain (μs).
 - $BW_{role,i}$ — Effective per-port single-direction bandwidth of tier $i$ along the $role$ collective's fabric chain (GB/s, post-$\eta$).
-- $\alpha_{role}(G)$ — **Span latency** for a collective of group size $G$: $\alpha_{role}(G) = \sum_{i \le k} \alpha_{role,i}$ with $k$ as above. Crossbar-only shorthand — torus tiers use their dim-decomposed primitives (collectives.md §3.2 / §4.2 / §5.2) rather than a flat α-sum.
+- $\alpha_{role}(G)$ — **Span latency** for a collective of group size $G$: $\alpha_{role}(G) = \sum_{i \le k} \alpha_{role,i}$ with $k$ as above. Crossbar-only shorthand — torus tiers use their dim-decomposed primitives (collectives/02_topology_mapping.md §3) rather than a flat α-sum.
 - $BW_{role}(G)$ — **Span bandwidth** for a collective of group size $G$: $BW_{role}(G) = \min_{i \le k} BW_{role,i}$ (narrowest crossed tier dominates, across fabric boundaries as well as within a fabric). Crossbar-only shorthand, same caveat as above.
 - $n_{TP}$ — Number of TP collective iterations per layer per token.
 - $n_{EP}$ — Number of EP collective iterations per layer per token.
@@ -152,20 +152,20 @@ The system model names physical networks as **fabrics** (`FabricSpec`); each fab
 - $BW_\mathrm{link}$ — Per-link single-direction bandwidth (equal to tier's $BW_i$).
 - $BW_\mathrm{bisect}^\mathrm{min}$ — Minimum bisection capacity: $2 N BW_\mathrm{link} / D_\mathrm{max}$.
 
-**Contention coefficients** (collectives.md §7):
+**Contention coefficients** (collectives/05_contention_and_congestion.md):
 - $\eta_\alpha$ — Dynamic α-inflator for a switching tier ($\geq 1$; ideal = 1). Captures serialization penalties under concurrent collectives and off-prefix layouts that steady-state microbenchmarks miss.
-- $\eta_\beta$ — Dynamic BW-deflator for a switching tier ($\in (0, 1]$; ideal = 1). Captures runtime bandwidth loss beyond the calibrated peak. Hierarchical fabrics cap upper-tier $\eta_\beta$ at $\min(\eta_\beta^\mathrm{hw}, 1/s)$ where $s$ is the oversubscription ratio (collectives.md §7.2).
+- $\eta_\beta$ — Dynamic BW-deflator for a switching tier ($\in (0, 1]$; ideal = 1). Captures runtime bandwidth loss beyond the calibrated peak. Hierarchical fabrics cap upper-tier $\eta_\beta$ at $\min(\eta_\beta^\mathrm{hw}, 1/s)$ where $s$ is the oversubscription ratio (collectives/05_contention_and_congestion.md §4).
 
-**Single-tier shorthand.** A chain with one crossbar fabric and one crossbar tier collapses to the flat pair $\alpha_{role} \equiv \alpha_{role,0}$, $BW_{role} \equiv BW_{role,0}$, independent of $G$. The decode/prefill equations in decode.md and prefill.md are written against this flat pair; multi-tier and torus analyses substitute the appropriate span quantity (or torus-native formula) with $G$ set by the role-specific group size (e.g. $G = \text{TP}$ for TP collectives, $G = \text{EP}$ for EP). For PP point-to-point hops, the tier is selected via the **nested-layout convention** below — *not* by `G = 2`, which would always pick tier 0. See `collectives.md §3–§6` for the shipped-primitive cost table (ring / DBT AR on star, dim-decomposed ring on torus, hierarchical RS → sub-AR → AG, in-network reduction via NVLS / Quantum SHARP / Tomahawk Ultra) consumed by decode.md §5 and prefill.md §3.2; `collectives.md §7` for $\eta_\alpha / \eta_\beta$ application.
+**Single-tier shorthand.** A chain with one crossbar fabric and one crossbar tier collapses to the flat pair $\alpha_{role} \equiv \alpha_{role,0}$, $BW_{role} \equiv BW_{role,0}$, independent of $G$. The decode/prefill equations in decode.md and prefill.md are written against this flat pair; multi-tier and torus analyses substitute the appropriate span quantity (or torus-native formula) with $G$ set by the role-specific group size (e.g. $G = \text{TP}$ for TP collectives, $G = \text{EP}$ for EP). For PP point-to-point hops, the tier is selected via the **nested-layout convention** below — *not* by `G = 2`, which would always pick tier 0. See `collectives/00_summary.md §4–§7` for the shipped-primitive cost table (ring / DBT AR on star, dim-decomposed ring on torus, hierarchical RS → sub-AR → AG, in-network reduction via NVLS / Quantum SHARP / Tomahawk Ultra) consumed by decode.md §5 and prefill.md §3.2; `collectives/05_contention_and_congestion.md` for $\eta_\alpha / \eta_\beta$ application.
 
 **Nested-layout convention.** Per-axis tier assignment under the production-standard layout `DP → PP → EP → TP → SP` (innermost = highest-bandwidth). Walk the fabric chain inner→outer; for each axis (in inner-to-outer order: SP, TP, EP, PP), assign the smallest tier whose cumulative reach $\prod_{i \le t} P_i$ holds the cumulative product of inner axes × this axis. Example on d-Matrix squadrack (3-tier chain $P = (16, 4, 8)$, cumulative $(16, 64, 512)$): `TP=8, EP=1, PP=2` → TP at tier 0 (8 ≤ 16), PP at tier 0 (16 ≤ 16); `TP=8, PP=8` → PP at tier 1 (64 ≤ 64); `TP=8, PP=32` → PP at tier 2 (256 ≤ 512). Single-tier systems (e.g., NVL72) collapse all axes to tier 0. Implemented by `core/primitives/partition_layout.assign_tier_per_axis(partition, system)`.
 
-**Collective-primitive coefficients** (collectives.md §3–§6):
-- $n_\alpha$ — Coefficient on $\alpha$ in a shipped-primitive cost formula (number of startup traversals). Per-primitive values in collectives.md §3–§6.
-- $n_\beta$ — Coefficient on $M / \mathrm{BW}$. Per-primitive values in collectives.md §3–§6.
-- $\alpha_\mathrm{switch}$ — Switch cut-through latency (200–400 ns) consumed by in-network collective formulas (collectives.md §3.4, §4.4, §5.4, §6).
-- $\mathrm{BW_{eff}} = \mathrm{BW} / n_\beta$ — Effective per-rank bandwidth seen by a collective. AR alone has $\mathrm{BW_{eff}} = \mathrm{BW}/2$ in software and $\mathrm{BW_{eff}} = \mathrm{BW}$ under INC (switch ALU + multicast crossbar fuses the two halves; collectives.md §3.4).
-- $\mathrm{ar\_algorithm}$ — Tuning-knob symbol selecting star AR algorithm: admissible values $\{\mathrm{ring}, \mathrm{DBT}\}$, default $\mathrm{ring}$. Does not apply to torus AR (only dim-decomposed ring is shipped). See `collectives.md §3.1`.
+**Collective-primitive coefficients** (collectives/00_summary.md §4–§7):
+- $n_\alpha$ — Coefficient on $\alpha$ in a shipped-primitive cost formula (number of startup traversals). Per-primitive values in collectives/00_summary.md §4–§7.
+- $n_\beta$ — Coefficient on $M / \mathrm{BW}$. Per-primitive values in collectives/00_summary.md §4–§7.
+- $\alpha_\mathrm{switch}$ — Switch cut-through latency (200–400 ns) consumed by in-network collective formulas (collectives/04_in_network_collectives.md, §6).
+- $\mathrm{BW_{eff}} = \mathrm{BW} / n_\beta$ — Effective per-rank bandwidth seen by a collective. AR alone has $\mathrm{BW_{eff}} = \mathrm{BW}/2$ in software and $\mathrm{BW_{eff}} = \mathrm{BW}$ under INC (switch ALU + multicast crossbar fuses the two halves; collectives/04_in_network_collectives.md).
+- $\mathrm{ar\_algorithm}$ — Tuning-knob symbol selecting star AR algorithm: admissible values $\{\mathrm{ring}, \mathrm{DBT}\}$, default $\mathrm{ring}$. Does not apply to torus AR (only dim-decomposed ring is shipped). See `collectives/02_topology_mapping.md §2`.
 
 ---
 

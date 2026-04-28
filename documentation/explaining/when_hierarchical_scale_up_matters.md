@@ -126,7 +126,7 @@ This *does not* make the hierarchical fabric free. It makes decode insensitive t
 
 ## 10. Related reading
 
-- `documentation/modeling/collectives.md` §3.3 — Hierarchical RS → sub-AR → AG composition with payload telescoping; the multi-tier cost form consumed by `decode.md` and `prefill.md`.
+- `documentation/modeling/collectives/03_hierarchical_topologies.md` §2 — Hierarchical RS → sub-AR → AG composition with payload telescoping; the multi-tier cost form consumed by `decode.md` and `prefill.md`.
 - `documentation/modeling/notation.md` §7 — Networking symbols for fabrics and tiers.
 - `documentation/explaining/frontier_convergence_at_high_b.md` — why partitions converge at high B; helps interpret why the EP-heavy corner is most sensitive to scale-out BW.
 - `documentation/explaining/pp_vs_tp_decode_scaling.md` — the compute/communication trade-off when choosing TP vs. PP; directly relevant to the §7 design rule on large-TP dense inference.
