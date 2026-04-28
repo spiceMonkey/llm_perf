@@ -3,7 +3,7 @@
 **Author:** Yue Lu  
 **Date:** April 2026  
 
-Operational lookup table for the collective communication costs consumed by `decode.md` and `prefill.md`. For every shipped primitive on every modeled topology — star (NCCL), torus (TPU XLA / Trainium NeuronX CCL), hierarchical Clos / fat-tree (multi-pod), and in-network reduction (NVLink SHARP / NVLS, Quantum SHARP, Spectrum-X SHARP, Tomahawk Ultra) — this document states the closed-form $(\alpha, \mathrm{BW})$ cost, the $(n_\alpha, n_\beta)$ coefficients, and where the cost is incurred during inference. Contention is layered on top through scalar coefficients $(\eta_\alpha, \eta_\beta)$ per fabric tier (§7). Derivations, worked examples, and algorithm trade-offs live in the explainer series `documentation/explaining/collectives/`; this doc is the lookup table.
+Operational lookup table for the collective communication costs consumed by `decode.md` and `prefill.md`. For every shipped primitive on every modeled topology — star (NCCL), torus (TPU XLA / Trainium NeuronX CCL), hierarchical Clos / fat-tree (multi-pod), and in-network reduction (NVLink SHARP / NVLS, Quantum SHARP, Spectrum-X SHARP, Tomahawk Ultra) — this document states the closed-form $(\alpha, \mathrm{BW})$ cost, the $(n_\alpha, n_\beta)$ coefficients, and where the cost is incurred during inference. Contention is layered on top through scalar coefficients $(\eta_\alpha, \eta_\beta)$ per fabric tier (§7). Derivations, worked examples, and algorithm trade-offs live in the explainer series `documentation/modeling/collectives/`; this doc is the lookup table.
 
 ---
 
@@ -305,9 +305,9 @@ All citations in §3–§7 resolve to entries in `references.md`:
 
 Explainer cross-references used throughout:
 
-- `documentation/explaining/collectives/00_summary.md` — symbol table and per-algorithm $(n_\alpha, n_\beta)$ cheatsheet.
-- `documentation/explaining/collectives/01_collective_algorithms.md` — topology-free α-β derivations for the seven primitives.
-- `documentation/explaining/collectives/02_topology_mapping.md` — star / torus / mesh per-topology derivations and $N = 512$ ideal comparison.
-- `documentation/explaining/collectives/03_hierarchical_topologies.md` — multi-tier Clos / fat-tree composition, NVL72 SuperPOD case study.
-- `documentation/explaining/collectives/04_in_network_collectives.md` — NVLS / Quantum SHARP / Spectrum-X SHARP / Tomahawk Ultra mechanics, scale-up vs scale-out, AR-only BW-eff doubling.
-- `documentation/explaining/collectives/05_contention_and_congestion.md` — $(\eta_\alpha, \eta_\beta)$ derivation, per-tier calibration, realistic $N = 512$ re-run.
+- `documentation/modeling/collectives/00_summary.md` — symbol table and per-algorithm $(n_\alpha, n_\beta)$ cheatsheet.
+- `documentation/modeling/collectives/01_collective_algorithms.md` — topology-free α-β derivations for the seven primitives.
+- `documentation/modeling/collectives/02_topology_mapping.md` — star / torus / mesh per-topology derivations and $N = 512$ ideal comparison.
+- `documentation/modeling/collectives/03_hierarchical_topologies.md` — multi-tier Clos / fat-tree composition, NVL72 SuperPOD case study.
+- `documentation/modeling/collectives/04_in_network_collectives.md` — NVLS / Quantum SHARP / Spectrum-X SHARP / Tomahawk Ultra mechanics, scale-up vs scale-out, AR-only BW-eff doubling.
+- `documentation/modeling/collectives/05_contention_and_congestion.md` — $(\eta_\alpha, \eta_\beta)$ derivation, per-tier calibration, realistic $N = 512$ re-run.

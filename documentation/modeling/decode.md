@@ -1410,7 +1410,7 @@ At $B=1$ these reduce to the classical single-token payloads. The B-factor refle
 
 ### Practical Guidance: Shipped Algorithm Selection
 
-Each collective in this section uses the algorithm that is actually shipped on the target fabric; other algorithms (Bruck A2A, recursive-doubling AR, PAT AG) are reference-only and live in `explaining/collectives/01 App. B`. Selection rules:
+Each collective in this section uses the algorithm that is actually shipped on the target fabric; other algorithms (Bruck A2A, recursive-doubling AR, PAT AG) are reference-only and live in `modeling/collectives/01 App. B`. Selection rules:
 
 - **TP All-Reduce:** NCCL ships both ring and double binary tree (DBT) on a star fabric; the choice is a manual tuner knob `tuner.ar_algorithm` (`collectives.md §3.1`), default `"ring"`. On torus fabrics (TPU / Trainium), only dim-decomposed ring ships — the knob is ignored. Empirical crossover: DBT wins at small $M$, ring wins at large $M$ ([DEMYST-NCCL]).
 
