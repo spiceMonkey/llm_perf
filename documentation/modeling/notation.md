@@ -207,7 +207,7 @@ _(→ decode.md)_
 - $\tau_{\mathrm{launch}}$ — Per-kernel CPU dispatch latency (typical: ~1.5 μs with CUDA Graphs, ~7 μs without).
 - $k$ — Kernel launches per layer per microbatch: $k = k_{\mathrm{compute}} + k_{\mathrm{collective}} \cdot (n_{\mathrm{TP}}^{\mathrm{eff}} + n_{\mathrm{EP}}^{\mathrm{eff}} + n_{\mathrm{SP}}^{\mathrm{eff}})$. Collective counts are 0 when the corresponding parallelism axis is 1.
 - $t_{\mathrm{SW}}$ — Per-round CPU dispatch budget on each device: $t_{\mathrm{SW}} = L \cdot k \cdot \tau_{\mathrm{launch}}$ (kernel_launch_overhead.md §5).
-- $\rho_{\mathrm{SW}}$ — SW-overlap factor $\in [0, 1]$: fraction of $t_{\mathrm{stage}}$ that hides $t_{\mathrm{SW}}$ via async kernel dispatch. Default 1 (full overlap).
+- $\rho_{\mathrm{SW}}$ — SW-overlap factor $\in [0, 1]$: fraction of $t_{\mathrm{stage}}$ that hides $t_{\mathrm{SW}}$ via async kernel dispatch. Default 1 (full overlap — upper-end case, accurate for CUDA-Graphs-replayed production stacks where the CPU has 1000× slack). Empirical production typically measures ~0.85–0.95 with CUDA Graphs; eager-mode Python serving sits at ~0.3–0.6. The 1.0 default matches the roofline philosophy; see `framework.md §2.2` for the full caveat.
 - $\gamma_{\text{pp}}$ — Pipeline-bubble multiplier:
   $$\gamma_{\text{pp}} = \max\left(1,\; \frac{PP}{B}\right)$$
   Equal to 1 when the pipeline is kept full ($B \ge PP$); greater than 1 when a single microbatch must traverse all PP stages sequentially ($B < PP$).

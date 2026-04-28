@@ -155,33 +155,33 @@ where $\tau_{\mathrm{launch}}$ is per-kernel dispatch latency (~7 μs without CU
 
 ## 5.2 Where It Plugs Into the Roofline
 
-The framework's current per-stage step time (from [decode_model.py](../../llm_perf/core/decode_model.py)) is:
+The framework's GPU-side per-stage step time (from [decode_model.py](../../llm_perf/core/decode_model.py)) is:
 
 $$
-t_{\mathrm{stage}} = \max(t_{\mathrm{compute}}, t_{\mathrm{mem}}) + \max(0, t_{\mathrm{comm}} - \rho \cdot t_{\mathrm{local}})
+t_{\mathrm{stage}} = \max(t_{\mathrm{compute}}^{\mathrm{eff}}, t_{\mathrm{mem}}) + \max(0, t_{\mathrm{comm}} - \rho \cdot t_{\mathrm{local}})
 $$
 
-This is purely a GPU-side accounting. To incorporate $t_{\mathrm{SW}}$, the standard approach is to model the CPU-side dispatch as a separate resource that can partially overlap GPU work:
+The CPU-side dispatch composes with $t_{\mathrm{stage}}$ via the SW-overlap factor $\rho_{\mathrm{SW}} \in [0, 1]$, then the user-observed step time becomes:
 
 $$
-t_{\mathrm{stage,actual}} = \max(t_{\mathrm{stage}}, t_{\mathrm{SW}})
+t_{\mathrm{step,user}} = \max\!\bigl(t_{\mathrm{stage}},\ \rho_{\mathrm{SW}} \cdot t_{\mathrm{stage}} + (1 - \rho_{\mathrm{SW}}) \cdot (t_{\mathrm{stage}} + t_{\mathrm{SW}}),\ t_{\mathrm{SW}}\bigr) \cdot \gamma_{\mathrm{pp}}
 $$
 
-if the CPU is fully bottlenecked (asynchronous dispatch with the CPU running ahead, but the GPU starves whenever the CPU falls behind), or:
+The two boundary cases:
 
-$$
-t_{\mathrm{stage,actual}} = t_{\mathrm{stage}} + (1 - \rho_{\mathrm{SW}}) \cdot t_{\mathrm{SW}}
-$$
+- $\rho_{\mathrm{SW}} = 1$ (full overlap): $t_{\mathrm{step,user}} = \max(t_{\mathrm{stage}}, t_{\mathrm{SW}}) \cdot \gamma_{\mathrm{pp}}$. Async dispatch fully hides $t_{\mathrm{SW}}$ when it is shorter than the GPU's $t_{\mathrm{stage}}$; otherwise $t_{\mathrm{SW}}$ is a hard floor and the GPU starves.
+- $\rho_{\mathrm{SW}} = 0$ (no overlap): $t_{\mathrm{step,user}} = (t_{\mathrm{stage}} + t_{\mathrm{SW}}) \cdot \gamma_{\mathrm{pp}}$. CPU dispatch and GPU work serialize; $t_{\mathrm{SW}}$ adds linearly.
 
-if the dispatch partially overlaps with GPU work via async streams. In practice, well-tuned systems with CUDA Graphs achieve high overlap ($\rho_{\mathrm{SW}} \approx 0.7-0.9$); without graphs, the synchronous Python dispatch is the bottleneck and the $\max$ form applies.
+The three knobs that drive $t_{\mathrm{SW}}$ are exposed on `TuningSpec`:
 
-Three knobs would be needed in `TuningSpec` to make this configurable:
+- `kernels_per_layer_compute` — compute kernels per layer (default 10, after typical fusion).
+- `kernels_per_collective_call` — NCCL kernels per collective call (default 2).
+- `kernel_launch_us` — $\tau_{\mathrm{launch}}$ (default 1.5 μs with CUDA Graphs; set to ~7 μs to model eager-mode without graphs; set to 0 to disable the SW term entirely).
+- `sw_overlap_factor` — $\rho_{\mathrm{SW}}$ (default 1.0 — full overlap; see caveat below).
 
-- `kernels_per_layer` — $k$ (default ~12 dense, ~15-20 MoE)
-- `kernel_launch_us` — $\tau_{\mathrm{launch}}$ (default ~7 μs no-graphs, ~1.5 μs graphs)
-- `cuda_graph_overlap_factor` — $\rho_{\mathrm{SW}}$ (default 0 for the conservative bound)
+**Is $\rho_{\mathrm{SW}} = 1$ realistic?** It is the upper-end case, not the empirical average. The 1.0 default accurately models CUDA-Graphs-replayed steady-state on production stacks (TensorRT-LLM, vLLM, SGLang) where the CPU's cost per microbatch is one `cudaGraphLaunch` (~1.5 μs) while the GPU runs ms of kernels queued from that single API call — three orders of magnitude of slack, which is effectively perfect overlap. Empirically these stacks measure $\rho_{\mathrm{SW}} \approx 0.85$–$0.95$ in production. Eager-mode PyTorch / Python serving paths sit at $\rho_{\mathrm{SW}} \approx 0.3$–$0.6$ because Python interpreter overhead between kernel launches breaks the CPU-runs-ahead invariant. The framework's 1.0 default matches its roofline philosophy (give the optimistic upper bound; users dial down to model deployment imperfections). Crucially, $t_{\mathrm{SW}}$ is still a *hard floor* when $t_{\mathrm{SW}} > t_{\mathrm{stage}}$ regardless of $\rho_{\mathrm{SW}}$, so the optimistic default does not hide the dispatch tax in the SW-bound regime — it only matters in the GPU-bound regime where the launch budget *can* in principle be hidden.
 
-The framework currently does not include these; partition sweeps therefore use the optimistic $t_{\mathrm{stage}}$ as TPOT. For mb=1 decode this is silently optimistic by ~2× (with graphs) to ~5× (without).
+For users wanting a more cautious default, $\rho_{\mathrm{SW}} = 0.85$ captures "production with CUDA Graphs but not perfectly tuned"; $\rho_{\mathrm{SW}} = 0.5$ models eager-mode Python serving; $\rho_{\mathrm{SW}} = 0$ is the strict additive bound. Override per-deployment via `TuningSpec.sw_overlap_factor` or by adding `sw_overlap_factor: <value>` to the tuner JSON.
 
 ## 5.3 Numerical Mapping for GPT-1.8T MoE on GB200
 
