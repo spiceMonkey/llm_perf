@@ -104,7 +104,7 @@ def test_t_sw_scales_with_collective_count() -> None:
     r_TP = InferenceCalculator(m, s, PartitionSpec(PP=4, TP=2, EP=1, SP=1), t).run().latency
 
     L = m.L
-    pp_term = 2 * 4 * 2 * 1.5e-6   # 2·PP·k_pp_hop·τ at PP=4, k_pp_hop=2, τ=1.5 μs
+    pp_term = 4 * 2 * 1.5e-6   # PP·k_pp_hop·τ at PP=4, k_pp_hop=2, τ=1.5 μs
     expected_nocoll = L * 10 * 1.5e-6 + pp_term
     expected_TP = L * (10 + 2 * t.n_TP_collectives) * 1.5e-6 + pp_term
 
@@ -133,10 +133,10 @@ def test_t_sw_pp_hop_term() -> None:
     r1 = InferenceCalculator(m, s, PartitionSpec(PP=1, TP=1, EP=1, SP=1), t).run().latency
     _check_near("t_SW at PP=1 (no PP term)", r1.t_SW, L * 10 * 1.5e-6, rel_tol=1e-12)
 
-    # PP=8 → adds 2·8·2·1.5 = 48 μs over the L·k baseline.
+    # PP=8 → adds 8·2·1.5 = 24 μs over the L·k baseline.
     r8 = InferenceCalculator(m, s, PartitionSpec(PP=8, TP=1, EP=1, SP=1), t).run().latency
-    expected_pp8 = L * 10 * 1.5e-6 + 2 * 8 * 2 * 1.5e-6
-    _check_near("t_SW at PP=8 includes 2·PP·k_pp_hop·τ", r8.t_SW, expected_pp8, rel_tol=1e-12)
+    expected_pp8 = L * 10 * 1.5e-6 + 8 * 2 * 1.5e-6
+    _check_near("t_SW at PP=8 includes PP·k_pp_hop·τ", r8.t_SW, expected_pp8, rel_tol=1e-12)
 
     # PP scaling: doubling PP doubles the PP-hop term contribution.
     r4 = InferenceCalculator(m, s, PartitionSpec(PP=4, TP=1, EP=1, SP=1), t).run().latency
