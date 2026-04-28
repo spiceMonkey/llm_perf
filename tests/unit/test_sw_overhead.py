@@ -90,7 +90,13 @@ def test_t_sw_scales_with_collective_count() -> None:
     print("\ntest_t_sw_scales_with_collective_count")
     m, s, t = _fixture()
     # Use known production knobs.
-    t = replace(t, kernel_launch_us=1.5, kernels_per_layer_compute=10, kernels_per_collective_call=2)
+    t = replace(
+        t,
+        kernel_launch_us=1.5,
+        kernels_per_layer_compute=10,
+        kernels_per_collective_call=2,
+        kernels_per_pp_hop=2,
+    )
 
     # PP=4, TP=1, EP=1, SP=1 → no collectives fire → k = 10
     r_nocoll = InferenceCalculator(m, s, PartitionSpec(PP=4, TP=1, EP=1, SP=1), t).run().latency
@@ -98,8 +104,9 @@ def test_t_sw_scales_with_collective_count() -> None:
     r_TP = InferenceCalculator(m, s, PartitionSpec(PP=4, TP=2, EP=1, SP=1), t).run().latency
 
     L = m.L
-    expected_nocoll = L * 10 * 1.5e-6
-    expected_TP = L * (10 + 2 * t.n_TP_collectives) * 1.5e-6
+    pp_term = 2 * 4 * 2 * 1.5e-6   # 2·PP·k_pp_hop·τ at PP=4, k_pp_hop=2, τ=1.5 μs
+    expected_nocoll = L * 10 * 1.5e-6 + pp_term
+    expected_TP = L * (10 + 2 * t.n_TP_collectives) * 1.5e-6 + pp_term
 
     _check_near("t_SW (TP=1, no coll)", r_nocoll.t_SW, expected_nocoll, rel_tol=1e-12)
     _check_near("t_SW (TP=2, n_TP=2 collectives)", r_TP.t_SW, expected_TP, rel_tol=1e-12)
@@ -108,6 +115,39 @@ def test_t_sw_scales_with_collective_count() -> None:
         r_TP.t_SW > r_nocoll.t_SW,
         f"got {r_TP.t_SW} vs {r_nocoll.t_SW}",
     )
+
+
+def test_t_sw_pp_hop_term() -> None:
+    print("\ntest_t_sw_pp_hop_term")
+    m, s, t = _fixture()
+    t = replace(
+        t,
+        kernel_launch_us=1.5,
+        kernels_per_layer_compute=10,
+        kernels_per_collective_call=2,
+        kernels_per_pp_hop=2,
+    )
+    L = m.L
+
+    # PP=1 → no inter-stage hops; PP-hop term must be 0.
+    r1 = InferenceCalculator(m, s, PartitionSpec(PP=1, TP=1, EP=1, SP=1), t).run().latency
+    _check_near("t_SW at PP=1 (no PP term)", r1.t_SW, L * 10 * 1.5e-6, rel_tol=1e-12)
+
+    # PP=8 → adds 2·8·2·1.5 = 48 μs over the L·k baseline.
+    r8 = InferenceCalculator(m, s, PartitionSpec(PP=8, TP=1, EP=1, SP=1), t).run().latency
+    expected_pp8 = L * 10 * 1.5e-6 + 2 * 8 * 2 * 1.5e-6
+    _check_near("t_SW at PP=8 includes 2·PP·k_pp_hop·τ", r8.t_SW, expected_pp8, rel_tol=1e-12)
+
+    # PP scaling: doubling PP doubles the PP-hop term contribution.
+    r4 = InferenceCalculator(m, s, PartitionSpec(PP=4, TP=1, EP=1, SP=1), t).run().latency
+    pp4_extra = r4.t_SW - r1.t_SW
+    pp8_extra = r8.t_SW - r1.t_SW
+    _check_near("PP=8 PP-hop contribution = 2× PP=4 contribution", pp8_extra, 2 * pp4_extra, rel_tol=1e-12)
+
+    # k_pp_hop=0 disables the PP term.
+    t_no_pp = replace(t, kernels_per_pp_hop=0)
+    r8_no_pp = InferenceCalculator(m, s, PartitionSpec(PP=8, TP=1, EP=1, SP=1), t_no_pp).run().latency
+    _check_near("k_pp_hop=0 disables PP term", r8_no_pp.t_SW, L * 10 * 1.5e-6, rel_tol=1e-12)
 
 
 # ────────────────────────────────────────────────────────────
@@ -188,6 +228,7 @@ def test_sw_overlap_factor_boundaries() -> None:
 def main() -> int:
     test_sw_disabled_matches_legacy_roofline()
     test_t_sw_scales_with_collective_count()
+    test_t_sw_pp_hop_term()
     test_eta_tc_derates_compute_at_small_mb()
     test_sw_overlap_factor_boundaries()
     if _failures:

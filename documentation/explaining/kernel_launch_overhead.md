@@ -141,17 +141,18 @@ These are stacked: a model graph is lowered through a compilation IR graph into 
 
 In a steady-state inflight pipeline ([pipeline_bubble.md §5](pipeline_bubble.md#5-the-first-order-correction)) with $B \ge PP$, microbatch size $\mathrm{mb} = B / PP$, and $PP$ microbatches in flight:
 
-- Each microbatch through one stage requires $(L/PP) \cdot k$ kernel launches, where $k$ is the number of kernels per layer.
+- Each microbatch through one stage requires $(L/PP) \cdot k$ kernel launches for compute / collective work, where $k$ is the number of kernels per layer.
+- Each microbatch additionally fires $\approx 2$ point-to-point send/recv kernels at the stage boundary (1 recv from upstream + 1 send to downstream on a middle stage).
 - Each device sequentially processes all $PP$ microbatches per pipeline round.
-- Per-stage launches per round = $PP \cdot (L/PP) \cdot k = L \cdot k$, **independent of $PP$**.
+- Per-stage launches per round: $PP \cdot (L/PP) \cdot k = L \cdot k$ for the compute path (**independent of $PP$**), plus $PP \cdot 2 \cdot k_{\mathrm{pp\_hop}} = 2 \cdot PP \cdot k_{\mathrm{pp\_hop}}$ for the inter-stage hops (**linear in $PP$**, inert when $PP = 1$).
 
 The per-round SW (software, host-side dispatch) overhead on each device is therefore:
 
 $$
-t_{\mathrm{SW}} = L \cdot k \cdot \tau_{\mathrm{launch}}
+t_{\mathrm{SW}} = L \cdot k \cdot \tau_{\mathrm{launch}} + 2 \cdot PP \cdot k_{\mathrm{pp\_hop}} \cdot \tau_{\mathrm{launch}}
 $$
 
-where $\tau_{\mathrm{launch}}$ is per-kernel dispatch latency (~7 μs without CUDA Graphs, ~1.5 μs with). $t_{\mathrm{SW}}$ is the total CPU-side and dispatch budget consumed per pipeline round per device.
+where $\tau_{\mathrm{launch}}$ is per-kernel dispatch latency (~7 μs without CUDA Graphs, ~1.5 μs with), and $k_{\mathrm{pp\_hop}}$ is the kernel count per PP boundary per microbatch on each device (typically 2; 1 if fused via `ncclSendRecv` or a custom kernel). For typical decode setups the PP-hop term is 3–10% of $L \cdot k \cdot \tau$ — real but second-order. Edge stages (first and last) do only one direction; the formula uses the middle-stage 2× factor for simplicity (off by one $PP \cdot \tau$ on edges, negligible at $PP \gg 1$).
 
 ## 5.2 Where It Plugs Into the Roofline
 
