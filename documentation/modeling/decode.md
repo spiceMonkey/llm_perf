@@ -32,13 +32,8 @@ LLM inference, Transformer, parallelism, tensor parallelism, expert parallelism,
   - [3.3 FFN FLOPs (Unified Dense + MoE)](#33-ffn-flops-unified-dense--moe)
   - [3.4 LayerNorm and Elementwise FLOPs](#34-layernorm-and-elementwise-flops)
   - [3.5 Per-Device FLOPs per Layer Under TP, SP, EP, and PP](#35-per-device-flops-per-layer-under-tp-sp-ep-and-pp)
-  - [3.6 Prefill FLOPs](#36-prefill-flops)
 
 - [4. Compute vs. Memory Bound (Roofline Model)](#4-compute-vs-memory-bound-roofline-model)
-  - [4.1 Operational Intensity (Ops:Byte)](#41-operational-intensity-opsbyte)
-  - [4.2 Compute-Bound Time](#42-compute-bound-time)
-  - [4.3 Memory-Bound Time](#43-memory-bound-time)
-  - [4.4 Local Device Time Bound](#44-local-device-time-bound)
 
 - [5. Communication Time During Decoding](#5-communication-time-during-decoding)
   - [5.1 Pipeline Parallel (PP) Hop](#51-pipeline-parallel-pp-hop)
@@ -47,11 +42,13 @@ LLM inference, Transformer, parallelism, tensor parallelism, expert parallelism,
   - [5.4 Sequence Parallel (SP) Communication](#54-sequence-parallel-sp-communication)
   - [5.5 Total Communication Time Per Token on a PP Stage](#55-total-communication-time-per-token-on-a-pp-stage)
 
-- [6. End-to-End Latency, Throughput, and Partition Strategy](#6-end-to-end-latency-throughput-and-partition-strategy)
+- [6. Partition Strategy and Hardware Latency](#6-partition-strategy-and-hardware-latency)
   - [6.1 Model Partition Strategy from HBM Constraints](#61-model-partition-strategy-from-hbm-constraints)
   - [6.2 Local and Networking Per-Token Latency](#62-local-and-networking-per-token-latency)
-  - [6.3 TPS and TTPS — Pipeline Throughput](#63-tps-and-ttps--pipeline-throughput)
-  - [6.4 Batch-Size Scaling and Throughput–Latency Tradeoff](#64-batch-size-scaling-and-throughputlatency-tradeoff)
+
+- [7. Kernel-Launch Overhead, Pipeline Bubble, and Throughput](#7-kernel-launch-overhead-pipeline-bubble-and-throughput)
+  - [7.1 Kernel-launch overhead](#71-kernel-launch-overhead)
+  - [7.2 User-observed step time and throughput](#72-user-observed-step-time-and-throughput)
 
 ---
 
@@ -255,11 +252,11 @@ $$
 P_{KV, layer} = S \cdot (2H_{kv}) = 2 S H_{kv}
 $$
 
-In bytes:
+In bytes (per sequence):
 
 $$
-M_{\mathrm{KV,layer}} =
-2 S H_{kv} \cdot b
+M_{\text{KV,layer}} =
+2 S H_{kv} \cdot b \quad \text{(per sequence, per layer)}
 $$
 
 This is **static** once pre-fill is complete; decoding contributes only an additional $2H_{kv} b$ per
@@ -390,17 +387,14 @@ Note that dense layers use $EP = 1$ and $N_{\text{exp}} = 1$ implicitly, while M
 The per-layer working activation footprint for a batch of $B$ sequences is $B \cdot (4H + 2H_{kv})$.
 
 In standard sequential layer execution, only one layer's activation buffers are live at any time —
-each layer's output overwrites the previous layer's buffer before the next layer begins. Therefore,
-the per-device activation memory during decoding is simply one layer's worth:
+each layer's output overwrites the previous layer's buffer before the next layer begins. The $L/PP$ multiplier therefore does *not* appear: earlier layers' activations are not retained while later layers execute. A $2\times$ factor could apply when double-buffering for PP communication overlap, but this is negligible in practice and omitted.
+
+The per-device activation memory during decoding is therefore one layer's worth:
 
 $$
-M_{\text{act,device}} =
+M_{\text{act,device}}(B) =
 B \cdot (4H + 2H_{kv}) \, b
 $$
-
-> **Note:** The $L/PP$ multiplier is *not* applied here because layers execute sequentially; earlier
-> layers' activations are not retained while later layers execute. A $2\times$ factor could apply
-> when double-buffering for PP communication overlap, but this is negligible in practice and omitted.
 
 ### Per-device KV Cache Memory
 
@@ -412,17 +406,17 @@ The KV cache is sharded only across:
 
 EP and DP do not modify KV layout; PP only affects how many layers are assigned to a stage.
 
-Therefore, the **per-device** KV memory footprint is:
+For a batch of $B$ resident sequences, each carries its own KV history. The **per-device** KV memory footprint scales linearly with $B$:
 
 $$
-M_{\mathrm{KV,device}} =
-\frac{L}{PP}
+M_{\text{KV,device}}(B) =
+B \cdot \frac{L}{PP}
 \frac{
-    M_{\mathrm{KV,layer}}
+    M_{\text{KV,layer}}
 }{
     TP \cdot SP
 } =
-\frac{L}{PP}
+B \cdot \frac{L}{PP}
 \frac{
      (2 S H_{kv}) b
 }{
@@ -432,16 +426,19 @@ $$
 
 which:
 
-- For long-context inference (e.g., $S \in [16\mathrm{k}, 128\mathrm{k}]$), $S(2H_{kv})b$ is large enough that KV can exceed parameter memory unless aggressively reduced through TP and SP.
-- Each decoded token adds only $2H_{kv} b$, which is negligible compared to the pre-fill KV footprint.
+- Scales linearly with $B$ — every active sequence in the batch holds its own KV cache.
+- For long-context inference (e.g., $S \in [16\text{k}, 128\text{k}]$), $B \cdot S(2H_{kv})b$ is large enough that KV can exceed parameter memory unless aggressively reduced through TP and SP.
+- Each decoded token adds only $2H_{kv} b$ per sequence, which is negligible compared to the pre-fill KV footprint.
 
 ### Total Per-device Static Memory Footprint
 
 Summing all the memory footprint we derive from section 1.1 - 1.4 together, we can therefore get the "minimum required" memory size for the device to host the model under a particular PP/EP/TP/SP partition.
 
 $$
-M_{\text{device}}^{\text{total}} = M_{\theta,\text{device}} + M_{\text{act,device}} + M_{\text{KV,device}}
+M_{\text{device}}^{\text{total}}(B) = M_{\theta,\text{device}} + M_{\text{act,device}}(B) + M_{\text{KV,device}}(B)
 $$
+
+Note: $M_{\theta,\text{device}}$ is $B$-independent (weights are loaded once and shared across all sequences in the batch); $M_{\text{act,device}}(B)$ and $M_{\text{KV,device}}(B)$ both scale linearly with $B$.
 
 For **uniform architectures** (all dense or all MoE):
 
@@ -502,12 +499,15 @@ Note: Activation memory ($B(4H+2H_{kv})b$, one layer at a time) and KV cache app
 
 Section 1 quantified the *static* memory footprint of the model — how many bytes of parameters, KV cache, and activations must **fit** in device HBM.
 
-This section instead focuses on **memory traffic per generated token**, i.e., the bytes that must flow between HBM and compute cores *during decoding*. This traffic directly determines the memory-bound component of decoding performance (Section 4’s roofline model).
+This section instead focuses on **memory traffic per decode step**, i.e., the bytes that must flow between HBM and compute cores during decoding. This traffic directly determines the memory-bound component of decoding performance (Section 4's roofline model).
 
 **Crucial Distinction for Decoding:**
-In autoregressive decoding, each step generates one new token per active sequence. Unlike prefill — where weights are loaded once and reused across $S_{\text{input}}$ tokens within a single pass — decoding reloads the **entire model weight matrix** from HBM **every step**. Increasing the decode batch $B$ amortizes this fixed weight-load cost across $B$ tokens (per-token weight traffic = $T_\theta/B$), but does not change the fact that weights are reloaded each step.
+In autoregressive decoding, each step generates one new token per active sequence (B tokens per step for a batch of B). Unlike prefill — where weights are loaded once and reused across $S_{\text{input}}$ tokens within a single pass — decoding reloads the **entire model weight matrix** from HBM **every step**, regardless of $B$. KV cache, by contrast, is read per-sequence: each of the $B$ active sequences streams its own KV history. So per step:
 
-Therefore, optimizations like FlashAttention or Fused-MLP do **not** reduce weight traffic; they only reduce the traffic of intermediate activations.
+- **Weight traffic** ($T_{\theta,\text{device}}$): independent of $B$ (loaded once, shared across all $B$ tokens — equivalently, per-token weight traffic = $T_{\theta,\text{device}}/B$ shrinks as $B$ grows).
+- **KV traffic**: scales linearly with $B$ (each sequence reads its own history).
+
+Throughout this section, the per-step traffic quantities below are consistent with this asymmetry. Optimizations like FlashAttention or Fused-MLP do **not** reduce weight traffic; they only reduce the traffic of intermediate activations.
 
 ---
 
@@ -518,7 +518,7 @@ Following Section 1, we use:
 - $P_{\text{attn}}$: Q/K/V/O projection parameters  
 - $P_{\text{FFN}}$: dense FFN (or non-expert MoE core) parameters  
 
-We drop $P_{\text{emb}}$ and $P_{\text{lm}}$ when modeling steady-state decoding, assuming they reside on boundary PP stages and do not bottleneck the central pipeline.
+$P_{\text{emb}}$ is small (one row read per token) and absorbed into the embedding lookup overhead — we drop it from the steady-state traffic model. $P_{\text{lm}}$ is **kept** as a stage-PP-1-only term (see "LM head parameter traffic" below) — it can rival ~10% of the body for large $V$ and warrants explicit accounting.
 
 ### Attention parameter traffic
 
@@ -599,9 +599,15 @@ T_{\theta,\text{moe}} =
 \right) b
 $$
 
----
+### LM head parameter traffic
 
-## 2.2 Activation Traffic $T_{\text{act,device}}$
+The LM head ($H \to V$ projection) is **column-parallel sharded by TP** across the vocab dimension and **lives only on the last PP stage** (stage $PP{-}1$). It is not divided by $PP$, $EP$, or $SP$. The per-step weight read on stage $PP{-}1$ is:
+
+$$
+T_{\text{LM},\theta,\text{device}} = \frac{V H \, b}{TP} \quad \text{(stage } PP{-}1 \text{ only)}
+$$
+
+Because the LM head fires once per step (not per layer), it is bookkept as a separate additive term rather than folded into the per-layer $T_{\theta,\text{device}}$. The roofline composition in §6 / §7 adds $t_{\text{LM}}$ on top of the per-stage body cost; on stages $0..PP{-}2$ this term is zero.
 
 Section 1 showed that the per-layer activation footprint for a single decoding token is small. However, without optimization, the traffic to read/write these activations—especially the $S \times S$ attention scores—would be massive ($O(S^2)$).
 
@@ -618,60 +624,58 @@ Because FlashAttention drastically reduces the score matrix traffic, the residua
 KV cache must be **fully read** for each new token to compute attention against the history.
 For large $S$, the write term (appending the new token) is negligible compared to reading the history.
 
-The per-layer KV access is approximately:
+The per-sequence per-layer KV access is approximately:
 
 $$
 T_{\text{KV,layer}}
 \approx
-2 S H_{kv} \, b
+2 S H_{kv} \, b \quad \text{(per sequence, per layer)}
 $$
 
 Consistent with Section 1, KV is sharded by **TP** (channel/head dimension) and **SP** (sequence dimension). Thus each device only sees a $\frac{1}{TP \cdot SP}$ shard of this per-layer traffic.
 
-For a PP stage with $L/PP$ layers, the **per-device KV traffic per token** is:
+For a PP stage with $L/PP$ layers and $B$ active sequences in the batch — each streaming its own KV history — the **per-step per-device KV traffic** is:
 
 $$
-T_{\text{KV,device}}
+T_{\text{KV,device}}(B)
 \approx
-\frac{L}{PP}
+B \cdot \frac{L}{PP}
 \cdot
 \frac{2 S H_{kv} \, b}{TP \cdot SP}
 $$
 
-FlashAttention does **not** reduce this term: keys and values from history must always be loaded to compute the current token's attention, regardless of tiling strategy.
+The linear $B$ scaling reflects that each sequence in the batch reads its own KV cache independently. FlashAttention does **not** reduce this term: keys and values from history must always be loaded to compute each sequence's current-token attention, regardless of tiling strategy.
 
 ---
 
 ## 2.4 Total and Effective Traffic
 
-Combining the expressions derived in Sections 2.1–2.3 (with activation traffic dropped as negligible), the **effective** total per-token traffic is:
+Combining the expressions derived in Sections 2.1–2.3 (with activation traffic dropped as negligible), the **effective** total per-step traffic is:
 
 $$
-T_{\text{token,device}}^{eff}
+T_{\text{step,device}}^{\text{eff}}(B)
 \approx
 T_{\theta,\text{device}}
 +
-T_{\text{KV,device}}.
+T_{\text{KV,device}}(B)
 $$
 
-Substituting yields the **final fully expanded expression**:
+Weight traffic is $B$-independent (one load per step); KV traffic scales linearly with $B$. Substituting yields the **final fully expanded expression**:
 
 $$
-T_{\text{token,device}}^{eff}
+T_{\text{step,device}}^{\text{eff}}(B)
 \;\approx\;
-\frac{L}{PP}
-\left[
+\underbrace{\frac{L}{PP}
 \left(
 \frac{2H^2 + 2 H H_{kv}}{TP}
 +
 \frac{3 H I N_{\text{exp}}}{TP \cdot EP}
-\right) b
-+
-\frac{2 S H_{kv}}{TP \cdot SP} b
-\right]
+\right) b}_{T_{\theta,\text{device}}\ \text{(weights, once per step)}}
+\;+\;
+\underbrace{B \cdot \frac{L}{PP} \cdot \frac{2 S H_{kv}}{TP \cdot SP} b}_{T_{\text{KV,device}}(B)\ \text{(KV, per sequence)}}
 $$
 
-The first group inside the brackets is **weight traffic** (loaded once per step), and the second term is **KV cache traffic** (per-token KV reads).
+The first group is **weight traffic** (loaded once per step regardless of $B$), and the second is **KV cache traffic** (each of the $B$ active sequences reads its own history).
 
 ---
 
@@ -685,11 +689,11 @@ $$
 M_{\text{device}}^{\text{total}} \le M_{\text{HBM}}
 $$
 
-**Memory Traffic (Section 2)** Determines the *bandwidth-limited latency* per decoded token (Bandwidth Constraint)
+**Memory Traffic (Section 2)** Determines the *bandwidth-limited latency* per decode step (Bandwidth Constraint)
 
 $$
-t_{\text{mem}} =
-\frac{T_{\text{token,device}}^{eff}}
+t_{\text{mem}}(B) =
+\frac{T_{\text{step,device}}^{\text{eff}}(B)}
      {BW_{\text{mem}}}
 $$
 
@@ -1033,13 +1037,27 @@ F_{\text{moe,device}} =
 \right)
 $$
 
-Note: The router term $2H N_{\text{exp}}$ is unsharded (applied to the full hidden state before expert selection).
+Note: The router term $2H N_{\text{exp}}$ is unsharded (applied to the full hidden state before expert selection). Prefill FLOPs (the $O(S^2)$ regime) are covered in [prefill.md](prefill.md).
 
----
+### LM head FLOPs
 
-## 3.6 Prefill FLOPs
+Mirroring the LM head traffic term in §2.1, the $H \to V$ projection is **column-parallel sharded by TP** along the vocab dimension and **lives only on the last PP stage** (stage $PP{-}1$). It is not divided by $L$, $PP$, $EP$, or $SP$. The per-step compute on stage $PP{-}1$ is:
 
-Prefill FLOPs are covered in [prefill.md](prefill.md).
+$$
+F_{\text{LM,step,device}}(B) = \frac{2 \, B \, H \, V}{TP} \quad \text{(stage } PP{-}1 \text{ only)}
+$$
+
+This scales linearly with $B$ (one $H \to V$ projection per sequence) and fires once per step, not per layer. It is bookkept as a separate additive term and combined with $T_{\text{LM},\theta,\text{device}}$ into a one-shot LM-head roofline $t_{\text{LM}}$ in §6 / §7; on stages $0..PP{-}2$ this term is zero.
+
+### Per-step (batched) FLOPs
+
+A decode step processes $B$ sequences concurrently and produces 1 new token per sequence. Compute scales linearly with $B$ (every sequence runs the full forward pass independently):
+
+$$
+F_{\text{step,device}}(B) \;=\; B \cdot F_{\text{token,device}}
+$$
+
+This is the per-step, per-device FLOP count consumed in the roofline (§4). All downstream HW latency formulas (§4–§6) carry the $(B)$ argument explicitly.
 
 ---
 
@@ -1047,43 +1065,58 @@ Prefill FLOPs are covered in [prefill.md](prefill.md).
 
 # 4. Compute vs. Memory Bound (Roofline Model)
 
-Sections 2 and 3 derived:
-
-- the **per-token memory traffic** ($T_{\text{token,device}}^{eff}$), including FlashAttention effects.
-- the **per-token FLOPs per device** on this PP stage ($F_{\text{token,device}}$), and  
-
-We now combine them using a standard roofline model to determine the **local per-token latency**.
-
-Let:
-
-- $R_{\text{GPU}}$: sustained device compute throughput (FLOPs/s),  
-- $BW_{\text{mem}}$: sustained device memory bandwidth (bytes/s).  
-
-Both reflect *sustained* performance, not peak specs.
-
-**Precision-aware compute peak.** Across the system database, ``peak_flops_TF`` stores the **FP16 dense per-chip peak** as the uniform reference. The framework derives the working-precision peak via linear byte-ratio scaling:
+Sections 2 and 3 derived the **per-step memory traffic** $T_{\text{step,device}}^{\text{eff}}(B) = T_{\theta,\text{device}} + B \cdot T_{\text{KV,device}}$ and the **per-step FLOPs per device** $F_{\text{step,device}}(B) = B \cdot F_{\text{token,device}}$. The compute roofline divides FLOPs by sustained device throughput $R_{\text{GPU}}$ (FLOPs/s):
 
 $$
-R_{\text{GPU}}(b) = \mathrm{peak\_flops\_TF} \cdot \frac{2}{b}
+t_{\text{compute}}(B) = \frac{F_{\text{step,device}}(B)}{R_{\text{GPU}}} = \frac{B \cdot F_{\text{token,device}}}{R_{\text{GPU}}}
 $$
 
-where $b$ is the model's `bytes_per_param` (FP16 = 2, FP8/INT8 = 1, FP4/INT4 = 0.5). For example, on GB200 NVL72 with peak_FP16 = 2250 TF/GPU, an FP4 model gets 9000 TF/GPU and an INT8 model gets 4500 TF/GPU. This matches Hopper / Blackwell / TPU Tensor Core families exactly. **Known limitation**: d-Matrix MXINT4 throughput is 4× MXINT8 (rather than 2×) due to block-sparse acceleration in the INT4 path; the linear-byte rule under-states d-Matrix INT4 / FP4 by 2× on those systems only.
+The memory roofline opens up across the device's memory hierarchy. Modern accelerators expose an ordered list of memory tiers $i = 0, 1, \ldots, n-1$ (fastest first): single-tier HBM on H100 / B200, two-tier SRAM + LPDDR5 on d-Matrix Corsair, single-tier on-die SRAM on Groq LPU. A **placement policy** $\pi$ assigns weight and KV bytes to specific tiers, splitting $T_{\theta,\text{device}}$ into per-tier shares $T_{\theta,0}, \ldots, T_{\theta,n-1}$ and $T_{\text{KV},\text{device}}$ into $T_{\text{KV},0}, \ldots, T_{\text{KV},n-1}$. Each tier carries its own effective bandwidth $BW_{\text{eff},i} = BW_i \cdot \eta_{\beta,i}$ (peak rate deflated by a sustained-throughput contention factor $\eta_{\beta,i} \in (0, 1]$, see `sram.md §1.2`). The per-step memory time sums bytes-moved over per-tier bandwidth across all tiers:
+
+$$
+t_{\text{mem}}(B) = \sum_{i=0}^{n-1} \frac{T_{\theta,i} + B \cdot T_{\text{KV},i}}{BW_{\text{eff},i}}
+$$
+
+Per-tier first-byte latencies $\alpha_i$ are dropped here because they contribute well under 0.1% of $t_{\text{mem}}$ at decode-step granularity; the full $\alpha$–$\beta$ form is reinstated in small-read regimes (paged-attention block fetch, flash-style spill — see `sram.md §2.1`). Tier definitions, placement policies (greedy fastest-first, operator-pinned), and worked numerical examples for d-Matrix Corsair / B200 / Groq LPU live in `sram.md`; this document treats $T_{\theta,i}$ and $T_{\text{KV},i}$ as given inputs.
+
+**Single-tier reduction.** When $n = 1$ — single-tier devices like H100 / B200 / Groq LPU, or any system modeled before opening up the tier list — the sum collapses to one term:
+
+$$
+t_{\text{mem}}(B) = \frac{T_{\theta,\text{device}} + B \cdot T_{\text{KV,device}}}{BW_{\text{eff},0}}
+\qquad (n = 1)
+$$
+
+with $BW_{\text{eff},0} \equiv BW_{\text{mem}}$. The Operational Intensity and $B^\star$ analyses below are written against this single-tier shorthand for compactness; the multi-tier crossover (weights and KV pinned to different tiers — d-Matrix Capacity Mode being the canonical example) is derived in `sram.md §2.2`.
+
+$t_{\text{compute}}(B)$ is the time assuming unlimited memory bandwidth — linear in $B$ since every sequence contributes its own per-token FLOPs. $t_{\text{mem}}(B)$ is the time assuming compute is free — within each tier, weights amortize once per step (the $T_{\theta,i}$ terms are $B$-independent) while KV reads scale with $B$ (each sequence reads its own history). For long-context LLMs the $B \cdot T_{\text{KV},i}$ contribution summed across tiers is often dominant.
+
+The per-step **local latency** on this PP stage is the roofline of the two:
+
+$$
+t_{\text{local}}(B) =
+\max\bigl( t_{\text{compute}}(B),\; t_{\text{mem}}(B) \bigr)
+$$
+
+The asymmetric $B$-scaling of the two arms (compute linear in $B$; memory weights flat per tier, KV linear per tier) means the regime can flip with $B$ — characterized by the operational-intensity analysis below.
 
 ---
 
-## 4.1 Operational Intensity (Ops:Byte)
+### Operational Intensity (Ops:Byte)
 
 The **operational intensity** for decoding on this device is [ROOFLINE]:
 
 $$
-\text{OI} =
-\frac{F_{\text{token,device}}}{T_{\text{token,device}}^{eff}}
+\text{OI}(B) =
+\frac{F_{\text{step,device}}(B)}{T_{\text{step,device}}^{\text{eff}}(B)} =
+\frac{B \cdot F_{\text{token,device}}}{T_{\theta,\text{device}} + B \cdot T_{\text{KV,device}}}
 \quad \text{(FLOPs per byte)}
 $$
 
+For the **single-token, single-sequence** baseline ($B = 1$), the formula collapses to $\text{OI}(1) = F_{\text{token,device}} / (T_{\theta,\text{device}} + T_{\text{KV,device}})$, which establishes the fundamental memory-bound character of decode. As $B$ grows, $\text{OI}(B)$ rises (weight reads amortize across more sequences); the crossover-batch analysis is in the dedicated subsection below.
+
 High-level interpretation:
 
-- **High OI** → more FLOPs per byte → *compute-bound*  
+- **High OI** → more FLOPs per byte → *compute-bound*
 - **Low OI** → fewer FLOPs per byte → *memory-bound*
 
 This rating is compared to the device’s memory-to-compute ratio (the ridge point):
@@ -1092,88 +1125,94 @@ $$
 \frac{R_{\text{GPU}}}{BW_{\text{mem}}}
 $$
 
-If:
+If $\text{OI}(B) > R_{\text{GPU}} / BW_{\text{mem}}$ the step is **compute-bound** (and $t_{\text{local}}(B) = t_{\text{compute}}(B)$); otherwise it is **memory-bound** (and $t_{\text{local}}(B) = t_{\text{mem}}(B)$).
 
-$$
-\text{OI} > \frac{R_{\text{GPU}}}{BW_{\text{mem}}}
-\quad \Rightarrow \quad \text{compute-bound}
-$$
-
-else:
-
-$$
-\text{OI} < \frac{R_{\text{GPU}}}{BW_{\text{mem}}}
-\quad \Rightarrow \quad \text{memory-bound}
-$$
+---
 
 ### Dominant-Term Approximation
 
-In practice, the OI is often approximated using only the largest FLOP and traffic terms:
+In practice, the OI is often approximated using only the largest FLOP and traffic terms. With $B$ sequences per step and full TP / EP / SP sharding:
 
-- FLOPs dominated by:
+- Per-step FLOPs dominated by:
   $$
-  \max\left( 2H^2,\; 6H I_{\text{eff}},\; 4 S H/SP \right)
-  $$
-
-- Memory traffic dominated by the KV term:
-  $$
-  \frac{2 S H_{kv}}{TP\cdot SP}\, b
+  B \cdot \max\!\left( \frac{2H^2}{TP},\; \frac{6H I_{\text{eff}}}{TP \cdot EP},\; \frac{4 S H}{TP \cdot SP} \right)
   $$
 
-Thus for long-context decoding (attention FLOPs dominate):
+- Per-step memory traffic dominated by the KV term (each sequence reads its own KV history):
+  $$
+  B \cdot \frac{2 S H_{kv}}{TP \cdot SP}\, b
+  $$
+
+Thus for long-context decoding (attention FLOPs dominate the FLOP max):
 
 $$
-\text{OI} \approx
-\frac{4 S H/(TP\cdot SP)}{2 S H_{kv}/(TP\cdot SP)\; b}
+\text{OI}(B) \approx
+\frac{B \cdot 4 S H / (TP \cdot SP)}{B \cdot 2 S H_{kv} / (TP \cdot SP)\, b}
 = \frac{2H}{H_{kv}\, b}
 $$
 
+Both $B$ and $(TP \cdot SP)$ cancel — the OI is shape- and batch-independent in this regime. (The cancellation makes intuitive sense: every sequence reads its own KV and computes its own attention, so the per-sequence FLOP-to-byte ratio is what matters; sharding splits both terms identically.)
+
 For MHA ($H_{kv} = H$), this reduces to $2/b$. For GQA models, $H/H_{kv} = n_q/n_{kv}$ amplifies the OI — e.g., for $n_q/n_{kv} = 8$ (LLaMA-3 70B) the OI is $16/b$. Even so, this is far below typical ridge points (~300 FLOPs/byte on H100), so long-context decode remains **memory-bound** in practice.
 
-> **Note on batch size.** This subsection treats the $B = 1$ case to establish the fundamental memory-bound character of decode. The OI generalizes to $\text{OI}(B)$ once batching is introduced, which lifts the operational intensity by amortizing weight reads across $B$ tokens — that derivation, along with the crossover batch size $B^{\star}$, is in §6.
+The short-context limit collapses to the same $2/b$ for a different reason: when weights dominate, FFN FLOPs $6HI_\text{eff}$ over FFN traffic $3HI_\text{eff} \cdot b$ also gives $2/b$. So the path-independent answer is **OI ≈ 2/b at $B=1$**, with $b$ being the only free knob.
 
 ---
 
-## 4.2 Compute-Bound Time
+### Compute-Bound Crossover ($B^\star$)
 
-Given the per-token FLOPs on this device (Section 3.5):
+The full $\text{OI}(B) = B \cdot F_{\text{token,device}} / (T_{\theta,\text{device}} + B \cdot T_{\text{KV,device}})$ has two limiting regimes:
 
-$$
-t_{\text{compute}} =
-\frac{F_{\text{token,device}}}{R_{\text{GPU}}}
-$$
-
-This is the time assuming unlimited memory bandwidth.
-
----
-
-## 4.3 Memory-Bound Time
-
-Given the effective memory traffic per token (Section 2.4):
+**Memory-bound limit** ($B$ small, weight traffic dominates the denominator):
 
 $$
-t_{\text{mem}} =
-\frac{T_{\text{token,device}}^{eff}}{BW_{\text{mem}}}
+\lim_{B \to 0} \text{OI}(B) =
+\frac{B \cdot F_{\text{token,device}}}{T_{\theta,\text{device}}}
+\;\to\; 0
 $$
 
-This is the time assuming compute is free.
+At small $B$, the model is **weight-traffic-limited**. The $B = 1$ case recovers the single-token OI established above.
 
-For long-context LLMs, this term is often dominant due to KV-cache reads.
-
----
-
-## 4.4 Local Device Time Bound
-
-The per-token latency for this PP stage is:
+**Compute-bound limit** ($B$ large, KV traffic dominates the denominator):
 
 $$
-t_{\text{local}} =
-\max\left( t_{\text{compute}},\; t_{\text{mem}} \right)
+\lim_{B \to \infty} \text{OI}(B) =
+\frac{F_{\text{token,device}}}{T_{\text{KV,device}}}
 $$
 
-This is the roofline principle:
+At large $B$, KV cache reads dominate and the intensity saturates at this asymptotic ceiling.
 
-> **Decoding is limited by whichever is slower — compute throughput or memory bandwidth.**
+**Ridge-point crossover.** The **crossover batch size** $B^\star$ is the point at which the roofline transitions from memory-bound to compute-bound. Setting $\text{OI}(B^\star) = R_{\text{GPU}} / BW_{\text{mem}}$ (the ridge point per [ROOFLINE]) and solving:
+
+$$
+B^\star =
+\frac{T_{\theta,\text{device}} \cdot R_{\text{GPU}}}
+     {F_{\text{token,device}} \cdot BW_{\text{mem}} - T_{\text{KV,device}} \cdot R_{\text{GPU}}}
+$$
+
+**Existence condition.** $B^\star$ is finite and positive iff the denominator is positive. Rearranging into ridge-point form:
+
+$$
+B^\star < \infty
+\quad\Longleftrightarrow\quad
+\frac{F_{\text{token,device}}}{T_{\text{KV,device}}} \;>\; \frac{R_{\text{GPU}}}{BW_{\text{mem}}} = R_{\text{ridge}}
+$$
+
+i.e., the **arithmetic intensity of KV traffic alone** (per-token FLOPs over per-sequence KV bytes) must exceed the device ridge point. Intuition: $\text{OI}(B)$ asymptotes to $F_{\text{token,device}} / T_{\text{KV,device}}$ as $B \to \infty$; if this asymptotic ceiling itself sits below $R_{\text{ridge}}$, the roofline is never crossed regardless of batch size.
+
+**No-crossover regime.** When the inequality is violated — typical of very long contexts on small models, where $T_{\text{KV,device}}$ grows linearly in $S$ while $F_{\text{token,device}}$ stays fixed — decode remains memory-bound at every $B$, and $B^\star \to \infty$. In this regime batching still amortizes *weight* traffic ($T_{\theta,\text{device}} / B$ per token), which continues to reduce per-sequence TPOT, but it **cannot** push the step into the compute-bound zone; adding more sequences only adds linear KV bandwidth pressure until HBM saturates.
+
+**Weight-dominated approximation.** When $T_{\text{KV,device}}$ is small relative to $T_{\theta,\text{device}} / B^\star$ (short-context decode where weight traffic dominates), $B^\star$ simplifies to:
+
+$$
+B^\star \;\approx\;
+\frac{T_{\theta,\text{device}}}{F_{\text{token,device}}}
+\cdot
+\frac{R_{\text{GPU}}}{BW_{\text{mem}}}
+\qquad (\text{weight-dominated regime})
+$$
+
+Intuitive interpretation: $T_{\theta,\text{device}} / F_{\text{token,device}}$ is the inverse single-token OI (bytes per FLOP), and $R_{\text{GPU}} / BW_{\text{mem}}$ is the ridge point (FLOPs per byte). Their product is the batch size at which weight reuse tips the balance from memory-bound to compute-bound.
 
 ---
 
@@ -1181,13 +1220,15 @@ This is the roofline principle:
 
 # 5. Communication Time During Decoding
 
-Section 4 defined the **local per-token latency** on each device:
+Section 4 defined the **local per-step latency** on each device as the roofline of compute and the multi-tier memory sum:
 
 $$
-t_{\text{local}} = \max(t_{\text{compute}}, t_{\text{mem}})
+t_{\text{local}}(B) = \max\!\bigl(t_{\text{compute}}(B),\; t_{\text{mem}}(B)\bigr),
+\qquad
+t_{\text{mem}}(B) = \sum_{i=0}^{n-1} \frac{T_{\theta,i} + B \cdot T_{\text{KV},i}}{BW_{\text{eff},i}}
 $$
 
-We now incorporate the **inter-device communication time** that arises during decoding under distributed parallelism. In the nested parallelism structure used throughout this document:
+(Single-tier devices collapse the sum to one term, recovering $t_{\text{mem}}(B) = (T_{\theta,\text{device}} + B \cdot T_{\text{KV,device}}) / BW_{\text{mem}}$ — see §4.) We now incorporate the **inter-device communication time** that arises during decoding under distributed parallelism. In the nested parallelism structure used throughout this document:
 
 $$
 \textbf{PP} \;\rightarrow\; \textbf{EP} \;\rightarrow\; \textbf{TP} \;\rightarrow\; \textbf{SP}
@@ -1203,7 +1244,7 @@ where $\alpha$ is the collective or hop latency, and $B_{\text{eff}}$ is the sus
 
 The parameters $\alpha$ and $B_{\text{eff}}$ in this model are not abstract: they are **topology-dependent physical properties** of the underlying interconnect. Different parallelism domains—TP, EP, SP, and PP—may be mapped to **different network fabrics** or different portions of the same physical topology (e.g., NVSwitch star within a node, 2D/3D torus across nodes, or hybrid switch-plus-fabric designs). Consequently, each collective type sees its own communication characteristics, with potentially different latency constants and effective bandwidths. To keep the analysis general, we denote these as $\alpha_{XP}$ and $B_{\text{eff},XP}$ for TP, EP, SP, and PP respectively. Their actual numerical values depend on the system’s physical layout, routing scheme, and bisection bandwidth properties (e.g., constant-hop NVSwitch vs. hop-scaling torus fabrics). The following sections therefore use $\alpha_{XP}$ and $B_{\text{eff},XP}$ as **collective-specific, topology-aware** parameters, to be instantiated according to the actual deployment mapping.
 
-**Delegation to `collectives.md`.** The shipped collective primitives (ring AR, double binary tree AR, ring AG / RS, pairwise A2A on star; dim-decomposed ring and bisection-bound A2A on torus; hierarchical RS → sub-AR → AG; in-network reduction via NVLS / Quantum SHARP / Tomahawk Ultra) are cost-modeled in `collectives/00_summary.md §4–§7`, with contention coefficients $(\eta_\alpha, \eta_\beta)$ in `collectives/05_contention_and_congestion.md`. This section instantiates those primitives with the decode-scale per-rank message sizes defined below; derivations and the $(\alpha_\mathrm{sum}, BW_\min)$ tier-chain accumulation live there. The $\alpha_{XP}$ and $BW_{XP}$ values used below are the fabric-chain span quantities from `notation.md §7`.
+**Delegation to the `collectives/` explainer subseries.** The shipped collective primitives (ring AR, double binary tree AR, ring AG / RS, pairwise A2A on star; dim-decomposed ring and bisection-bound A2A on torus; hierarchical RS → sub-AR → AG; in-network reduction via NVLS / Quantum SHARP / Tomahawk Ultra) are cost-modeled in `collectives/01_collective_algorithms.md` (per-algorithm) and `collectives/02_topology_mapping.md` (star / torus / mesh), with hierarchical composition in `collectives/03_hierarchical_topologies.md`, in-network primitives in `collectives/04_in_network_collectives.md`, and contention coefficients $(\eta_\alpha, \eta_\beta)$ in `collectives/05_contention_and_congestion.md`; the cheatsheet at `collectives/00_summary.md` indexes all of these. This section instantiates those primitives with the decode-scale per-rank message sizes defined below; derivations and the $(\alpha_\text{sum}, BW_\text{min})$ tier-chain accumulation live there. The $\alpha_{XP}$ and $BW_{XP}$ values used below are the fabric-chain span quantities from `notation.md §7`.
 
 ### Message sizes and their shard structure
 
@@ -1234,20 +1275,18 @@ Pipeline Parallelism (PP) forwards activations from one pipeline stage to the ne
 This alignment has an important consequence:  
 **each device only needs to forward its own TP shard of the hidden state**, not a full $H$-dimensional vector. The full activation is conceptually transferred across the PP boundary, but it is split naturally across $TP$ separate device-to-device links.
 
-Thus the PP hop behaves as a **single, shard-sized point-to-point transfer**, with message size $\approx H/TP$ per device.
-
-For a single token, the latency of this hop is modeled as:
+Thus the PP hop behaves as a **single, shard-sized point-to-point transfer**, with message size $\approx H/TP$ per token. For a decode step processing $B$ sequences concurrently, the per-step payload scales linearly:
 
 $$
-t_{PP} =
+t_{PP}(B) =
 \alpha_{PP}
 +
-\frac{(H/TP)\, b}{BW_{\text{PP}}}
+\frac{B \cdot (H/TP)\, b}{BW_{\text{PP}}}
 $$
 
-This shard-preserving PP design avoids the extra TP collectives that would be required if stages exchanged full activations and then re-sharded them. Maintaining TP rank consistency across stages therefore yields a significantly faster pipeline, and is the standard strategy in modern LLM training and inference systems.
+The α-term (single point-to-point latency) is paid once per hop regardless of payload; only the β-term scales with $B$. This shard-preserving PP design avoids the extra TP collectives that would be required if stages exchanged full activations and then re-sharded them. Maintaining TP rank consistency across stages therefore yields a significantly faster pipeline, and is the standard strategy in modern LLM training and inference systems.
 
-**Tier-aware PP cost (nested-layout convention).** $\alpha_{PP}$ and $\mathrm{BW}_{PP}$ above are *not* uniformly tier-0 fabric values. They are the latency and bandwidth of the **specific tier** the PP boundary physically crosses, which depends on where PP sits in the nested layout `DP → PP → EP → TP → SP` (innermost = highest-bandwidth tier). The framework's `partition_layout.assign_tier_per_axis` resolves a `(PartitionSpec, SystemSpec)` pair into a per-axis tier index by walking the fabric chain inner→outer, allocating each axis to the smallest tier whose cumulative reach holds the cumulative product of inner axes × this axis. For example, on d-Matrix squadrack (3-tier chain: 16 × 4 × 8):
+**Tier-aware PP cost (nested-layout convention).** $\alpha_{PP}$ and $BW_{PP}$ above are *not* uniformly tier-0 fabric values. They are the latency and bandwidth of the **specific tier** the PP boundary physically crosses, which depends on where PP sits in the nested layout `DP → PP → EP → TP → SP` (innermost = highest-bandwidth tier). The framework's `partition_layout.assign_tier_per_axis` resolves a `(PartitionSpec, SystemSpec)` pair into a per-axis tier index by walking the fabric chain inner→outer, allocating each axis to the smallest tier whose cumulative reach holds the cumulative product of inner axes × this axis. For example, on d-Matrix squadrack (3-tier chain: 16 × 4 × 8):
 
 - `PP=2, TP=8`: cumulative `8·2 = 16` ≤ tier-0 cap → **PP at tier 0** (pair-of-cards mesh, $\alpha=0.115$ μs, BW=64 GB/s).
 - `PP=8, TP=8`: cumulative `8·8 = 64` ≤ tier-1 cap → **PP at tier 1** (PCIe, $\alpha=0.65$ μs).
@@ -1259,17 +1298,15 @@ On single-tier systems (e.g., NVL72), every axis collapses to tier 0 and the leg
 
 ## 5.2 Expert Parallel (EP) All-to-All (MoE Dispatch and Combine)
 
-MoE layers require exchanging token activations across the expert-parallel (EP) dimension via all-to-all routing [DEEPSPEED-MOE]. EP communication follows a **bidirectional dispatch-and-combine pattern**: token activations are routed from the source rank to the rank holding the selected expert (top-$k$), and the expert's output is then sent back to the source rank to be added to the residual stream. Because each token traverses the link twice, the collective cost is $2 \times$ a single-direction A2A.
+MoE layers require exchanging token activations across the expert-parallel (EP) dimension via all-to-all routing [DEEPSPEED-MOE]. EP communication follows a **bidirectional dispatch-and-combine pattern**: token activations are routed from the source rank to the rank holding the selected expert (top-$k$), and the expert's output is then sent back to the source rank to be added to the residual stream. We model these as **two distinct A2A collectives per MoE layer** ($n_{EP} = 2$ in §5.5), each costing one single-direction A2A — this aligns the cost-model bookkeeping with the kernel-launch counter (§7.1), since dispatch and combine are also two separate NCCL API calls.
 
-Let $k$ denote the number of active experts per token. The per-direction message is $k H b$ bytes; the full Dispatch + Combine pair contributes $2 k H b$ bytes per device per token.
-
-The shipped A2A primitive is pairwise direct-send (NCCL on star; bisection-bound pairwise on torus). Bruck / log-hop A2A does **not** ship and does not appear in the cost — see `collectives/01_collective_algorithms.md §7` for the primitive derivations. On a star topology, the per-token, per-layer EP A2A cost is:
+Let $k$ denote the number of active experts per token. Each direction carries a $kHb$ byte per-rank per-token payload; for a decode step of $B$ sequences the per-step payload is $B \cdot kHb$. The shipped A2A primitive is pairwise direct-send (NCCL on star; bisection-bound pairwise on torus). Bruck / log-hop A2A does **not** ship and does not appear in the cost — see `collectives/01_collective_algorithms.md §7` for the primitive derivations. On a star topology, the per-direction A2A cost is:
 
 $$
-t_{EP} \;=\; 2(EP - 1)\,\alpha_{EP} \;+\; 2 \cdot \frac{EP - 1}{EP} \cdot \frac{k H \, b}{BW_{\text{EP}}}
+t_{EP}(B) \;=\; (EP - 1)\,\alpha_{EP} \;+\; \frac{EP - 1}{EP} \cdot \frac{B \cdot k H \, b}{BW_{\text{EP}}}
 $$
 
-The factor of $2$ absorbs Dispatch + Combine; the primitive itself is pairwise direct-send per `collectives/01_collective_algorithms.md §7.1`. For torus EP fabrics, substitute the bisection-bound form of `collectives/02_topology_mapping.md §3` with $M = k H b$. For dense models ($EP = 1$), $t_{EP} = 0$.
+§5.5's per-layer accumulator multiplies this by $n_{EP} = 2$ to recover the full Dispatch + Combine cost. For torus EP fabrics, substitute the bisection-bound form of `collectives/02_topology_mapping.md §3` with $M = B \cdot kHb$. For dense models ($EP = 1$), $t_{EP}(B) = 0$.
 
 ---
 
@@ -1277,19 +1314,19 @@ The factor of $2$ absorbs Dispatch + Combine; the primitive itself is pairwise d
 
 TP groups compute each layer in parallel across $TP$ devices using column- and row-parallel linear layers [MEGATRON]. The dominant collective is an **All-Reduce** at the end of the MLP (Row Parallel) and Attention (Output) blocks to sum partial results across ranks.
 
-**Critical Note on Message Size:** unlike PP (which sends a shard), the TP All-Reduce operates on the **full hidden state vector** ($H$). Each device owns only a shard of the weights, but the partial output from Row Parallelism is a vector of size $H$ that must be reduced globally; the payload is $H b$ bytes per token, not $(H/TP) b$.
+**Critical Note on Message Size:** unlike PP (which sends a shard), the TP All-Reduce operates on the **full hidden state vector** ($H$). Each device owns only a shard of the weights, but the partial output from Row Parallelism is a vector of size $H$ that must be reduced globally; the payload is $Hb$ bytes per token, not $(H/TP)b$. For a decode step of $B$ sequences the per-step payload is $B \cdot Hb$.
 
-NCCL ships two AR algorithms on a star fabric — ring (large-$M$) and double binary tree (DBT, small-$M$). Selection is a manual tuner knob (`tuner.ar_algorithm`, default `"ring"`; see `collectives/02_topology_mapping.md §2`). Both are pipelined and bandwidth-optimal; only the $n_\alpha$ coefficient differs. For the decode payload $M = H b$, the per-token, per-layer cost is:
-
-$$
-t_{TP}^{\text{ring}} \;=\; 2(TP - 1)\,\alpha_{TP} \;+\; 2 \cdot \frac{TP - 1}{TP} \cdot \frac{H b}{BW_{\text{TP}}}
-$$
+NCCL ships two AR algorithms on a star fabric — ring (large-$M$) and double binary tree (DBT, small-$M$). Selection is a manual tuner knob (`tuner.ar_algorithm`, default `"ring"`; see `collectives/02_topology_mapping.md §2`). Both are pipelined and bandwidth-optimal; only the $n_\alpha$ coefficient differs. For the decode payload $M = B \cdot Hb$, the per-step, per-layer cost is:
 
 $$
-t_{TP}^{\text{DBT}} \;=\; 2\,\lceil \log_2 TP \rceil \cdot \alpha_{TP} \;+\; 2 \cdot \frac{TP - 1}{TP} \cdot \frac{H b}{BW_{\text{TP}}}
+t_{TP}^{\text{ring}}(B) \;=\; 2(TP - 1)\,\alpha_{TP} \;+\; 2 \cdot \frac{TP - 1}{TP} \cdot \frac{B \cdot H b}{BW_{\text{TP}}}
 $$
 
-For torus TP fabrics (dim-decomposed ring, shipped on TPU / Trainium), substitute the torus AR form of `collectives/02_topology_mapping.md §3` with $M = H b$. Derivation and the ring-vs-DBT empirical crossover behavior are in `collectives/02_topology_mapping.md §2` (cost) and explainer `02 §2`.
+$$
+t_{TP}^{\text{DBT}}(B) \;=\; 2\,\lceil \log_2 TP \rceil \cdot \alpha_{TP} \;+\; 2 \cdot \frac{TP - 1}{TP} \cdot \frac{B \cdot H b}{BW_{\text{TP}}}
+$$
+
+For torus TP fabrics (dim-decomposed ring, shipped on TPU / Trainium), substitute the torus AR form of `collectives/02_topology_mapping.md §3` with $M = B \cdot Hb$. Derivation and the ring-vs-DBT empirical crossover behavior are in `collectives/02_topology_mapping.md §2` (cost) and explainer `02 §2`.
 
 ---
 
@@ -1301,21 +1338,21 @@ The ring operation is effectively an **All-Gather** (streaming the distributed K
 
 ### SP Ring Communication Latency
 
-Substituting the decode per-rank KV shard $M_\mathrm{SP} = (S / SP) \cdot (2 H_{kv} / TP) \cdot b$ into the star ring AG cost of `collectives/01_collective_algorithms.md §6`:
+Each active sequence streams its own KV shard around the ring. With $B$ concurrent sequences per step, the per-rank payload is $M_\text{SP}(B) = B \cdot (S / SP) \cdot (2 H_{kv} / TP) \cdot b$. Substituting into the star ring AG cost of `collectives/01_collective_algorithms.md §6`:
 
 $$
-t_{SP} \;=\; (SP - 1)\,\alpha_{SP} \;+\; (SP - 1) \cdot \frac{(S / SP) \cdot (2 H_{kv} / TP) \cdot b}{BW_{\text{SP}}}
+t_{SP}(B) \;=\; (SP - 1)\,\alpha_{SP} \;+\; (SP - 1) \cdot \frac{B \cdot (S / SP) \cdot (2 H_{kv} / TP) \cdot b}{BW_{\text{SP}}}
 $$
 
-The message size reflects TP and SP as orthogonal partitions of the head and sequence dimensions. For torus SP fabrics, use the torus AG form of `collectives/02_topology_mapping.md §3` with the same $M_\mathrm{SP}$.
+The message size reflects TP and SP as orthogonal partitions of the head and sequence dimensions, with $B$ multiplying because each sequence in the batch independently gathers its own KV shard. For torus SP fabrics, use the torus AG form of `collectives/02_topology_mapping.md §3` with the same $M_\text{SP}(B)$.
 
-**Decode overlap note:** in single-token decode, per-token compute time is small, so communication overlap with compute ($\rho$) is unlikely to be significant for SP. Use $\rho \approx 0$ for SP when modeling decode latency.
+**Decode overlap note:** in single-token decode, per-token compute time is small, so communication overlap with compute ($\rho$) is unlikely to be significant for SP. The unified $\rho$ in §6.2 applies to all collective traffic; if SP dominates the comm budget on a given config, calibrate $\rho$ down accordingly rather than zeroing it per-axis (the cost model has no per-axis $\rho$ knob).
 
 ---
 
-## 5.5 Total Communication Time Per Token on a PP Stage
+## 5.5 Total Communication Time Per Step on a PP Stage
 
-Sections 5.1–5.4 provide **per-token, per-layer** communication costs for each parallelism axis (TP, EP, SP), and a **per-token, per-hop** cost for PP. We now clarify how these terms combine to form the total per-token communication time on a given pipeline-parallel (PP) stage.
+Sections 5.1–5.4 provide **per-step, per-layer** communication costs for each parallelism axis (TP, EP, SP), and a **per-step, per-hop** cost for PP. Each carries the $(B)$ argument explicitly: α-side stays constant in $B$ (one collective per layer per stage regardless of payload), β-side scales linearly. We now combine them into the total per-step communication time on a given pipeline-parallel (PP) stage.
 
 ### Per-layer vs. per-stage normalization
 
@@ -1329,65 +1366,65 @@ A Transformer layer contains exactly one Attention block and one MLP/MoE block. 
   - 1 TP collective (Output Projection)
 
 - **MoE block**
-  - 1 EP all-to-all
+  - 2 EP all-to-all calls (Dispatch + Combine)
   - 1 TP collective (Expert Output Projection)
 
 These collectives must complete before the token can advance to the next layer. Since a PP stage contains $L/PP$ *sequential* layers, the total communication work for that stage is:
 
 - $n_{TP}$ TP collectives per layer  
-- $n_{EP}$ EP collectives per layer (0 for dense layers, 1 for MoE layers)  
+- $n_{EP}$ EP collectives per layer (0 for dense layers, 2 for MoE layers — Dispatch and Combine)  
 - $n_{SP}$ SP collectives per layer (1 if SP is enabled)
 
-Because TP, EP, and SP operations within each layer depend on one another (e.g., TP → SP in attention and EP → TP in MoE), they are **strictly sequential** and do not overlap. Thus, the **per-token communication time accumulated over the entire PP stage** is:
+Because TP, EP, and SP operations within each layer depend on one another (e.g., TP → SP in attention and EP → TP in MoE), they are **strictly sequential** and do not overlap. Thus, the **per-step communication time accumulated over the entire PP stage** is:
 
 $$
-t_{\text{comm,stage}} =
+t_{\text{comm,stage}}(B) =
 \frac{L}{PP}
-(
-n_{TP}\, t_{TP}
+\bigl(
+n_{TP}\, t_{TP}(B)
 +
-n_{EP}\, t_{EP}
+n_{EP}\, t_{EP}(B)
 +
-n_{SP}\, t_{SP}
-)
+n_{SP}\, t_{SP}(B)
+\bigr)
 $$
 
 Where:
 
-- $t_{EP}$, $t_{TP}$, $t_{SP}$ are the **per-token, per-layer** communication costs given in Sections 5.2–5.4.
+- $t_{EP}(B)$, $t_{TP}(B)$, $t_{SP}(B)$ are the **per-step, per-layer, per-call** communication costs given in Sections 5.2–5.4. For EP, $t_{EP}(B)$ is the single-direction A2A; the round-trip cost is recovered via $n_{EP} = 2$.
 - $n_{TP}$ is typically **2** (one for Attention, one for FFN).
-- $n_{EP}$ is **1** for MoE layers and **0** for dense layers.
+- $n_{EP}$ is **2** for MoE layers (Dispatch + Combine) and **0** for dense layers.
 - $n_{SP}$ is **1** (occurs during Attention).
 
 ### Adding PP hop cost
 
-The PP hop is different: it is a **per-token, per-hop** cost rather than a per-layer cost. A token is forwarded once from PP stage $s$ to stage $s{+}1$, with latency $t_{PP}$ as defined in Section 5.1.
+The PP hop is different: it is a **per-step, per-hop** cost rather than a per-layer cost. A step's microbatch is forwarded once from PP stage $s$ to stage $s{+}1$, with latency $t_{PP}(B)$ as defined in Section 5.1.
 
-Thus, the total per-token communication time for this stage is:
+Thus, the total per-step communication time for this stage is:
 
 $$
-t_{\text{comm}} =
+t_{\text{comm}}(B) =
 \frac{L}{PP}
-(
-n_{TP}\, t_{TP}
+\bigl(
+n_{TP}\, t_{TP}(B)
 +
-n_{SP}\, t_{SP}
-)
+n_{SP}\, t_{SP}(B)
+\bigr)
 +
 \frac{L_{\text{moe}}}{PP}
-(
-n_{EP}\, t_{EP}
-)
+\bigl(
+n_{EP}\, t_{EP}(B)
+\bigr)
 +
-t_{PP}
+t_{PP}(B)
 $$
 
 ### Interpretation
 
 - The first term accumulates **TP and SP collectives** required by all $L/PP$ layers on this PP stage (both dense and MoE layers have attention blocks requiring these collectives).
 - The second term accumulates **EP collectives** required only by the $L_{\text{moe}}/PP$ MoE layers on this PP stage. Dense layers do not require EP communication.
-- The third term accounts for the **one PP hop** that forwards the token to the next stage.
-- This combined expression represents the **total communication work** per token for the stage. Whether this communication becomes the latency bottleneck or is hidden by overlap is addressed in Section 4's roofline-style model and Section 6's end-to-end pipeline analysis.
+- The third term accounts for the **one PP hop** that forwards the step's microbatch to the next stage.
+- This combined expression represents the **total communication work** per step for the stage. Whether this communication becomes the latency bottleneck or is hidden by overlap is addressed in Section 4's roofline-style model and Section 6's end-to-end pipeline analysis.
 
 ### Mixed MoE/Dense Architectures
 
@@ -1399,8 +1436,8 @@ For a **pure MoE model**: $L_{\text{moe}} = L$, recovering the original formula.
 
 ### Summary of Collective Types and Message Sizes
 
-| Parallelism | Occurs in | Collective Type | Passes | Message Size (per device, per step) | Layer Types |
-|-------------|-----------|------------------|---------|----------------------------|-------------|
+| Parallelism | Occurs in | Collective Type | Calls/layer | Message Size (per device, per step) | Layer Types |
+|-------------|-----------|------------------|-------------|----------------------------|-------------|
 | **PP** | between layers | point-to-point | 1 | $B\cdot(H/TP)\,b$ | All |
 | **TP** | attn + FFN | all-reduce (ring/tree) | 2 | $B\cdot H\,b$ | All |
 | **EP** | MoE FFN | all-to-all | 2 | $B\cdot kH\,b$ | MoE only |
@@ -1424,17 +1461,14 @@ See `collectives/00_summary.md §4–§7` for the full shipped-primitive invento
 
 <div style="page-break-before: always;"></div>
 
-# 6. End-to-End Latency, Throughput, and Partition Strategy
+# 6. Partition Strategy and Hardware Latency
 
-This section integrates memory limits, compute, communication, and pipeline behavior into a complete
-end-to-end decoding performance model. We discuss:
+This chapter brings memory, compute, and communication together at the **per-stage** level. It produces $t_{\text{stage,hw}}$, the hardware-intrinsic GPU-side step time, and the HBM-feasibility constraint that gates which partitions are even runnable. Two axes are covered:
 
-1. Feasible model partitioning via **HBM limits**  
-2. Local per-token latency via the **compute–memory roofline**  
-3. Per-token communication latency from **TP/EP/SP/PP**  
-4. Overlap strategies between compute and communication  
-5. Throughput (**TPS**, **TTPS**) based on PP-stage bottlenecks  
-6. **TTFT**, including prefill on a separate cluster and PP-stage latency summation  
+1. Feasible model partitioning via **HBM limits** (§6.1)
+2. Local per-token latency via the **compute–memory roofline** plus collective overlap (§6.2)
+
+§7 layers scheduling and software costs on top of $t_{\text{stage,hw}}(B)$ to produce the user-observed metrics: it derives the pipeline bubble and kernel-launch overhead that turn $t_{\text{stage,hw}}(B)$ into $t_{\text{step,user}}(B)$ (and the throughput metrics TPS / TTPS). TTFT is owned by `prefill.md`.
 
 ---
 
@@ -1451,12 +1485,12 @@ within the available HBM capacity $M_{\text{HBM}}$.
 We define the total per-device static footprint as
 
 $$
-M_{\text{device}}^{\text{total}} =
+M_{\text{device}}^{\text{total}}(B) =
 M_{\theta,\text{device}}
 +
-M_{\text{act,device}}
+M_{\text{act,device}}(B)
 +
-M_{\text{KV,device}}
+M_{\text{KV,device}}(B)
 \;\le\;
 M_{\text{HBM}}
 $$
@@ -1509,44 +1543,50 @@ $$
 
 ---
 
-## 6.2 Local and Networking Per-Token Latency
+## 6.2 Local and Networking Per-Step Latency
+
+All quantities below are **per step, per stage**, with $B$ sequences batched together in one decode iteration. They are restatements of the building blocks from §3–§5 with $B$ threaded explicitly.
 
 ### Compute-bound latency
 
 $$
-t_{\text{compute}} =
-\frac{F_{\text{token,device}}}{R_{\text{GPU}}}
+t_{\text{compute}}(B) =
+\frac{B \cdot F_{\text{token,device}}}{R_{\text{GPU}}}
 $$
 
 ### Memory-bandwidth-bound latency
 
+Weights amortize once per step; KV reads scale with $B$ (§4):
+
 $$
-t_{\text{mem}} =
-\frac{T_{\text{token,device}}^{\text{eff}}}{BW_{\text{mem}}}
+t_{\text{mem}}(B) =
+\frac{T_{\theta,\text{device}} + B \cdot T_{\text{KV,device}}}{BW_{\text{mem}}}
 $$
 
 ### Roofline local latency
 
 $$
-t_{\text{local}} =
-\max(t_{\text{compute}},\; t_{\text{mem}})
+t_{\text{local}}(B) =
+\max\bigl(t_{\text{compute}}(B),\; t_{\text{mem}}(B)\bigr)
 $$
 
 ### Collective communication latency
 
+From §5.5, with each per-axis $t_*(B)$ carrying its own $B$ scaling on the β-side:
+
 $$
-t_{\text{comm}}
+t_{\text{comm}}(B)
 \approx
 \frac{L}{PP}
-(
-n_{TP}\, t_{TP} +
-n_{SP}\, t_{SP}
-) +
+\bigl(
+n_{TP}\, t_{TP}(B) +
+n_{SP}\, t_{SP}(B)
+\bigr) +
 \frac{L_{\text{moe}}}{PP}
-(
-n_{EP}\, t_{EP}
-) +
-t_{PP}
+\bigl(
+n_{EP}\, t_{EP}(B)
+\bigr) +
+t_{PP}(B)
 $$
 
 Note: EP collectives only apply to MoE layers ($L_{\text{moe}}$), while TP and SP collectives apply to all layers.
@@ -1555,295 +1595,139 @@ Note: EP collectives only apply to MoE layers ($L_{\text{moe}}$), while TP and S
 
 We introduce an overlap factor $\rho \in [0, 1]$ representing the fraction of local compute/memory time that is successfully utilized to hide communication.
 
-The effective per-token latency is the local time plus any **unhidden** communication:
+The effective per-stage HW time is the local time plus any **unhidden** communication:
 
 $$
-t_{\text{step,user}} =
-t_{\text{local}}
+t_{\text{stage,hw}}(B) =
+t_{\text{local}}(B)
 +
-\max(0,\; t_{\text{comm}} - \rho \cdot t_{\text{local}})
+\max\bigl(0,\; t_{\text{comm}}(B) - \rho \cdot t_{\text{local}}(B)\bigr)
 $$
+
+This is the GPU-side wall-clock cost of one pipeline stage processing one decode step's worth of $B$ sequences — purely **hardware-intrinsic** (compute + memory + interconnect, after collective overlap), no scheduling or SW overhead. §7 introduces the per-stage SW dispatch budget $t_{\text{stage,sw}}$ (§7.1) and the pipeline bubble (§7.2) on top to produce the user-observed step time $t_{\text{step,user}}$ (§7.2).
 
 **Regimes:**
 
 - **$\rho = 0$ (No Overlap):**
-  $$t_{\text{step,user}} = t_{\text{local}} + t_{\text{comm}}$$
+  $$t_{\text{stage,hw}}(B) = t_{\text{local}}(B) + t_{\text{comm}}(B)$$
   Typical for naive implementations or strictly sequential dependencies.
 
 - **$\rho = 1$ (Perfect Overlap Opportunity):**
-  $$t_{\text{step,user}} = t_{\text{local}} + \max(0, t_{\text{comm}} - t_{\text{local}}) = \max(t_{\text{local}}, t_{\text{comm}})$$
+  $$t_{\text{stage,hw}}(B) = t_{\text{local}}(B) + \max(0, t_{\text{comm}}(B) - t_{\text{local}}(B)) = \max(t_{\text{local}}(B), t_{\text{comm}}(B))$$
   Achieved by highly optimized kernels (e.g., Ring Attention) where independent work exists.
 
 - **$0 < \rho < 1$ (Partial Overlap):**
-  Models real-world overheads (kernel launch latency, synchronization barriers) that prevent utilizing the full local duration for hiding comms.
+  Models real-world overheads (synchronization barriers, partial dependency chains) that prevent utilizing the full local duration for hiding comms. Kernel-launch overhead is *not* part of $\rho$ here — it is modeled separately as $t_{\text{stage,sw}}$ with its own overlap factor $\rho_{\text{SW}}$ in §7.1.
+
+### LM head latency (stage PP-1 only)
+
+The LM head $H \to V$ projection is a per-step one-shot kernel that fires only on the last PP stage. Its FLOPs ($2BHV/TP$, §3) and weight + output traffic ($T_{\text{LM},\theta,\text{device}} = HVb/TP$ from §2.1, plus output activations $B \cdot V \cdot b$) define a small standalone roofline:
+
+$$
+t_{\text{LM,hw}}(B) =
+\max\!\left(
+  \frac{2 B H V / TP}{R_{\text{GPU}}},\;
+  \frac{H V b / TP + B V b}{BW_{\text{mem}}}
+\right)
+$$
+
+Because the LM head lives on stage $PP{-}1$ only (not divided by $PP$, $EP$, or $SP$), it is bookkept as a separate additive term rather than folded into the per-layer $t_{\text{local}}(B)$. §7.2 composes it on top of the per-stage body cost as a stage-$PP{-}1$ surcharge — under the uniform-stage assumption this makes stage $PP{-}1$ the throughput bottleneck.
 
 ---
 
-## 6.3 Pipeline Bubble, TPS, and TTPS
+<div style="page-break-before: always;"></div>
 
-### 6.3.1 Per-stage step time
+# 7. Kernel-Launch Overhead and Throughput
 
-The overlap-aware time derived in §6.2 is the **per-stage** step time — the wall-clock cost of one pipeline stage processing the current batch:
+§6.2 produced $t_{\text{stage,hw}}(B)$ (per-stage body) and $t_{\text{LM,hw}}(B)$ (one-shot LM head on stage $PP{-}1$) — the **hardware-intrinsic** per-step time pieces at batch size $B$, the lower bound set by tensor-core compute, HBM bandwidth, and on-/off-chip interconnect. Two derived quantities follow directly from them:
+
+- **Per-replica throughput bottleneck** $\max_j t_{\text{stage,hw},j}(B) + t_{\text{LM,hw}}(B)$ — sets the steady-state output rate (tokens/s per replica): once the pipeline is full, the bottleneck stage (always $PP{-}1$ under uniform body) finishes a step every $t_{\text{stage,hw}}(B) + t_{\text{LM,hw}}(B)$ seconds, so the user-observed token rate is gated by the slowest stage. This is the quantity that drives **TPS** in §7.2.
+- **Pipeline traversal time** $\sum_{j=1}^{PP} t_{\text{stage,hw},j}(B) + t_{\text{LM,hw}}(B)$ — the cost a token pays to walk all $PP$ stages once and then through the LM head. The *first* token of any sequence always pays this (the pipeline starts empty before prefill), so it is the primary HW-side contribution to **TTFT** (covered in prefill.md); subsequent decode steps pay only the bottleneck-stage cost once the pipeline is filled.
+
+A real serving step does not run at this lower bound. Two SW/framework costs accrue on every token generation step on top of $t_{\text{stage,hw}}(B)$:
+
+1. **Kernel-launch overhead** — the host-CPU dispatch budget for the layer + collective + PP-hop kernels that fire each microbatch. Whether this is hidden by GPU work or surfaces as a hard floor depends on how well async dispatch overlaps with the GPU. §7.1 derives this as $t_{\text{stage,sw}}$ — same per-step per-stage units as $t_{\text{stage,hw}}$, so the two compose into one effective per-stage cost. Note that $t_{\text{stage,sw}}$ is **independent of $B$** — kernel launches pay $\tau_{\text{launch}}$ once per launch event, regardless of payload.
+2. **Pipeline bubble** when the pipeline is underfilled — a scheduling-driven inefficiency that scales with $PP/B$ when $B < PP$. The bubble factor $\gamma_{\text{pp}}$ is a **global multiplier** on whatever per-stage cost dominates the round (HW or SW), so it sits *outside* the HW/SW composition rather than as a per-axis correction.
+
+§7.2 assembles $t_{\text{stage,hw}}(B)$, $t_{\text{stage,sw}}$, and $\gamma_{\text{pp}}$ into the user-observed step time $t_{\text{step,user}}(B)$ and the throughput metrics TPS / TTPS.
+
+## 7.1 Kernel-launch overhead
+
+The user-observed step time also includes a dispatch budget $t_{\text{stage,sw}}$ — the cost of getting one microbatch's worth of kernels onto the GPU on this stage. Where that cost is paid depends on the execution mode: in **eager** mode it is literal CPU `cudaLaunchKernel` latency on the host side ($\tau_{\text{launch}} \approx 7\,\mu s$); under **CUDA Graphs / DAG replay** the host issues a single `cudaGraphLaunch` per microbatch and the per-node work shifts to the GPU's command processor walking the captured DAG ($\tau_{\text{launch}} \approx 1.5\,\mu s$, dominated by command-buffer overhead, not CPU API time). The framework collapses both regimes into a single $\tau_{\text{launch}}$ knob — the term name "SW overhead" is inherited from the eager-mode framing but applies to either path.
+
+$t_{\text{stage,sw}}$ is **per microbatch, per stage** — same units as $t_{\text{stage,hw}}$ (§6.2), so the two compose directly in §7.2 without a unit mismatch. EP launches only fire on the $L_{\text{moe}}/PP$ MoE layers this stage owns (mirroring the $L_{\text{moe}}/PP$ factor in §5.5's $t_{\text{comm}}$ formula); for a pure dense model $L_{\text{moe}} = 0$ and the EP term vanishes.
 
 $$
-t_{\text{stage}} =
-t_{\text{local}}
-+
-\max(0,\; t_{\text{comm}} - \rho \cdot t_{\text{local}})
+t_{\text{stage,sw}} = \tau_{\text{launch}} \cdot \left[ \frac{L}{PP} \bigl( k_{\text{compute}} + k_{\text{collective}}(n_{TP} + n_{SP}) \bigr) + \frac{L_{\text{moe}}}{PP} \cdot k_{\text{collective}} \cdot n_{EP} + k_{\text{pp\_hop}} \right]
 $$
 
-Per stage $j$ this is $t_{\text{stage},j}$. The **throughput bottleneck** of a DP replica is the slowest stage $\max_j t_{\text{stage},j}$; the **pipeline traversal time** (first-token latency across PP) is the sum
-$\sum_{j=1}^{PP} t_{\text{stage},j}$.
+**What $k_{\text{compute}}$ counts.** $k_{\text{compute}}$ is the number of non-NCCL compute kernels fired per layer — GEMMs, attention, layernorms, activations, residuals. With a fused stack (FlashAttention + Megatron-style fused MLP) a decode layer fires roughly: (1) fused QKV projection, (2) FlashAttention forward, (3) output projection, (4) fused residual + post-attention norm, (5) fused gate + up + activation, (6) down projection, (7) residual. ~8–12 launches in production; default is 10. Aggressive ahead-of-time compilation (e.g. TensorRT engine) drops this to 3–5; eager-mode PyTorch without fusion can push it to 30+. Tighter compilation reduces $k_{\text{compute}}$; CUDA Graphs reduce $\tau_{\text{launch}}$ — these are independent levers and production stacks generally use both.
 
-### 6.3.2 Pipeline bubble correction (user-observed step time)
+**Per-layer accounting — two nested layers for collectives.** $n_{TP}, n_{EP}, n_{SP}$ from §5.5 count *NCCL API calls* per layer (logical operations: e.g. $n_{TP} = 2$ means "two `ncclAllReduce` calls per layer — one in attn, one in MLP"). The $t_{\text{comm}}$ formula in §5.5 prices each call once via $n_* \cdot t_*$. The launch counter goes one level deeper: each NCCL API call internally fires $k_{\text{collective}}$ separate `cudaLaunchKernel` events (default 2 — typically a setup/coordination kernel plus the reduction kernel), so the *total kernel launches per layer per axis* is $n_* \cdot k_{\text{collective}}$. That product is what $\tau_{\text{launch}}$ is paid for. Custom collectives that fuse the call into a single kernel set $k_{\text{collective}} = 1$; multi-kernel implementations may set it higher. Each $n_*$ is zeroed when the corresponding axis size is 1 (the collective never fires).
 
-During decoding, the user of sequence $s$ observes one new token **per decode step**, where a decode step ends when every PP stage has contributed to the current batch. When $B \ge PP$, the pipeline is full: consecutive microbatches pipeline across stages and each user sees a token every $\max_j t_{\text{stage},j}$ seconds. When $B < PP$, the pipeline is underfilled — the single microbatch traverses all $PP$ stages sequentially with no overlap, so the step cost grows by a factor $PP/B$.
+Three additive contributions in the bracket: (1) compute + TP + SP launches on every layer this stage owns ($L/PP$ layers); (2) EP launches on MoE layers only ($L_{\text{moe}}/PP$ layers); (3) one P2P transit (default $k_{\text{pp\_hop}} = 2$: 1 recv + 1 send on a middle stage; edge stages do only one direction, off by half a launch — negligible at $PP > 1$). The PP-hop term is inert when $PP = 1$.
 
-A first-order correction captures both regimes:
+$t_{\text{stage,sw}}$ is composed with the GPU-side $t_{\text{stage,hw}}$ via the SW overlap factor $\rho_{\text{SW}} \in [0, 1]$ — at $\rho_{\text{SW}} = 1$ (the production default for CUDA-Graphs-replayed serving), async dispatch fully overlaps with GPU work and $t_{\text{stage,sw}}$ acts as a *floor* that only kicks in when the per-microbatch launch budget exceeds $t_{\text{stage,hw}}$; at $\rho_{\text{SW}} = 0$, dispatch is synchronous and the costs add linearly. Setting `kernel_launch_us = 0` in the tuner zeros $t_{\text{stage,sw}}$ entirely (legacy roofline behavior).
+
+A separate Tensor Core efficiency term $\eta_{\text{TC}}(\text{mb})$ derates the compute roofline at small microbatch; with the default $\eta_{\text{TC}} = 1$ (no curve set in the tuner) this term is a no-op.
+
+## 7.2 User-observed step time and throughput
+
+### Saturated step time (no bubble)
+
+When the pipeline is **fully saturated** ($B \ge PP$), every stage holds a different microbatch on every step and all $PP$ stages run in parallel. The user-observed step time then collapses to the slowest per-stage cost — the assembled HW + SW cost on the bottleneck stage, plus the LM head surcharge on stage $PP{-}1$, with no bubble penalty.
+
+Composing $t_{\text{stage,hw}}(B)$ (§6.2) and $t_{\text{stage,sw}}$ (§7.1) follows the same overlap pattern as the compute/comm overlap in §6.2: GPU work runs as the base, host dispatch overlaps for a fraction $\rho_{\text{SW}}$ of it, and any unhidden remainder serializes after. The LM head term $t_{\text{LM,hw}}(B)$ from §6.2 then adds on top, since it fires once per step on stage $PP{-}1$ and is not hidden by the body roofline:
+
+$$
+t_{\text{step,user}}^{\text{sat}}(B) = t_{\text{stage,hw}}(B) + \max\!\bigl(0,\; t_{\text{stage,sw}} - \rho_{\text{SW}} \cdot t_{\text{stage,hw}}(B)\bigr) + t_{\text{LM,hw}}(B)
+$$
+
+Under the uniform-stage assumption (all $PP$ stages have identical body cost), the bottleneck stage is $PP{-}1$ and the additive $t_{\text{LM,hw}}(B)$ exactly captures its extra workload. For $PP = 1$, this also collapses to "single-stage body + LM head".
+
+**Regimes (assuming $\rho_{\text{SW}} = 1$, the default):**
+
+- $t_{\text{stage,hw}}(B) \ge t_{\text{stage,sw}}$: the overflow term is 0, $t_{\text{step,user}}^{\text{sat}}(B) = t_{\text{stage,hw}}(B) + t_{\text{LM,hw}}(B)$ (HW-bound — async dispatch fully hidden by GPU work). This is the typical regime for moderate-to-large $B$ on production stacks.
+- $t_{\text{stage,hw}}(B) < t_{\text{stage,sw}}$: $t_{\text{step,user}}^{\text{sat}}(B) = t_{\text{stage,sw}} + t_{\text{LM,hw}}(B)$ (SW-bound on the body — CPU cannot feed the GPU or kernel cannot run fast enough; common at small $B$ on dense decode where $t_{\text{stage,hw}}(B)$ shrinks below the fixed launch budget).
+- $\rho_{\text{SW}} = 0$: no overlap, costs add: $t_{\text{step,user}}^{\text{sat}}(B) = t_{\text{stage,hw}}(B) + t_{\text{stage,sw}} + t_{\text{LM,hw}}(B)$.
+
+When $t_{\text{stage,sw}} = 0$ this is just $t_{\text{stage,hw}}(B) + t_{\text{LM,hw}}(B)$ (legacy roofline behavior plus the LM-head term).
+
+### Pipeline bubble correction
+
+The saturated form above assumes the pipeline is full. When it is not, the bubble factor inflates the step time. **How the PP pipeline works:** pipeline parallelism splits the model's $L$ layers into $PP$ contiguous stages, each owned by a different device (or device group). A token cannot skip stages — it is transformed by stage 0, then forwarded to stage 1, and so on through stage $PP{-}1$ before its logits are produced. To keep all stages busy in parallel, the batch of $B$ active sequences is split into microbatches that flow through the pipeline back-to-back: while stage 0 processes microbatch $i{+}1$, stage 1 is processing microbatch $i$, stage 2 is processing microbatch $i{-}1$, etc. This is the standard PP execution pattern from [MEGATRON3].
+
+Two regimes follow from this picture, depending on whether there are enough microbatches in flight to keep every stage busy. The same scheduling logic applies to both HW and SW per-stage costs — the bubble doesn't care whether a stage is GPU- or SW-bound:
+
+- **Pipeline full ($B \ge PP$).** Every stage runs a different microbatch in parallel; the saturated formula above holds. The full traversal cost $\sum_j t_{\text{stage,hw},j}(B)$ is paid only by the *first* token (TTFT, prefill.md), not by each subsequent decode step.
+- **Pipeline underfilled ($B < PP$).** With fewer microbatches than stages, parallelism collapses: a single microbatch must walk all $PP$ stages in series before the user sees the next token, so both HW and SW step costs grow toward their traversal sums (with uniform stages and $B = 1$, these become $PP \cdot t_{\text{stage,hw}}(1)$ and $PP \cdot t_{\text{stage,sw}}$).
+
+A first-order bubble correction captures both regimes with a single multiplier:
 
 $$
 \gamma_{\text{pp}} = \max\left(1,\; \frac{PP}{B}\right)
 $$
 
-The user-observed step time also includes the per-round CPU dispatch budget $t_{\mathrm{SW}}$ — the cumulative kernel-launch latency on the host side (kernel_launch_overhead.md §5):
+At $B \ge PP$, $\gamma_{\text{pp}} = 1$ and the bubble vanishes. At $B = 1, PP > 1$ it equals $PP$. At $B = 1, PP = 1$ it also reduces to unity, recovering the non-pipelined decode model. Because $\gamma_{\text{pp}}$ scales the per-stage body costs (HW and SW) identically, it multiplies the body composition only; the LM head fires once per step on stage $PP{-}1$ regardless of bubble depth, so it is added outside $\gamma_{\text{pp}}$:
 
 $$
-t_{\mathrm{SW}} = L \cdot k \cdot \tau_{\mathrm{launch}} + PP \cdot k_{\mathrm{pp\_hop}} \cdot \tau_{\mathrm{launch}}, \qquad k = k_{\mathrm{compute}} + k_{\mathrm{collective}} \cdot (n_{\mathrm{TP}}^{\mathrm{calls}} + n_{\mathrm{EP}}^{\mathrm{calls}} + n_{\mathrm{SP}}^{\mathrm{calls}})
+t_{\text{step,user}}(B) = \gamma_{\text{pp}} \cdot \bigl[ t_{\text{stage,hw}}(B) + \max\!\bigl(0,\; t_{\text{stage,sw}} - \rho_{\text{SW}} \cdot t_{\text{stage,hw}}(B)\bigr) \bigr] + t_{\text{LM,hw}}(B)
 $$
 
-where $n_{*}^{\mathrm{calls}}$ are the per-layer NCCL API call counts that fire for the current shape (zero when the corresponding axis is 1). For TP and SP, $n_{*}^{\mathrm{calls}} = n_{*\mathrm{\_collectives}}$ directly. For EP, $n_{\mathrm{EP}}^{\mathrm{calls}} = 2 \cdot n_{\mathrm{EP\_collectives}}$ — the cost-model convention is "1 collective per MoE layer = 1 round-trip" (the 2× factor is wrapped inside `_cost("moe_a2a", ...)`), but the launch counter must expand back to 2 actual NCCL API calls (dispatch + combine). The $PP \cdot k_{\mathrm{pp\_hop}}$ term counts inter-stage P2P send/recv launches: each stage handles $k_{\mathrm{pp\_hop}}$ P2P kernels per microbatch (default 2: 1 recv + 1 send) $\times$ $PP$ microbatches per round (inert when $PP = 1$). Composing GPU work and host dispatch via the SW overlap factor $\rho_{\mathrm{SW}}$:
+This is the full user-observed step time. At $B = 1, PP = 1$ with $t_{\text{stage,sw}} = 0$, it reduces to $t_{\text{stage,hw}}(1) + t_{\text{LM,hw}}(1)$ — single-stage body plus LM head, the non-pipelined decode model with a vocab projection at the end.
+
+### Throughput (TPS, TTPS)
+
+A single DP replica emits one token per sequence per step, so it outputs $B$ tokens every $t_{\text{step,user}}(B)$:
 
 $$
-t_{\mathrm{step,user}} = \max\!\bigl(t_{\mathrm{stage}},\ \rho_{\mathrm{SW}} \cdot t_{\mathrm{stage}} + (1 - \rho_{\mathrm{SW}}) \cdot (t_{\mathrm{stage}} + t_{\mathrm{SW}}),\ t_{\mathrm{SW}}\bigr) \cdot \gamma_{\mathrm{pp}}
-$$
-
-**Regimes (assuming $\rho_{\mathrm{SW}} = 1$, the default):**
-
-- $t_{\mathrm{stage}} \ge t_{\mathrm{SW}}$: $t_{\mathrm{step,user}} = t_{\mathrm{stage}} \cdot \gamma_{\mathrm{pp}}$ (GPU-bound — async dispatch fully hides kernel-launch overhead).
-- $t_{\mathrm{stage}} < t_{\mathrm{SW}}$: $t_{\mathrm{step,user}} = t_{\mathrm{SW}} \cdot \gamma_{\mathrm{pp}}$ (SW-bound — CPU cannot feed the GPU fast enough; common at small microbatch on dense decode).
-
-When $t_{\mathrm{SW}} = 0$ (SW modeling disabled by setting `kernel_launch_us = 0` in the tuner) the formula reduces to the legacy $t_{\mathrm{step,user}} = t_{\mathrm{stage}} \cdot \gamma_{\mathrm{pp}}$. At $B = 1, PP = 1$ and $t_{\mathrm{SW}} = 0$, this further reduces to $t_{\mathrm{step,user}} = t_{\mathrm{stage}}$ — backward compatible with the non-pipelined decode model.
-
-A separate Tensor Core efficiency term $\eta_{\mathrm{TC}}(\mathrm{mb})$ derates the compute roofline at small microbatch — see [practical_pp_choice.md §3.3](../explaining/practical_pp_choice.md#33-microbatch-granularity-and-kernel-launch-overhead) and [kernel_launch_overhead.md](../explaining/kernel_launch_overhead.md) for the full derivation; with the default $\eta_{\mathrm{TC}} = 1$ (no curve set) this term is a no-op.
-
-### 6.3.3 Throughput
-
-A single DP replica emits one token per sequence per step, so it outputs $B$ tokens every $t_{\text{step,user}}$:
-
-$$
-TPS_{\text{single}} =
-\frac{B}{t_{\text{step,user}}}
+TPS_{\text{single}}(B) = \frac{B}{t_{\text{step,user}}(B)}
 $$
 
 Across $DP$ fully independent replicas (no cross-replica coupling), the total cluster throughput scales linearly:
 
 $$
-TTPS = DP \cdot TPS_{\text{single}} =
-\frac{DP \cdot B}{t_{\text{step,user}}}
+TTPS(B) = DP \cdot TPS_{\text{single}}(B) = \frac{DP \cdot B}{t_{\text{step,user}}(B)}
 $$
 
-When $B \ge PP$ the bubble factor is unity and $TPS_{\text{single}} = B /
-\max_j t_{\text{stage},j}$, recovering the classical "throughput is gated by the slowest stage" result.
-
----
-
-## 6.4 Batch-Size Scaling and Throughput–Latency Tradeoff
-
-TTFT and prefill analysis are covered in [prefill.md](prefill.md). This section analyzes how decoding performance changes as the **static batch size** $B$ grows — where $B$ sequences are decoded together and each contributes one token per step. The central question is: how does batching shift the operational regime from memory-bound to compute-bound, and what is the resulting throughput–latency tradeoff?
-
----
-
-### 6.4.1 Arithmetic Intensity as a Function of Batch Size $B$
-
-For a static batch of $B$ sequences decoded together, the key observation is that **parameter weights are loaded once from HBM and reused across all $B$ tokens in the same step**. The FLOPs scale with $B$, while weight traffic remains independent of $B$:
-
-- **Tokens per step:** $B$ (one per sequence)
-- **FLOPs per step:** $B \times F_{\text{token,device}}$ (scales linearly with $B$)
-- **Weight traffic per step:** $T_{\theta,\text{device}}$ (loaded once, shared across all $B$ tokens)
-- **KV cache traffic per step:** $B \times T_{\text{KV,device}}$ (each sequence has its own KV history)
-
-The **operational intensity** at batch size $B$ is therefore:
-
-$$
-\text{OI}(B) =
-\frac{B \times F_{\text{token,device}}}
-     {T_{\theta,\text{device}} + B \times T_{\text{KV,device}}}
-$$
-
-#### Two limiting regimes
-
-**Memory-bound limit** ($B \to 0$, or equivalently when weight traffic dominates KV traffic):
-
-$$
-\lim_{B \to 0} \text{OI}(B) =
-\frac{B \times F_{\text{token,device}}}{T_{\theta,\text{device}}}
-\;\to\; 0
-$$
-
-At small $B$, weights dominate the denominator, and the model is **weight-traffic-limited**. The $B=1$ case recovers the single-token OI from §4.1: $\text{OI}(1) = 2/b$ (exact, since every weight matrix contributes FLOPs $= 2 \times$ params with the $6HI$ convention), which lies far below the ridge point $R_{\text{GPU}} / BW_{\text{mem}}$ for all practical GPUs and precisions — confirming that single-request decode is always memory-bound.
-
-**Compute-bound limit** ($B \to \infty$, or when KV traffic dominates weight traffic):
-
-$$
-\lim_{B \to \infty} \text{OI}(B) =
-\frac{F_{\text{token,device}}}{T_{\text{KV,device}}}
-$$
-
-At large $B$, KV cache reads dominate the denominator and the intensity saturates. This ceiling is reached when the KV term $B \times T_{\text{KV,device}}$ overwhelms $T_{\theta,\text{device}}$.
-
-#### Ridge-point crossover
-
-The **crossover batch size** $B^*$ is the point at which the roofline transitions from memory-bound to compute-bound. Setting $\text{OI}(B^*) = R_{\text{GPU}} / BW_{\text{mem}}$ (the ridge point per [ROOFLINE]) and solving:
-
-$$
-\frac{B^*\times F_{\text{token,device}}}
-     {T_{\theta,\text{device}} + B^* \times T_{\text{KV,device}}} =
-\frac{R_{\text{GPU}}}{BW_{\text{mem}}}
-$$
-
-$$
-B^* =
-\frac{T_{\theta,\text{device}} \times R_{\text{GPU}}}
-     {F_{\text{token,device}} \times BW_{\text{mem}} - T_{\text{KV,device}} \times R_{\text{GPU}}}
-$$
-
-**Existence condition.** The crossover $B^*$ is finite and positive iff the denominator is positive. Rearranging into ridge-point form:
-
-$$
-B^{\star} < \infty
-\quad\Longleftrightarrow\quad
-\frac{F_{\text{token,device}}}{T_{\text{KV,device}}} \;>\; \frac{R_{\text{GPU}}}{BW_{\text{mem}}} = R_{\text{ridge}}
-$$
-
-i.e., the **arithmetic intensity of KV traffic alone** (per-token FLOPs divided by per-sequence KV bytes) must exceed the device ridge point. The intuition: $\text{OI}(B)$ asymptotes to $F_{\text{token,device}} / T_{\text{KV,device}}$ as $B \to \infty$ (weight traffic becomes negligible relative to the $B$-scaled KV traffic); if this asymptotic ceiling itself sits below $R_{\text{ridge}}$, the roofline is never crossed regardless of batch size.
-
-**No-crossover regime.** When the inequality is violated — typical of very long contexts on small models, where $T_{\text{KV,device}}$ grows linearly in $S$ while $F_{\text{token,device}}$ stays fixed — decode remains memory-bound at every $B$, and $B^{\star} \to \infty$. In this regime batching still amortizes *weight* traffic ($T_\theta / B$ per token), which continues to reduce per-sequence TPOT, but it **cannot** push the step into the compute-bound zone; adding more sequences only adds linear KV bandwidth pressure until HBM saturates. The practical implication is that the Pareto frontier (§6.5) has no Zone 3 plateau in this regime — both throughput and TPOT scale linearly with $B$ indefinitely, and the operating point is chosen by HBM capacity rather than by the compute ceiling.
-
-When $T_{\text{KV,device}}$ is small relative to $T_{\theta,\text{device}} / B^*$ (i.e., short-context decode where weight traffic dominates), this simplifies to the weight-dominated approximation:
-
-$$
-B^*
-\;\approx\;
-\frac{T_{\theta,\text{device}}}{F_{\text{token,device}}}
-\times
-\frac{R_{\text{GPU}}}{BW_{\text{mem}}}
-\qquad (\text{weight-dominated regime})
-$$
-
-This expression has an intuitive interpretation: $T_{\theta,\text{device}} / F_{\text{token,device}}$ is the inverse OI for a single token (bytes per FLOP), and $R_{\text{GPU}} / BW_{\text{mem}}$ is the ridge point (FLOPs per byte). Their product gives the batch size at which weight reuse tips the balance from memory-bound to compute-bound.
-
----
-
-### 6.4.2 Batched TPOT and the Compute-Bound Crossover
-
-With $B$ sequences batched together, the per-step local execution time becomes:
-
-$$
-t_{\text{local}}(B) =
-\max\left(
-\frac{B \times F_{\text{token,device}}}{R_{\text{GPU}}},
-\;\;
-\frac{T_{\theta,\text{device}} + B \times T_{\text{KV,device}}}{BW_{\text{mem}}}
-\right)
-$$
-
-The **user-observed** Time Per Output Token (TPOT) — the inter-token latency seen by any single sequence — is exactly the user-observed step time from §6.3.2:
-
-$$
-\text{TPOT}(B) =
-t_{\text{step,user}}(B) =
-t_{\text{stage}}(B) \cdot \max\left(1,\; \frac{PP}{B}\right)
-$$
-
-Each decode step produces exactly one output token per active sequence, so the streaming rate at the user is $1 / t_{\text{step,user}}$ — **not** $B / t_{\text{stage}}$. Dividing the step time by $B$ would be an *amortized-per-token* cost that double-counts the parallel tokens across sequences; we reserve that for throughput-per-GPU (§6.3.3).
-
-#### Regime analysis for TPOT
-
-All regimes below assume $B \ge PP$ (full pipeline, bubble factor $=1$); the $B < PP$ regime simply inflates TPOT by the pipeline depth.
-
-**Memory-bound regime** ($B \ll B^*$, weight-dominated):
-
-$$
-t_{\text{stage}}(B)
-\approx
-\frac{T_{\theta,\text{device}}}{BW_{\text{mem}}}
-\quad \Rightarrow \quad
-\text{TPOT}(B)
-\approx
-\frac{T_{\theta,\text{device}}}{BW_{\text{mem}}}
-$$
-
-TPOT is approximately **flat in $B$** in this regime: weights are streamed once per step regardless of $B$, and the per-user step time stays pinned at the weight-streaming cost. What improves with $B$ is cluster throughput (more tokens per step), not user-observed latency.
-
-**Compute-bound regime** ($B \gg B^*$, KV-dominated):
-
-$$
-t_{\text{stage}}(B)
-\approx
-\frac{B \times F_{\text{token,device}}}{R_{\text{GPU}}}
-\quad \Rightarrow \quad
-\text{TPOT}(B)
-\approx
-\frac{B \times F_{\text{token,device}}}{R_{\text{GPU}}}
-$$
-
-TPOT **grows linearly with $B$**: once the device saturates compute, every added sequence extends the step time, and every user sees the extension.
-
-**Summary table:**
-
-| Regime | Condition | $t_{\text{stage}}(B)$ | $\text{TPOT}(B)$ |
-|--------|-----------|-----------------------|------------------|
-| Memory-bound | $B \ll B^*$ | $\approx T_{\theta} / BW_{\text{mem}}$ (flat) | $\approx T_{\theta} / BW_{\text{mem}}$ (flat) |
-| Crossover | $B = B^*$ | ridge point | knee of the Pareto curve |
-| Compute-bound | $B \gg B^*$ | $\propto B$ (growing) | $\propto B$ (growing) |
-
----
-
-### 6.4.3 Throughput–Latency Pareto Curve
-
-Define the two key metrics as a function of $B$ (assuming $B \ge PP$ so the pipeline bubble factor is 1; for $B < PP$, multiply TPOT by $PP/B$):
-
-- **Throughput** (tokens per second, all sequences in the batch):
-  $$
-  \text{Throughput}(B) =
-  \frac{B}{t_{\text{step,user}}(B)} =
-  \frac{B}{t_{\text{stage}}(B)}
-  $$
-
-- **TPOT** (user-observed inter-token latency, seconds per output token):
-  $$
-  \text{TPOT}(B) =
-  t_{\text{step,user}}(B) =
-  t_{\text{stage}}(B)
-  $$
-
-These two metrics are in tension in the compute-bound regime: past $B^*$, throughput plateaus while TPOT grows. Sweeping $B$ from $1$ to $\infty$ traces a **Pareto frontier** in the (Throughput, TPOT) plane.
-
-#### Three zones of the Pareto curve
-
-**Zone 1 — Memory-bound ($B < B^*$):**
-
-Throughput grows approximately linearly with $B$ while TPOT stays approximately flat. Weight traffic is amortized across more sequences in the step without inflating the step time; each additional sequence is essentially "free" from a per-user latency perspective.
-
-$$
-\text{Throughput}(B) \approx \frac{B \times BW_{\text{mem}}}{T_{\theta,\text{device}}},
-\qquad
-\text{TPOT}(B) \approx \frac{T_{\theta,\text{device}}}{BW_{\text{mem}}}
-$$
-
-**Zone 2 — Crossover ($B \approx B^*$):**
-
-The system reaches the ridge point — the best throughput-per-GPU achievable without raising TPOT. Further batching starts to cost latency per user.
-
-**Zone 3 — Compute-bound ($B > B^*$):**
-
-Throughput plateaus toward a ceiling set by compute capacity; TPOT grows linearly with $B$ because the added compute extends every user's step:
-
-$$
-\text{Throughput}*{\max} =
-\frac{R*{\text{GPU}}}{F_{\text{token,device}}},
-\qquad
-\text{TPOT}(B) \approx \frac{B \times F_{\text{token,device}}}{R_{\text{GPU}}}
-$$
-
----
+When $B \ge PP$ the bubble factor is unity and $TPS_{\text{single}}(B) = B / t_{\text{step,user}}^{\text{sat}}(B)$, recovering the classical "throughput is gated by the slowest stage" result — where the bottleneck stage is $PP{-}1$ and its cost is the SW-composed body plus the once-per-step LM head $t_{\text{LM,hw}}(B)$.
