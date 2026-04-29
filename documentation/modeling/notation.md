@@ -351,6 +351,16 @@ Core metrics:
 - $\text{TPOT}_{\text{SLO}}$ — Operator-set upper bound on TPOT (seconds) used in the goodput definition.
 - $p$ — SLO compliance percentile (typically 90 or 99).
 
+SLO-derived partition feasibility (slo.md):
+- $B_{\max}$ — Largest batch size $B$ satisfying the TPOT SLO at the candidate partition shape; in Zone 3, $B_{\max} \approx R_{\text{GPU}} \cdot \text{TPOT}_{\text{SLO}} / F_{\text{token,device}}$ (slo.md §2.2).
+- $B_{\text{HBM}}$ — Largest batch size $B$ permitted by HBM capacity at the candidate partition shape: $B_{\text{HBM}} \approx HBM_{\text{free}} / (T_{\text{KV,device}} \cdot S)$ (slo.md §2.2).
+- $B_{\text{op}}$ — SLO-feasible operating batch size: $\min(B_{\max}, B_{\text{HBM}})$ (slo.md §5.1).
+- $PP_{\max}$ — Largest pipeline-parallel depth satisfying the TTFT SLO at the candidate input length: $PP_{\max} \approx 1 + (\text{TTFT}_{\text{SLO}} - t_{\text{sched}} - t_{\text{prefill,local}} - t_{\text{step,user}}) / t_{\text{stage,max}}$ (slo.md §3.1).
+- $\lambda^*$ — Goodput rate; the maximum $\lambda$ over the SLO-feasible region; the optimization target for partition selection (slo.md §5.1).
+- $\mathcal{F}_{\text{SLO}}$ — Joint feasibility region in $(PP, TP, EP, SP, B)$ space where the TPOT floor, TPOT bound, TTFT bound, and HBM capacity all hold (slo.md §4.1).
+- $\Delta_{\text{dyn}}$ — Dynamic-stability cushion on $\overline{B}$ to absorb p99 batch-size variance: $\Delta_{\text{dyn}} \approx z_p \sqrt{\overline{B}}$ for Poisson arrivals (slo.md §4.2).
+- $z_p$ — Standard-normal $p$-quantile: 1.28 for p90, 1.96 for p95, 2.33 for p99 (slo.md §4.2).
+
 Continuous batching:
 - $\lambda$ — Request arrival rate (requests/second).
 - $N_{\text{out}}$ — Number of output tokens in a single response.

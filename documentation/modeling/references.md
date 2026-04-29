@@ -95,6 +95,18 @@ Kwon, W., Li, Z., Zhuang, S., Sheng, Y., Zheng, L., Yu, C.H., Gonzalez, J.E., Zh
 SOSP 2023. arXiv:2309.06180.  
 → PagedAttention; block-based KV paging; fragmentation analysis.
 
+**[ALPASERVE]**  
+Li, Z., Zheng, L., Zhong, Y., Liu, V., Sheng, Y., Jin, X., Huang, Y., Chen, Z., Zhang, H., Gonzalez, J.E., & Stoica, I. (2023).  
+*AlpaServe: Statistical Multiplexing with Model Parallelism for Deep Learning Serving.*  
+OSDI 2023. arXiv:2302.11665.  
+→ Original goodput framing for SLO-bound deep learning serving; statistical multiplexing across replicas; partition selection under latency SLOs.
+
+**[SPLITWISE]**  
+Patel, P., Choukse, E., Zhang, C., Shah, A., Goiri, Í., Maleki, S., & Bianchini, R. (2024).  
+*Splitwise: Efficient Generative LLM Inference Using Phase Splitting.*  
+ISCA 2024. arXiv:2311.18677.  
+→ Prefill–decode phase split with hardware-asymmetric clusters; SLO-driven co-design of prefill and decode hardware.
+
 **[SARATHI]**  
 Agrawal, A., Panwar, A., Mohan, J., Kwatra, N., Gulavani, B.S., & Ramjee, R. (2023).  
 *SARATHI: Efficient LLM Inference by Piggybacking Decodes with Chunked Prefills.*  

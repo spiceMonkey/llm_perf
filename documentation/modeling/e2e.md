@@ -136,6 +136,8 @@ The two SLOs jointly bound $\lambda$: $TTFT_{\text{SLO}}$ caps how long the pref
 
 **Out of scope.** Speculative-decoding rejections, preemption-driven recompute (`kv.md §4.3`), and request-cancellation effects are real goodput drains but are not modeled in this suite.
 
+**Partition-feasibility derivation.** Inverting the goodput definition into hard bounds on the partition shape $(PP, TP, EP, SP)$ and the operating batch size $B$ — the $B_{\max}$ from $\mathrm{TPOT_{SLO}}$, the $PP_{\max}$ from $\mathrm{TTFT_{SLO}}$, the joint feasibility region $\mathcal{F}_{\text{SLO}}$, and the goodput-optimal partition-selection sweep — is the subject of `slo.md`. This section establishes the goodput definition; `slo.md` builds the partition-feasibility analysis on top of it.
+
 ---
 
 <div style="page-break-before: always;"></div>
