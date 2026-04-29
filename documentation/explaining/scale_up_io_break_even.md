@@ -180,9 +180,11 @@ The two thresholds (*BW**\**, α*\**) trace out the same boundary in the (*BW*, 
 
 ---
 
-## 6. Design-goal target: *t*<sub>comm</sub> as a bounded fraction of *t*<sub>mem</sub>
+## 6. Design-goal target: *t*<sub>comm</sub> as a bounded fraction of *t*<sub>local</sub>
 
-The §4 break-even ties BW to the overlap factor ρ — the question "what BW puts comm exactly at the edge of the overlap budget?". A more useful design framing flips the question: pick a target fraction *f* (e.g., *f* = 0.1 = 10%) and ask "what BW keeps total comm at most *f* · *t*<sub>mem</sub>, regardless of overlap?".
+The §4 break-even ties BW to the overlap factor ρ — the question "what BW puts comm exactly at the edge of the overlap budget?". A more useful design framing flips the question: pick a target fraction *f* (e.g., *f* = 0.1 = 10%) and ask "what BW keeps total comm at most *f* · *t*<sub>local</sub>, regardless of overlap?".
+
+The lead derivation below is in the memory-bound default *t*<sub>local</sub> = *t*<sub>mem</sub> — the typical decode regime carried over from §3. The compute-bound generalization *t*<sub>local</sub> = *t*<sub>compute</sub> and the unified *t*<sub>local</sub> = max(*t*<sub>compute</sub>, *t*<sub>mem</sub>) follow at the end of the section.
 
 Setting *t*<sub>comm</sub> ≤ *f* · *t*<sub>mem</sub> and solving for *BW*:
 
@@ -234,6 +236,59 @@ Patterns the two plots expose together:
 - **SP=4 ring-attention**: per-layer KV-shard payload (`B · S · 2H_kv / TP`) drives *b*<sub>p</sub> into the GB-per-step range → *BW*<sub>target</sub> reaches **TB/s territory**. The only configuration in the sweep where current scale-up BW is genuinely under-provisioned, on every model.
 
 To re-run with INC modeling, edit `a_p_coef` in the notebook to substitute *n*<sub>α</sub> = 2*k* (k = number of switching tiers crossed) for the TP and SP axes — see "If I have INC, can I assume tiny *a*<sub>p</sub>?" above for the per-axis substitution rules. Knobs (α, *BW*<sub>mem</sub>, *S*, *f* targets, models, partitions) are at the top of the notebook.
+
+### Compute-bound generalization
+
+The derivation above pins *t*<sub>local</sub> = *t*<sub>mem</sub> — the §3 memory-bound assumption, which is the typical decode regime but not universal. At large *B* the workload crosses the *B*<sup>★</sup> ridge from `decode.md §3.3` and enters the compute-bound regime, where *t*<sub>local</sub> = *t*<sub>compute</sub>:
+
+$$
+t_\mathrm{compute}(B) \;=\; \frac{B \cdot F_\mathrm{token,device}}{R_\mathrm{GPU}}
+$$
+
+with *F*<sub>token,device</sub> the per-device per-token FLOPs after PP, TP, EP sharding (`decode.md §3`) and *R*<sub>GPU</sub> the peak compute throughput. Substituting *t*<sub>compute</sub> for *t*<sub>mem</sub> in the design-target inequality and solving for *BW*:
+
+$$
+a_p\,\alpha + \frac{b_p(B)}{BW} \;\le\; f \cdot \frac{B \cdot F_\mathrm{token,device}}{R_\mathrm{GPU}}
+$$
+
+$$
+BW_\mathrm{target,compute}(f, B) \;=\;
+\frac{b_p(B)}
+     {\;\;f \cdot \dfrac{B \cdot F_\mathrm{token,device}}{R_\mathrm{GPU}} \;-\; a_p\,\alpha\;\;}
+\qquad \text{(valid when } f\,t_\mathrm{compute} > a_p\,\alpha \text{)}
+$$
+
+Three structural differences from the memory-bound *BW*<sub>target</sub>:
+
+- **B-scaling cancels asymptotically.** *b*<sub>p</sub>(*B*) is exactly linear in *B* (every per-axis payload scales with the batch — see §2), so write *b*<sub>p</sub>(*B*) = *β*<sub>p</sub> · *B* with *β*<sub>p</sub> the sum of per-axis BW slopes. The α term becomes negligible at large *B*, and the limit is the **asymptotic compute-bound BW target**:
+  $$
+  BW_\mathrm{target,compute}(\infty) \;=\; \frac{\beta_p \cdot R_\mathrm{GPU}}{f \cdot F_\mathrm{token,device}}
+  $$
+  This is *B*-independent — a single number characterizes the whole Zone-3 design target. Memory-bound *BW*<sub>target</sub> grows monotonically with *B* (numerator linear in *B*, denominator grows only weakly via *T*<sub>KV</sub>); compute-bound *BW*<sub>target</sub> saturates to a horizontal asymptote.
+- **Compute throughput replaces HBM bandwidth in the budget.** The denominator scales with *R*<sub>GPU</sub> rather than *BW*<sub>mem</sub>. Doubling chip FLOPS on a Zone-3 workload halves *BW*<sub>target,compute</sub> — there is more compute time to hide collective communication under. By contrast, doubling HBM bandwidth on a Zone-1 workload tightens *BW*<sub>target,memory</sub> for the same reason. Hardware investment trades against the binding roofline.
+- **Unreachable region shrinks with *B*, not grows.** The denominator-non-positive condition *f* · *t*<sub>compute</sub> ≤ *a*<sub>p</sub> · α holds at small *B* (where compute time hasn't accumulated enough budget) and is *escaped* by raising *B*. Memory-bound *BW*<sub>target</sub> has the opposite signature — reachable at small *B* (where the *T*<sub>θ</sub> / *BW*<sub>mem</sub> floor sets the budget) and getting easier as *T*<sub>KV</sub> · *B* / *BW*<sub>mem</sub> kicks in.
+
+### Unified formula across both regimes
+
+The actual per-stage roofline is *t*<sub>local</sub>(*B*) = max(*t*<sub>compute</sub>(*B*), *t*<sub>mem</sub>(*B*)); the design target follows the binding side at every *B*:
+
+$$
+BW_\mathrm{target}(f, B) \;=\;
+\frac{b_p(B)}
+     {\;\;f \cdot \max\!\bigl(t_\mathrm{compute}(B),\; t_\mathrm{mem}(B)\bigr) \;-\; a_p\,\alpha\;\;}
+$$
+
+The *B*<sup>★</sup> crossover from `decode.md §3.3` is exactly the *B* at which *t*<sub>compute</sub>(*B*) = *t*<sub>mem</sub>(*B*); below it the formula reduces to the §6 memory-bound *BW*<sub>target</sub>, above it to *BW*<sub>target,compute</sub> just derived. The full curve is continuous through *B*<sup>★</sup> (both pieces evaluate to the same value when the rooflines cross) and has a characteristic two-part shape: monotonically rising from a low value at *B* = 1 under the memory-bound piece, then flattening to the compute-bound horizontal asymptote past *B*<sup>★</sup>.
+
+### When each regime sets the design target
+
+The choice of which regime to design against is workload-dependent:
+
+- **Conversational / interactive serving** — low *B*, tight TPOT-SLO from `slo.md`, operates in Zone 1 or near Zone 2. *BW*<sub>target,memory</sub> is the right design target; comm contention with weight streaming sets the budget.
+- **Batch / offline / agentic workloads** — large *B*, no TPOT-SLO, throughput-maximizing, operates deep in Zone 3. *BW*<sub>target,compute</sub> is the right target; comm contention with FLOPS-bound matmul sets the budget. The asymptotic plateau means a single *BW*<sub>target,compute</sub>(∞) characterizes the whole high-throughput regime regardless of the exact operating *B*.
+- **Mixed / continuous-batching production** — variable *B*<sub>eff</sub> across Zone 1 → Zone 3 under load. Use the unified *BW*<sub>target</sub>(*f*, *B*) curve sampled at the *B*<sub>eff</sub> distribution. The **peak** of the curve over the operating *B* range bounds the worst-case BW need (typically near *B*<sup>★</sup> where both rooflines are tight); the high-*B* asymptote bounds the steady-state need.
+
+The empirical sweep above is computed against *t*<sub>mem</sub> only — re-running the same notebook with `t_local = max(t_compute, t_mem)` and the unified formula reproduces the same curves at small *B* and adds the Zone-3 plateau at large *B*. For typical FP4 decode workloads on FLOPS-rich GB200 (*R*<sub>GPU</sub> = 2.5 PF, *F*<sub>token,device</sub> in the GFLOP / token range after sharding), the compute-bound asymptote sits *below* the memory-bound peak — meaning Zone-3 operation is **more BW-permissive**, not less, because there's more compute time to hide comm under. Workloads that look comm-stressed at moderate *B* (memory-bound, near *B*<sup>★</sup>) often relax once *B* is pushed deep enough into Zone 3 that compute dominates the per-stage time.
 
 ---
 
@@ -305,12 +360,12 @@ The **ρ knob has more leverage than the BW knob** for typical decode workloads.
 Given a (model, system, partition, *B*, *ρ*) operating point and a design target *f* (e.g., 0.1):
 
 1. Compute *a*<sub>p</sub>, *b*<sub>p</sub>(*B*) from §2 — depends only on partition shape and ladder.
-2. Compute *t*<sub>mem</sub>(*B*) = (*T*<sub>θ</sub> + *B* · *T*<sub>KV</sub>) / *BW*<sub>mem</sub>.
+2. Compute *t*<sub>mem</sub>(*B*) = (*T*<sub>θ</sub> + *B* · *T*<sub>KV</sub>) / *BW*<sub>mem</sub> and *t*<sub>compute</sub>(*B*) = *B* · *F*<sub>token,device</sub> / *R*<sub>GPU</sub>; take *t*<sub>local</sub>(*B*) = max of the two (the binding roofline).
 3. Compute *t*<sub>α</sub> = *a*<sub>p</sub> · α and *t*<sub>β</sub>(*B*) = *b*<sub>p</sub>(*B*) / *BW*.
-4. Compute *BW*<sub>target</sub>(*f*, *B*) = *b*<sub>p</sub>(*B*) / (*f* · *t*<sub>mem</sub> − *a*<sub>p</sub> · α) (§6) and check current *BW* against it:
-   - **Current *BW* ≥ *BW*<sub>target</sub>** → comm is below the *f* · *t*<sub>mem</sub> design cap; extra bandwidth is wasted. Use the slot elsewhere (HBM, FLOPS, more GPUs for data parallel replicas) or tighten α / *ρ*.
+4. Compute *BW*<sub>target</sub>(*f*, *B*) = *b*<sub>p</sub>(*B*) / (*f* · *t*<sub>local</sub>(*B*) − *a*<sub>p</sub> · α) — the unified §6 formula, which reduces to *BW*<sub>target,memory</sub> for *B* < *B*<sup>★</sup> and to *BW*<sub>target,compute</sub> for *B* > *B*<sup>★</sup>. Check current *BW* against it:
+   - **Current *BW* ≥ *BW*<sub>target</sub>** → comm is below the *f* · *t*<sub>local</sub> design cap; extra bandwidth is wasted. Use the slot elsewhere (HBM, FLOPS, more GPUs for data parallel replicas) or tighten α / *ρ*.
    - **Current *BW* < *BW*<sub>target</sub>** → comm exceeds the design target; bandwidth improvement saves up to *t*<sub>β</sub>/2 per doubling (§7). Worth the spend until you reach *BW*<sub>target</sub>.
-   - **Denominator non-positive** → α alone exceeds *f* · *t*<sub>mem</sub>; bandwidth can't reach the target regardless. Tighten α or pick a larger *f*.
+   - **Denominator non-positive** → α alone exceeds *f* · *t*<sub>local</sub>; bandwidth can't reach the target regardless. Tighten α or pick a larger *f*. (In Zone 1 this happens at small *t*<sub>mem</sub>; in Zone 3 it happens at small *B* before *t*<sub>compute</sub> grows past the α floor — push *B* higher to escape if the workload allows.)
 
 The same logic with the α<sup>★</sup> formula in §5 covers the dual question of when latency-side improvements matter.
 
